@@ -32,8 +32,6 @@ const schema = defineSchema(
       role: v.optional(roleValidator), // role of the user. do not remove
     }).index("email", ["email"]), // index for the email. do not remove or modify
 
-    // add other tables here
-
     /** A single dashboard task, owned by exactly one user. */
     tasks: defineTable({
       userId: v.id("users"),
@@ -45,6 +43,14 @@ const schema = defineSchema(
       dueAt: v.optional(v.union(v.null(), v.number())),
       createdAt: v.number(),
       completedAt: v.optional(v.union(v.null(), v.number())),
+
+      // ---- assistant fields (see src/lib/nlp.ts and src/lib/scorer.ts) ----
+      /** `#tags` parsed out of the input. */
+      tags: v.optional(v.array(v.string())),
+      /** Normalised recurrence rule, e.g. "daily", "weekly:monday". */
+      recurrence: v.optional(v.union(v.null(), v.string())),
+      /** Feature vector captured when the task was resolved, used to train. */
+      featuresAtCompletion: v.optional(v.array(v.number())),
     })
       .index("by_user", ["userId"])
       .index("by_user_created", ["userId", "createdAt"]),
@@ -54,6 +60,29 @@ const schema = defineSchema(
       userId: v.id("users"),
       body: v.string(),
       createdAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    /**
+     * The user's trained model: a logistic-regression weight vector learned
+     * from their own completion history, plus rolled-up behaviour counters.
+     * One row per user, upserted as they complete and delete tasks.
+     */
+    assistantState: defineTable({
+      userId: v.id("users"),
+      weights: v.array(v.number()),
+      /** Completion count per 6-hour bucket. */
+      byHour: v.array(v.number()),
+      /** Completion count per weekday (0 = Sunday). */
+      byWeekday: v.array(v.number()),
+      /** Completion counts keyed by tag. */
+      byTag: v.record(v.string(), v.object({ done: v.number(), total: v.number() })),
+      shortDone: v.number(),
+      shortTotal: v.number(),
+      longDone: v.number(),
+      longTotal: v.number(),
+      /** Total labelled events seen so far — drives the "still learning" hint. */
+      samples: v.number(),
+      updatedAt: v.number(),
     }).index("by_user", ["userId"]),
   },
   {

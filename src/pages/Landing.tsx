@@ -2,11 +2,11 @@ import { motion } from "framer-motion";
 import {
   AlarmClock,
   ArrowRight,
+  Brain,
   Check,
-  FileText,
   Flag,
-  LayoutGrid,
   MoveRight,
+  Repeat,
   Zap,
 } from "lucide-react";
 import { Link } from "react-router";
@@ -15,15 +15,15 @@ import { useAuth } from "@/hooks/use-auth";
 
 const FEATURES = [
   {
-    icon: LayoutGrid,
-    title: "One page, no tabs",
-    body: "Tasks, stats and notes share a single screen. No project switcher, no nesting, no digging.",
+    icon: Zap,
+    title: "Type it like you'd say it",
+    body: "\u201cCall Sam Friday re contract\u201d becomes a task with the date already set. Dates, times, priority and #tags get pulled out for you.",
     tone: "bg-primary",
   },
   {
-    icon: Zap,
-    title: "Instant capture",
-    body: "Type a task and hit enter. It lands at the top of your list already sorted by priority.",
+    icon: Brain,
+    title: "It learns what you finish",
+    body: "A model trains on your own completions — not on everyone. The work you actually finish rises to the top.",
     tone: "bg-secondary text-secondary-foreground",
   },
   {
@@ -33,15 +33,15 @@ const FEATURES = [
     tone: "bg-accent text-accent-foreground",
   },
   {
-    icon: Flag,
-    title: "A seven-day read",
-    body: "A bar chart of what you actually finished. Honest feedback, not a streak you can fake.",
+    icon: Repeat,
+    title: "Repeats that repeat",
+    body: "\u201cEvery Monday\u201d or \u201cevery 3 days\u201d is understood on the way in, not retyped every week.",
     tone: "bg-card",
   },
   {
-    icon: FileText,
-    title: "Notes in reach",
-    body: "Scratch a thought next to the work it relates to. Same screen, same rhythm.",
+    icon: Flag,
+    title: "A seven-day read",
+    body: "A bar chart of what you actually finished. Honest feedback, not a streak you can fake.",
     tone: "bg-primary",
   },
   {
@@ -54,8 +54,8 @@ const FEATURES = [
 
 const STEPS = [
   { n: "01", t: "Sign in with your email", d: "No password to remember. A code lands in your inbox and you're in." },
-  { n: "02", t: "Dump everything on the list", d: "Every task, every loose end, all in one place." },
-  { n: "03", t: "Work top-down, close out", d: "Priorities sort themselves. You just pick the next one." },
+  { n: "02", t: "Dump everything, plainly", d: "Type tasks the way you'd say them out loud. Dates and priority sort themselves." },
+  { n: "03", t: "Work the top of the list", d: "It learns what you actually finish and keeps that first." },
 ] as const;
 
 function MarqueeRow({ items }: { items: string[] }) {
@@ -121,7 +121,7 @@ export default function Landing() {
               className="brutal-flat mb-8 inline-flex items-center gap-2 bg-accent px-3 py-2 text-accent-foreground"
             >
               <span className="size-2 bg-current" />
-              <span className="text-[11px] font-bold uppercase">Version 1 — Tasks &amp; stats</span>
+              <span className="text-[11px] font-bold uppercase">Runs on-device. No AI API.</span>
             </motion.div>
 
             <motion.h1
@@ -130,11 +130,11 @@ export default function Landing() {
               transition={{ duration: 0.35, delay: 0.05 }}
               className="font-display text-5xl leading-[0.92] tracking-tight uppercase sm:text-6xl lg:text-7xl"
             >
-              Your day,
+              Type it
               <br />
-              on one
+              how you'd
               <span className="ml-3 inline-block border-2 border-border bg-primary px-3 py-1">
-                page
+                say it
               </span>
             </motion.h1>
 
@@ -145,8 +145,9 @@ export default function Landing() {
               className="mt-7 max-w-lg text-base leading-relaxed text-muted-foreground"
             >
               Panel is a personal dashboard for the things you actually have to do.
-              Everything lands in one list, sorts itself by priority, and tells you
-              plainly what you finished this week.
+              Type it the way you'd say it, and it pulls out the date, priority and
+              tags. Then it learns which work you actually finish — and puts that
+              first.
             </motion.p>
 
             <motion.div
@@ -175,7 +176,7 @@ export default function Landing() {
               transition={{ duration: 0.35, delay: 0.25 }}
               className="mt-7 text-[11px] uppercase text-muted-foreground"
             >
-              Free · No credit card · Sign in with email
+              Free · No credit card · Nothing you type leaves your account
             </motion.p>
           </div>
 

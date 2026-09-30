@@ -1,15 +1,17 @@
 import { useMutation, useQuery } from "convex/react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   AlarmClock,
   ArrowUpRight,
+  Brain,
   Check,
   Circle,
   FileText,
-  Flag,
   Loader2,
   LogOut,
   Plus,
+  Repeat,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -21,53 +23,50 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
+import { describeDue, parseTaskInput } from "@/lib/nlp";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | "open" | "done";
 
-/** Priority buckets. `pinned` is the urgent one, `standard` the default. */
 const PRIORITY = {
   0: { label: "NOW", className: "bg-primary text-foreground" },
   1: { label: "SOON", className: "bg-accent text-accent-foreground" },
   2: { label: "LATER", className: "bg-muted text-muted-foreground" },
 } as const;
 
-function formatDueLabel(dueAt: number | null | undefined) {
-  if (dueAt == null) return null;
-  const date = new Date(dueAt);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const target = new Date(date);
-  target.setHours(0, 0, 0, 0);
-  const days = Math.round((target.getTime() - today.getTime()) / 86_400_000);
-
-  if (days === 0) return "TODAY";
-  if (days === 1) return "TOMORROW";
-  if (days === -1) return "YESTERDAY";
-  if (days < 0) return `${Math.abs(days)}D LATE`;
-  if (days < 7) return `IN ${days}D`;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" }).toUpperCase();
-}
+/** Below this many labelled outcomes the model is mostly prior, not learned. */
+const LEARNING_THRESHOLD = 12;
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
-  const data = useQuery(api.dashboard.getDashboard);
+  const data = useQuery(api.assistant.getDashboard);
+  const model = useQuery(api.assistant.getModel);
 
-  const addTask = useMutation(api.dashboard.addTask);
-  const setCompleted = useMutation(api.dashboard.setTaskCompleted);
-  const removeTask = useMutation(api.dashboard.removeTask);
-  const clearCompleted = useMutation(api.dashboard.clearCompleted);
-  const addNote = useMutation(api.dashboard.addNote);
-  const removeNote = useMutation(api.dashboard.removeNote);
+  const addTask = useMutation(api.assistant.addTask);
+  const setCompleted = useMutation(api.assistant.setTaskCompleted);
+  const removeTask = useMutation(api.assistant.removeTask);
+  const clearCompleted = useMutation(api.assistant.clearCompleted);
+  const addNote = useMutation(api.assistant.addNote);
+  const removeNote = useMutation(api.assistant.removeNote);
 
   const [filter, setFilter] = useState<Filter>("all");
-  const [title, setTitle] = useState("");
-  const [priority, setPriority] = useState<0 | 1 | 2>(0);
+  const [input, setInput] = useState("");
   const [noteBody, setNoteBody] = useState("");
   const [saving, setSaving] = useState(false);
+  const [showModel, setShowModel] = useState(false);
+
+  // Parsed locally for an instant preview; the server re-parses on submit so
+  // the persisted value is never dependent on the client having run.
+  const preview = useMemo(() => {
+    const trimmed = input.trim();
+    if (trimmed.length < 2) return null;
+    return parsePreview(trimmed);
+  }, [input]);
 
   const tasks = data?.tasks ?? [];
   const stats = data?.stats;
+  const samples = stats?.samples ?? 0;
+  const learning = samples < LEARNING_THRESHOLD;
 
   const visibleTasks = useMemo(() => {
     if (filter === "open") return tasks.filter((t) => !t.completed);
@@ -81,14 +80,13 @@ export default function Dashboard() {
 
   const handleAddTask = async (event: React.FormEvent) => {
     event.preventDefault();
-    const value = title.trim();
+    const value = input.trim();
     if (!value || saving) return;
 
     setSaving(true);
     try {
-      await addTask({ title: value, priority });
-      setTitle("");
-      if (priority !== 0) setPriority(0);
+      await addTask({ input: value });
+      setInput("");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not add task");
     } finally {
@@ -154,9 +152,7 @@ export default function Dashboard() {
               <span className="font-display text-xl leading-none">P</span>
             </div>
             <div>
-              <p className="font-display text-lg leading-none tracking-tight uppercase">
-                Panel
-              </p>
+              <p className="font-display text-lg leading-none tracking-tight uppercase">Panel</p>
               <p className="mt-1 text-[11px] uppercase text-muted-foreground">{today}</p>
             </div>
           </div>
@@ -179,119 +175,191 @@ export default function Dashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl px-5 py-8">
+        {/* ---------- ASSISTANT BRIEF ---------- */}
+        {data?.brief && data.brief.length > 0 && (
+          <motion.section
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="brutal mb-8 flex items-start gap-3 bg-foreground p-4 text-background"
+          >
+            <Sparkles className="mt-0.5 size-5 shrink-0" />
+            <div className="min-w-0">
+              <p className="mb-1 text-[11px] font-bold uppercase opacity-60">Brief</p>
+              <ul className="flex flex-col gap-1">
+                {data.brief.map((line, i) => (
+                  <li key={i} className="text-sm leading-snug">
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowModel((s) => !s)}
+              aria-label="Inspect the model"
+              aria-pressed={showModel}
+              className="brutal-press ml-auto shrink-0 border-2 border-background p-1.5 hover:bg-background hover:text-foreground"
+            >
+              <Brain className="size-4" />
+            </button>
+          </motion.section>
+        )}
+
+        {/* ---------- MODEL INSPECTOR ---------- */}
+        <AnimatePresence>
+          {showModel && model && (
+            <motion.section
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="brutal-flat mb-8 overflow-hidden bg-card"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-4 p-5">
+                <div>
+                  <div className="mb-2 flex items-center gap-2">
+                    <Brain className="size-4" />
+                    <h2 className="font-display text-sm uppercase tracking-wide">
+                      Your model
+                    </h2>
+                  </div>
+                  <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
+                    An online logistic regression trained on your own completions —{" "}
+                    <span className="font-bold text-foreground">
+                      {model.samples} labelled {model.samples === 1 ? "outcome" : "outcomes"}
+                    </span>
+                    . Every task you finish pulls these weights toward the shape of work
+                    you actually complete. Nothing is sent anywhere.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {model.weights.map((w, i) => (
+                    <span
+                      key={i}
+                      title={FEATURE_NAMES[i]}
+                      className="brutal-flat bg-background px-2 py-1 text-[10px] uppercase"
+                    >
+                      <span className="text-muted-foreground">{FEATURE_NAMES[i]}</span>
+                      <span className="ml-1.5 font-bold">{w.toFixed(2)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </motion.section>
+          )}
+        </AnimatePresence>
+
         {/* ---------- STATS ---------- */}
         <section className="mb-8">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25 }}
-              className="brutal bg-primary p-4"
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wide">Open</p>
-              <p className="font-display mt-2 text-4xl leading-none">{openCount}</p>
-              <p className="mt-2 text-[11px] uppercase">still to do</p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.05 }}
-              className="brutal bg-accent p-4 text-accent-foreground"
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wide">Done today</p>
-              <p className="font-display mt-2 text-4xl leading-none">
-                {stats?.completedToday ?? 0}
-              </p>
-              <p className="mt-2 text-[11px] uppercase">finished today</p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.1 }}
-              className="brutal bg-secondary p-4 text-secondary-foreground"
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wide">Overdue</p>
-              <p className="font-display mt-2 text-4xl leading-none">{stats?.overdue ?? 0}</p>
-              <p className="mt-2 text-[11px] uppercase">
-                {(stats?.overdue ?? 0) > 0 ? "catch up" : "all clear"}
-              </p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.15 }}
-              className="brutal bg-card p-4"
-            >
-              <p className="text-[11px] font-bold uppercase tracking-wide">Rate</p>
-              <p className="font-display mt-2 text-4xl leading-none">
-                {stats?.completionRate ?? 0}
-                <span className="text-2xl">%</span>
-              </p>
-              <div className="mt-3 h-3 w-full border-2 border-border bg-background">
-                <div
-                  className="h-full bg-foreground transition-all duration-500"
-                  style={{ width: `${stats?.completionRate ?? 0}%` }}
-                />
-              </div>
-            </motion.div>
+            <StatTile label="Open" value={openCount} sub="still to do" tone="bg-primary" />
+            <StatTile
+              label="Done today"
+              value={stats?.completedToday ?? 0}
+              sub="finished today"
+              tone="bg-accent text-accent-foreground"
+              delay={0.05}
+            />
+            <StatTile
+              label="Overdue"
+              value={stats?.overdue ?? 0}
+              sub={(stats?.overdue ?? 0) > 0 ? "catch up" : "all clear"}
+              tone="bg-secondary text-secondary-foreground"
+              delay={0.1}
+            />
+            <StatTile
+              label="Rate"
+              value={stats?.completionRate ?? 0}
+              suffix="%"
+              sub={learning ? "model still warming up" : "model trained on your history"}
+              tone="bg-card"
+              delay={0.15}
+              progress={stats?.completionRate ?? 0}
+            />
           </div>
         </section>
 
         <div className="grid gap-6 lg:grid-cols-3">
           {/* ---------- TASK COLUMN ---------- */}
           <section className="lg:col-span-2">
-            {/* composer */}
             <form onSubmit={handleAddTask} className="brutal-flat mb-6 bg-card p-5">
               <div className="mb-3 flex items-center gap-2">
                 <Plus className="size-4" />
-                <h2 className="font-display text-sm uppercase tracking-wide">
-                  New task
-                </h2>
+                <h2 className="font-display text-sm uppercase tracking-wide">Capture</h2>
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="What needs doing?"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="call sam friday re contract"
                   maxLength={200}
-                  aria-label="Task title"
-                  className="h-12 flex-1 border-2 border-border bg-background px-4 text-sm focus-visible:ring-0"
+                  aria-label="Task in plain language"
+                  className="h-12 flex-1 border-2 border-border bg-background px-4 focus-visible:ring-0"
                 />
                 <Button
                   type="submit"
-                  disabled={!title.trim() || saving}
+                  disabled={!input.trim() || saving}
                   className="brutal h-12 gap-2 bg-primary px-6 font-bold uppercase"
                 >
-                  {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+                  {saving ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Plus className="size-4" />
+                  )}
                   Add
                 </Button>
               </div>
 
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-bold uppercase text-muted-foreground">
-                  Priority
-                </span>
-                {([0, 1, 2] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setPriority(value)}
-                    aria-pressed={priority === value}
-                    className={cn(
-                      "brutal-flat px-3 py-1.5 text-[11px] font-bold uppercase transition-colors",
-                      priority === value
-                        ? PRIORITY[value].className
-                        : "bg-background text-muted-foreground hover:bg-muted",
-                    )}
+              {/* live parse preview */}
+              <AnimatePresence>
+                {preview && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    transition={{ duration: 0.15 }}
+                    className="mt-4 border-2 border-dashed border-border bg-background p-3"
                   >
-                    {PRIORITY[value].label}
-                  </button>
-                ))}
-              </div>
+                    <p className="mb-2 text-[10px] font-bold uppercase text-muted-foreground">
+                      Reads as
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm">{preview.title}</span>
+                      <span
+                        className={cn(
+                          "border-2 border-border px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                          PRIORITY[preview.priority].className,
+                        )}
+                      >
+                        {PRIORITY[preview.priority].label}
+                      </span>
+                      {preview.dueLabel && (
+                        <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                          <AlarmClock className="size-3" />
+                          {preview.dueLabel}
+                        </span>
+                      )}
+                      {preview.recurrence && (
+                        <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                          <Repeat className="size-3" />
+                          {preview.recurrence.replace(":", " · ")}
+                        </span>
+                      )}
+                      {preview.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase"
+                        >
+                          #{tag}
+                        </span>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </form>
 
             {/* filters */}
@@ -305,9 +373,7 @@ export default function Dashboard() {
                     aria-pressed={filter === value}
                     className={cn(
                       "brutal-flat px-4 py-2 text-xs font-bold uppercase transition-colors",
-                      filter === value
-                        ? "bg-foreground text-background"
-                        : "bg-card hover:bg-muted",
+                      filter === value ? "bg-foreground text-background" : "bg-card hover:bg-muted",
                     )}
                   >
                     {value}
@@ -339,7 +405,7 @@ export default function Dashboard() {
                 <p className="max-w-xs text-xs uppercase text-muted-foreground">
                   {filter === "done"
                     ? "Tick something off and it will show up here."
-                    : "Add your first task using the box above."}
+                    : "Try typing “pay rent tomorrow” in the box above."}
                 </p>
               </div>
             ) : (
@@ -394,9 +460,26 @@ export default function Dashboard() {
                         {task.isOverdue && (
                           <span className="flex items-center gap-1 text-[10px] font-bold uppercase">
                             <AlarmClock className="size-3" />
-                            {formatDueLabel(task.dueAt)}
+                            Overdue
                           </span>
                         )}
+                        {task.recurrence && !task.completed && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold uppercase">
+                            <Repeat className="size-3" />
+                            {task.recurrence.replace(":", " · ")}
+                          </span>
+                        )}
+                        {/* learned ranking reasons */}
+                        {!task.completed &&
+                          task.reasons?.slice(0, 1).map((r) => (
+                            <span
+                              key={r.label}
+                              className="flex items-center gap-1 text-[10px] font-bold uppercase opacity-70"
+                            >
+                              <Brain className="size-3" />
+                              {r.label}
+                            </span>
+                          ))}
                       </div>
                     </div>
 
@@ -416,13 +499,8 @@ export default function Dashboard() {
 
           {/* ---------- SIDE COLUMN ---------- */}
           <aside className="flex flex-col gap-6">
-            {/* weekly chart */}
             <section className="brutal-flat bg-card p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Flag className="size-4" />
-                <h2 className="font-display text-sm uppercase tracking-wide">Last 7 days</h2>
-              </div>
-
+              <h2 className="font-display mb-4 text-sm uppercase tracking-wide">Last 7 days</h2>
               <div className="flex h-32 items-end gap-2">
                 {(stats?.week ?? []).map((day, i) => (
                   <div key={i} className="flex flex-1 flex-col items-center gap-2">
@@ -433,22 +511,16 @@ export default function Dashboard() {
                         height: `${Math.max((day.count / maxBar) * 88, day.count > 0 ? 14 : 6)}px`,
                       }}
                     />
-                    <span className="text-[10px] uppercase text-muted-foreground">
-                      {day.day}
-                    </span>
+                    <span className="text-[10px] uppercase text-muted-foreground">{day.day}</span>
                   </div>
                 ))}
               </div>
-
               <p className="mt-4 border-t-2 border-border pt-3 text-[11px] uppercase text-muted-foreground">
-                <span className="font-bold text-foreground">
-                  {stats?.completedThisWeek ?? 0}
-                </span>{" "}
+                <span className="font-bold text-foreground">{stats?.completedThisWeek ?? 0}</span>{" "}
                 completed in the last 7 days
               </p>
             </section>
 
-            {/* notes */}
             <section className="brutal-flat bg-card p-5">
               <div className="mb-4 flex items-center gap-2">
                 <FileText className="size-4" />
@@ -521,4 +593,80 @@ export default function Dashboard() {
       </main>
     </div>
   );
+}
+
+const FEATURE_NAMES = [
+  "baseline",
+  "priority",
+  "deadline",
+  "age",
+  "time-of-day",
+  "weekday",
+  "tags",
+  "task size",
+];
+
+function StatTile({
+  label,
+  value,
+  suffix,
+  sub,
+  tone,
+  delay = 0,
+  progress,
+}: {
+  label: string;
+  value: number;
+  suffix?: string;
+  sub: string;
+  tone: string;
+  delay?: number;
+  progress?: number;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, delay }}
+      className={cn("brutal p-4", tone)}
+    >
+      <p className="text-[11px] font-bold uppercase tracking-wide">{label}</p>
+      <p className="font-display mt-2 text-4xl leading-none">
+        {value}
+        {suffix && <span className="text-2xl">{suffix}</span>}
+      </p>
+      {progress !== undefined ? (
+        <div className="mt-3 h-3 w-full border-2 border-border bg-background">
+          <div
+            className="h-full bg-foreground transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      ) : (
+        <p className="mt-2 text-[11px] uppercase">{sub}</p>
+      )}
+    </motion.div>
+  );
+}
+
+/**
+ * Client-side parse for the live preview.
+ *
+ * Runs the exact same parser the server uses, so what the preview shows is
+ * what gets saved. Wrapped defensively — a preview failure must never block
+ * capture, since the server parses again on submit regardless.
+ */
+function parsePreview(raw: string) {
+  try {
+    const parsed = parseTaskInput(raw);
+    return {
+      title: parsed.title,
+      priority: parsed.priority,
+      recurrence: parsed.recurrence,
+      tags: parsed.tags,
+      dueLabel: describeDue(parsed.dueAt),
+    };
+  } catch {
+    return null;
+  }
 }
