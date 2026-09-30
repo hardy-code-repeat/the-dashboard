@@ -9,6 +9,7 @@ import {
   FileText,
   Loader2,
   LogOut,
+  PlugZap,
   Plus,
   Repeat,
   Sparkles,
@@ -22,6 +23,8 @@ import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { AreaPicker, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
+import { FinanceArea } from "@/components/FinanceArea";
 import { useAuth } from "@/hooks/use-auth";
 import { describeDue, parseTaskInput } from "@/lib/nlp";
 import { cn } from "@/lib/utils";
@@ -41,6 +44,7 @@ export default function Dashboard() {
   const { user, signOut } = useAuth();
   const data = useQuery(api.assistant.getDashboard);
   const model = useQuery(api.assistant.getModel);
+  const areas = useQuery(api.life.listAreas);
 
   const addTask = useMutation(api.assistant.addTask);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
@@ -54,6 +58,8 @@ export default function Dashboard() {
   const [noteBody, setNoteBody] = useState("");
   const [saving, setSaving] = useState(false);
   const [showModel, setShowModel] = useState(false);
+  const [activeArea, setActiveArea] = useState("general");
+  const [showAreaPicker, setShowAreaPicker] = useState(false);
 
   // Parsed locally for an instant preview; the server re-parses on submit so
   // the persisted value is never dependent on the client having run.
@@ -175,6 +181,64 @@ export default function Dashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl px-5 py-8">
+        {/* ---------- AREA TABS ---------- */}
+        <nav aria-label="Life areas" className="mb-8">
+          <div className="-mx-1 flex flex-wrap items-stretch gap-2">
+            {areas === undefined
+              ? null
+              : areas.map((area) => {
+                  const Icon = areaIcon(area.kind);
+                  const active = activeArea === area.slug;
+                  return (
+                    <button
+                      key={area.slug}
+                      type="button"
+                      onClick={() => setActiveArea(area.slug)}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "brutal flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase transition-colors",
+                        active
+                          ? "bg-foreground text-background"
+                          : "bg-card hover:bg-muted",
+                      )}
+                    >
+                      <Icon className="size-3.5" />
+                      {area.label}
+                    </button>
+                  );
+                })}
+
+            <button
+              type="button"
+              onClick={() => setShowAreaPicker(true)}
+              className="brutal-press flex items-center gap-2 border-2 border-dashed border-border px-4 py-2.5 text-xs font-bold uppercase text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Plus className="size-3.5" />
+              Area
+            </button>
+          </div>
+        </nav>
+
+        {showAreaPicker && <AreaPicker onClose={() => setShowAreaPicker(false)} />}
+
+        {/* ---------- TOOLS (integration hub) ---------- */}
+        {activeArea === "general" && (
+          <section className="mb-8">
+            <details className="brutal-flat bg-card">
+              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
+                <PlugZap className="size-4" />
+                Connect a tool
+              </summary>
+              <div className="border-t-2 border-border p-4">
+                <IntegrationsArea />
+              </div>
+            </details>
+          </section>
+        )}
+
+        {/* ---------- BRIEF (only on the general tab) ---------- */}
+        {activeArea === "general" && (
+          <>
         {/* ---------- ASSISTANT BRIEF ---------- */}
         {data?.brief && data.brief.length > 0 && (
           <motion.section
@@ -280,7 +344,28 @@ export default function Dashboard() {
             />
           </div>
         </section>
+          </>
+        )}
 
+        {/* ---------- AREA BODIES (everything below is area-specific) ---------- */}
+        {activeArea !== "general" && (
+          <section>
+            {activeArea === "finance" ? (
+              <FinanceArea />
+            ) : activeArea === "relationships" ? (
+              <PeopleArea />
+            ) : activeArea === "health" ? (
+              <HealthArea />
+            ) : (
+              <TasksArea
+                area={activeArea}
+                label={areas?.find((a) => a.slug === activeArea)?.label ?? activeArea}
+              />
+            )}
+          </section>
+        )}
+
+        {activeArea === "general" && (
         <div className="grid gap-6 lg:grid-cols-3">
           {/* ---------- TASK COLUMN ---------- */}
           <section className="lg:col-span-2">
@@ -576,6 +661,7 @@ export default function Dashboard() {
             </section>
           </aside>
         </div>
+        )}
 
         <footer className="mt-12 border-t-2 border-border pt-6">
           <div className="flex flex-wrap items-center justify-between gap-3">

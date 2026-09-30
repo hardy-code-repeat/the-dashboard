@@ -1,0 +1,476 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
+import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
+import { v } from "convex/values";
+
+import { AREAS, areaBySlug, PROVIDERS, type ProviderWithState } from "../lib/areas";
+import { categoriseExpense, COUNTRIES, estimateTax, readinessScore } from "../lib/tax";
+
+import type { DataModel } from "./_generated/dataModel";
+import { mutation, query } from "./_generated/server";
+
+const DAY_MS = 86_400_000;
+
+/** Slug that always exists for every user, whether or not they added anything. */
+const DEFAULT_AREA = "general";
+
+async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+  return userId;
+}
+
+/**
+ * Ensures the default area row exists so ordering and filtering always have a
+ * stable anchor. Called from any mutation that touches areas.
+ */
+async function ensureDefaultArea(ctx: GenericMutationCtx<DataModel>, userId: any) {
+  const existing = await ctx.db
+    .query("areas")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  if (existing.some((a) => a.slug === DEFAULT_AREA)) return;
+
+  const def = areaBySlug(DEFAULT_AREA)!;
+  await ctx.db.insert("areas", {
+    userId,
+    slug: def.slug,
+    label: def.label,
+    order: 0,
+    createdAt: Date.now(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Life areas
+// ---------------------------------------------------------------------------
+
+export const listAreas = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+
+    const rows = await ctx.db
+      .query("areas")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    return rows
+      .sort((a, b) => a.order - b.order)
+      .map((row) => {
+        const def = areaBySlug(row.slug);
+        return {
+          slug: row.slug,
+          label: row.label,
+          kind: def?.kind ?? "tasks",
+          accent: def?.accent ?? "card",
+          blurb: def?.blurb ?? "",
+        };
+      });
+  },
+});
+
+export const getAvailableAreas = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return AREAS;
+
+    const rows = await ctx.db
+      .query("areas")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const enabled = new Set(rows.map((r) => r.slug));
+
+    return AREAS.filter((a) => !enabled.has(a.slug));
+  },
+});
+
+export const enableArea = mutation({
+  args: { slug: v.string(), seed: v.optional(v.boolean()) },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    await ensureDefaultArea(ctx, userId);
+
+    const def = areaBySlug(args.slug);
+    if (!def) throw new Error("Unknown area");
+
+    const existing = await ctx.db
+      .query("areas")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (existing.some((a) => a.slug === args.slug)) return;
+
+    await ctx.db.insert("areas", {
+      userId,
+      slug: def.slug,
+      label: def.label,
+      order: existing.length,
+      createdAt: Date.now(),
+    });
+
+    // Optional starter tasks — off by default so enabling an area is instant
+    // and the user decides whether they want the sample content.
+    if (args.seed && def.starterTasks?.length) {
+      for (const title of def.starterTasks) {
+        await ctx.db.insert("tasks", {
+          userId,
+          title,
+          completed: false,
+          priority: 1,
+          dueAt: null,
+          createdAt: Date.now(),
+          completedAt: null,
+          tags: [],
+          recurrence: null,
+          area: def.slug,
+        });
+      }
+    }
+  },
+});
+
+export const disableArea = mutation({
+  args: { slug: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    if (args.slug === DEFAULT_AREA) throw new Error("The General area can't be removed");
+
+    const row = await ctx.db
+      .query("areas")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const target = row.find((a) => a.slug === args.slug);
+    if (!target) return;
+
+    await ctx.db.delete(target._id);
+
+    // Re-home the area's tasks into General rather than deleting user data.
+    const orphaned = await ctx.db
+      .query("tasks")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    for (const task of orphaned.filter((t) => t.area === args.slug)) {
+      await ctx.db.patch(task._id, { area: DEFAULT_AREA });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Finance / tax
+// ---------------------------------------------------------------------------
+
+export const getFinance = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return null;
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    // January through April is filing the previous year.
+    const filingYear = now.getMonth() < 4 ? currentYear - 1 : currentYear;
+
+    const [profile, expenses, gathered] = await Promise.all([
+      ctx.db
+        .query("taxProfile")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .unique()
+        .catch(() => null),
+      ctx.db
+        .query("expenses")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect(),
+      ctx.db
+        .query("taxDocuments")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect(),
+    ]);
+
+    const countryCode = (profile?.country ?? "US") as keyof typeof COUNTRIES;
+    const country = COUNTRIES[countryCode] ?? COUNTRIES.US;
+    const taxYear = profile?.taxYear ?? filingYear;
+
+    const yearExpenses = expenses.filter((e) => new Date(e.spentAt).getFullYear() === taxYear);
+    const estimate = estimateTax({
+      country: country.code,
+      taxYear,
+      grossIncome: profile?.grossIncome ?? 0,
+      expenses: yearExpenses.map((e) => ({
+        label: e.label,
+        amount: e.amount,
+        deductible: e.deductible,
+      })),
+      businessMiles: profile?.businessMiles ?? 0,
+      charitableMiles: profile?.charitableMiles ?? 0,
+      homeOfficeSqFt: profile?.homeOfficeSqFt ?? 0,
+      donations: profile?.donations ?? 0,
+    });
+
+    const gatheredIds = new Set(gathered.map((g) => g.requirementId));
+    const readiness = readinessScore(country.documents, gatheredIds);
+
+    // Group upcoming deadlines, flagging anything overdue or inside 30 days.
+    const deadlines = country.deadlines(taxYear).map((d) => {
+      let daysAway: number | null = null;
+      let state: "upcoming" | "urgent" | "passed" | "none" = "upcoming";
+      if (d.date) {
+        const t = new Date(`${d.date}T23:59:59`);
+        daysAway = Math.round((t.getTime() - now.getTime()) / DAY_MS);
+        state = daysAway < 0 ? "passed" : daysAway <= 30 ? "urgent" : "upcoming";
+      } else {
+        state = "none";
+      }
+      return { ...d, daysAway, state };
+    });
+
+    const byBucket = new Map<string, { bucket: string; amount: number; count: number }>();
+    for (const e of yearExpenses.filter((x) => x.deductible)) {
+      const cur = byBucket.get(e.bucket) ?? { bucket: e.bucket, amount: 0, count: 0 };
+      cur.amount += e.amount;
+      cur.count += 1;
+      byBucket.set(e.bucket, cur);
+    }
+
+    return {
+      country,
+      countries: Object.values(COUNTRIES).map((c) => ({
+        code: c.code, name: c.name, currencySymbol: c.currencySymbol,
+      })),
+      taxYear,
+      taxYearLabel: country.taxYearLabel(taxYear),
+      profile: {
+        grossIncome: profile?.grossIncome ?? 0,
+        businessMiles: profile?.businessMiles ?? 0,
+        charitableMiles: profile?.charitableMiles ?? 0,
+        homeOfficeSqFt: profile?.homeOfficeSqFt ?? 0,
+        donations: profile?.donations ?? 0,
+      },
+      estimate,
+      readiness,
+      deadlines,
+      documents: country.documents.map((d) => ({ ...d, gathered: gatheredIds.has(d.id) })),
+      expenses: yearExpenses.sort((a, b) => b.spentAt - a.spentAt),
+      buckets: [...byBucket.values()].sort((a, b) => b.amount - a.amount),
+    };
+  },
+});
+
+export const saveTaxProfile = mutation({
+  args: {
+    country: v.string(),
+    grossIncome: v.number(),
+    businessMiles: v.optional(v.number()),
+    charitableMiles: v.optional(v.number()),
+    homeOfficeSqFt: v.optional(v.number()),
+    donations: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    if (!COUNTRIES[args.country as keyof typeof COUNTRIES]) throw new Error("Unsupported country");
+    if (args.grossIncome < 0) throw new Error("Income cannot be negative");
+
+    const now = new Date();
+    const taxYear = now.getMonth() < 4 ? now.getFullYear() - 1 : now.getFullYear();
+
+    const existing = await ctx.db
+      .query("taxProfile")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .unique();
+
+    const row = {
+      country: args.country,
+      taxYear,
+      grossIncome: args.grossIncome,
+      businessMiles: args.businessMiles ?? 0,
+      charitableMiles: args.charitableMiles ?? 0,
+      homeOfficeSqFt: args.homeOfficeSqFt ?? 0,
+      donations: args.donations ?? 0,
+      updatedAt: Date.now(),
+    };
+
+    if (existing) await ctx.db.patch(existing._id, row);
+    else await ctx.db.insert("taxProfile", { userId, ...row });
+  },
+});
+
+/**
+ * Logs an expense and auto-categorises it.
+ *
+ * The categoriser is a keyword rule set, so it deliberately errs toward
+ * `low` confidence and leaves the judgement to the user.
+ */
+export const addExpense = mutation({
+  args: {
+    label: v.string(),
+    amount: v.number(),
+    spentAt: v.optional(v.number()),
+    deductible: v.optional(v.boolean()),
+    bucket: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const label = args.label.trim();
+    if (!label) throw new Error("Expense needs a description");
+    if (args.amount <= 0) throw new Error("Amount must be greater than zero");
+
+    const guess = categoriseExpense(label);
+
+    await ctx.db.insert("expenses", {
+      userId,
+      label,
+      amount: args.amount,
+      bucket: args.bucket ?? guess.bucket,
+      deductible: args.deductible ?? guess.likelyDeductible,
+      confidence: guess.confidence,
+      spentAt: args.spentAt ?? Date.now(),
+      source: "manual",
+      createdAt: Date.now(),
+    });
+
+    return guess;
+  },
+});
+
+export const setExpenseDeductible = mutation({
+  args: { id: v.id("expenses"), deductible: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row || row.userId !== userId) throw new Error("Expense not found");
+    // User overrides are trusted and stop being flagged as a guess.
+    await ctx.db.patch(args.id, { deductible: args.deductible, confidence: "confirmed" });
+  },
+});
+
+export const removeExpense = mutation({
+  args: { id: v.id("expenses") },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const row = await ctx.db.get(args.id);
+    if (!row || row.userId !== userId) throw new Error("Expense not found");
+    await ctx.db.delete(args.id);
+  },
+});
+
+export const toggleDocument = mutation({
+  args: { requirementId: v.string(), gathered: v.boolean() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const rows = await ctx.db
+      .query("taxDocuments")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const existing = rows.find((r) => r.requirementId === args.requirementId);
+
+    if (args.gathered && !existing) {
+      await ctx.db.insert("taxDocuments", {
+        userId, requirementId: args.requirementId, gatheredAt: Date.now(),
+      });
+    } else if (!args.gathered && existing) {
+      await ctx.db.delete(existing._id);
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Connections
+// ---------------------------------------------------------------------------
+
+export const listConnections = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return { connected: [], providers: PROVIDERS.map((p) => ({ ...p, connected: false })) };
+    }
+
+    const rows = await ctx.db
+      .query("connections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    const connectedByProvider = new Set(rows.map((r) => r.provider));
+    return {
+      connected: rows,
+      providers: PROVIDERS.map((p) => ({ ...p, connected: connectedByProvider.has(p.slug) })),
+    };
+  },
+});
+
+/**
+ * Starts a connection.
+ *
+ * For providers whose OAuth handshake is not implemented yet this records the
+ * user's intent explicitly as `pending-credentials` rather than pretending the
+ * link is live. Nothing here silently reports success.
+ */
+export const connectTool = mutation({
+  args: { provider: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const provider = PROVIDERS.find((p) => p.slug === args.provider);
+    if (!provider) throw new Error("Unknown provider");
+
+    const rows = await ctx.db
+      .query("connections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (rows.some((r) => r.provider === args.provider)) return;
+
+    const status =
+      provider.status === "available"
+        ? "pending-credentials"
+        : "coming-soon";
+
+    await ctx.db.insert("connections", {
+      userId,
+      provider: provider.slug,
+      label: provider.label,
+      status,
+      connectedAt: Date.now(),
+    });
+  },
+});
+
+export const disconnectTool = mutation({
+  args: { provider: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const rows = await ctx.db
+      .query("connections")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const row = rows.find((r) => r.provider === args.provider);
+    if (row) await ctx.db.delete(row._id);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Area-scoped task helpers
+// ---------------------------------------------------------------------------
+
+export const setTaskArea = mutation({
+  args: { id: v.id("tasks"), area: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const task = await ctx.db.get(args.id);
+    if (!task || task.userId !== userId) throw new Error("Task not found");
+    await ctx.db.patch(args.id, { area: args.area ?? DEFAULT_AREA });
+  },
+});
+
+export const getAreaTasks = query({
+  args: { area: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+
+    const rows = await ctx.db
+      .query("tasks")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    return rows.filter((t) => (t.area ?? DEFAULT_AREA) === args.area);
+  },
+});

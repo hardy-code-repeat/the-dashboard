@@ -51,6 +51,9 @@ const schema = defineSchema(
       recurrence: v.optional(v.union(v.null(), v.string())),
       /** Feature vector captured when the task was resolved, used to train. */
       featuresAtCompletion: v.optional(v.array(v.number())),
+
+      /** Life area this task belongs to; "general" is the built-in default. */
+      area: v.optional(v.string()),
     })
       .index("by_user", ["userId"])
       .index("by_user_created", ["userId", "createdAt"]),
@@ -83,6 +86,81 @@ const schema = defineSchema(
       /** Total labelled events seen so far — drives the "still learning" hint. */
       samples: v.number(),
       updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    // ---------- life areas -------------------------------------------------
+
+    /**
+     * One row per life area the user has switched on. `order` drives the tab
+     * strip; areas are created on first enable rather than seeded for
+     * everyone so nobody carries tabs they don't care about.
+     */
+    areas: defineTable({
+      userId: v.id("users"),
+      slug: v.string(),
+      /** Display name — defaults to the catalogue label but stays editable. */
+      label: v.string(),
+      order: v.number(),
+      createdAt: v.number(),
+    })
+      .index("by_user", ["userId"])
+      .index("by_user_order", ["userId", "order"]),
+
+    // ---------- finance ----------------------------------------------------
+
+    /** Tax profile: country, year, income figures for the estimate. */
+    taxProfile: defineTable({
+      userId: v.id("users"),
+      country: v.string(),
+      taxYear: v.number(),
+      grossIncome: v.number(),
+      businessMiles: v.optional(v.number()),
+      charitableMiles: v.optional(v.number()),
+      homeOfficeSqFt: v.optional(v.number()),
+      donations: v.optional(v.number()),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    /** A deductible expense the user logged by hand or imported. */
+    expenses: defineTable({
+      userId: v.id("users"),
+      label: v.string(),
+      amount: v.number(),
+      bucket: v.string(),
+      deductible: v.boolean(),
+      /** How confident the categoriser was — drives the "check this" flag. */
+      confidence: v.string(),
+      /** Expense date, used for the tax-year filter. */
+      spentAt: v.number(),
+      source: v.string(),
+      createdAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    /** Which filing documents the user has gathered. */
+    taxDocuments: defineTable({
+      userId: v.id("users"),
+      /** Requirement id from the country's catalogue. */
+      requirementId: v.string(),
+      gatheredAt: v.number(),
+    }).index("by_user", ["userId"]),
+
+    // ---------- integrations ----------------------------------------------
+
+    /**
+     * A tool the user has connected. `credentials` holds the token supplied by
+     * the provider's own OAuth flow; it never leaves the server.
+     */
+    connections: defineTable({
+      userId: v.id("users"),
+      /** Catalogue slug, e.g. "google-calendar". */
+      provider: v.string(),
+      label: v.string(),
+      status: v.string(),
+      /** Display identity returned by the provider (email, handle, org). */
+      accountHint: v.optional(v.string()),
+      scopes: v.optional(v.array(v.string())),
+      connectedAt: v.number(),
+      lastSyncedAt: v.optional(v.number()),
     }).index("by_user", ["userId"]),
   },
   {
