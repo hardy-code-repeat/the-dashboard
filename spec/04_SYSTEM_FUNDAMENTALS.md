@@ -1353,7 +1353,7 @@ it, and how do we know it works?"**
 | REQ-052 | — | 3F | TASK-3F-035 | AC-3F-312 | TEST-3F-008 "A12" — capture creates zero commitments in either direction (Q-007 interim) | CHANGE-0016 |
 | REQ-015 | ADR-010 | 3F | TASK-3F-036 | AC-3F-313 | TEST-3F-008 "A13" — measured **in isolation**, because earlier sections complete tasks on purpose | CHANGE-0016 |
 | REQ-023 | ADR-009 | 3F | TASK-3F-037 | AC-3F-314 | TEST-3F-008 — the `by_owner_open` range and the explicit `.take` | CHANGE-0016 — **this check found D42** |
-| REQ-016 | ADR-016 | 3F | TASK-3F-038 | AC-3F-315 | CHANGE-0016 budget audit | CHANGE-0016 — 4 of 4 files, 1 of 1 table, 0 deps, 1 abstraction |
+| REQ-016 | ADR-016 | 3F | TASK-3F-038 | AC-3F-315 | TEST-3F-009 (budget audit of the feature's own file set) | CHANGE-0016 — 4 of 4 files, 1 of 1 table, 0 deps, 1 abstraction |
 
 **Phase 3 feature 4 acceptance criteria → test mapping**
 

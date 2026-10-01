@@ -1554,6 +1554,158 @@ Budget: 4 of 4 new files · 1 of 1 new table · 0 deps · 1 abstraction
 
 ---
 
+## CHANGE-0016
+
+```
+Date:       2026-10-01
+Phase:      3, feature 4 — Commitments + Waiting On
+Type:       feature
+Severity:   ARCHITECTURE
+Summary:    A promise the user made, and a wait the user is in — one object
+            with a direction, not two systems. Panel records the user's
+            assertion and never claims what another person did (ADR-027), the
+            lifecycle is derived from (expectedAt, completed, now) rather than
+            stored (ADR-025), and an inbound wait is deliberately *not* a task,
+            because taskRules would report it overdue about something the user
+            cannot do. This is also the feature that finally gives the
+            `waitingOn` attention section a producer: it has been a declared
+            section with no writer since phase 1.0.
+```
+
+### Commitments: the thing you promised, and the thing you are waiting for
+
+### What changed
+
+Panel gained one `commitments` table and a **Commitments** column inside the
+existing People area. A commitment is a title, a person, a direction and an
+optional expected date.
+
+The five things worth knowing before reading the code:
+
+1. **A promise and a wait are one object with a direction.** `owed` — the user
+   told Raj they would. `owedTo` — the user is waiting on Raj. A closed union at
+   the schema validator, not a boolean: `isInbound` reads worse than
+   `direction ===` at every call site, and a boolean would let a later edit flip
+   the meaning of an existing row with nothing to notice.
+2. **There is no status column.** Four states — `open`, `due`, `overdue`,
+   `kept` — all derived from `(expectedAt, completed, now)`. Same reasoning as
+   ADR-025: a stored status is a copy of two other fields, and a copy is where
+   they disagree.
+3. **Panel never asserts what another person did.** Every inbound string is
+   phrased as the user's claim. The settled line reads **"You marked this
+   received on 4 March"**, not "Raj sent this". This is not a style preference:
+   Panel has no evidence about a third party's conduct, and an assertion
+   presented as an observation is a false record that outlives the feature. It is
+   enforced by two copy functions rather than one template, so the `owedTo`
+   branch *cannot* reach the `owed` wording even by accident.
+4. **An inbound wait is not a task.** A wait rendered as a task would be
+   reported overdue by `taskRules` about something the user has no power over.
+   That is worse than silence, so waits are not tasks. Panel creates **no** task
+   for a commitment; `followUp` creates one only when the user presses the
+   button, and following up **does not settle the commitment** — the user may
+   have chased and heard nothing, and a chase that silently marked the wait
+   resolved would be a lie recorded in the user's favour.
+5. **Attention is asymmetric on purpose.** An `owed` that is late is something
+   the user can still fix today: severity 0.85, section `people`, action
+   "Done it". An `owedTo` that is late is something they cannot fix at all:
+   severity 0.6, section `waitingOn`, action "Follow up". R-009 is
+   unambiguous that waiting lists are reviewed weekly, not continuously, and that
+   the failure mode is rot rather than nagging — so the inbound side fires *only*
+   after the date has passed, with no advance-warning window at all. `due` is
+   outbound-only and is **never** attention: warning someone about their own
+   expectation they just typed is noise.
+
+### The section that had no producer
+
+`waitingOn` has existed in the attention vocabulary since phase 1.0 — declared,
+ordered, and rendered — with **nothing that could ever write to it**. A declared
+section with no producer is a specification claim the code does not meet, and it
+is the same shape as D34 and D38: a path that promises an effect that never
+happens, visible only if somebody looks. It was recorded inside the D42 scope
+block in §11.2 rather than quietly dropped from the vocabulary, because deleting
+the section would have removed the evidence that the gap was ever noticed. This
+feature is what makes it true, and it did so without adding a section, a tab or a
+slug: the commitments column lives inside People, where the people being waited
+on already are.
+
+### Anti-spam
+
+Three mechanisms, none of them new machinery: a commitment with no expected date
+emits nothing; an `owedTo` emits nothing before its date and nothing at all
+without one; and the existing section budget of 4 caps the rest, with the
+overflow already disclosed to the pipeline.
+
+### Learning
+
+No new feature index, and **no new signal from authorship** — creating a
+commitment is an assertion, not an outcome, and the Q-006 interim answer says
+authorship never trains. More importantly Panel **never trains on a kept
+commitment**, in either direction: for `owed` the completion is the user's own
+report and for `owedTo` it is a claim about somebody else, and training on either
+would let an unverified assertion reshape the ranker. `FEATURE_COUNT` stays 12,
+`WEIGHTS_VERSION` stays 1, indices 0–7 untouched. The live harness proves this
+observably rather than by inspection: four commitment mutations move no weight at
+all, while the follow-up **task** the same feature created does train.
+
+### Defects found and fixed
+
+- **D42 — the hottest attention read scanned the owner's whole history.** The
+  attention query collected every commitment the user had ever made and
+  filtered to the open, past-dated ones in JavaScript — a collect-then-filter on
+  the single most-read path in the product, and D37/D39's exact shape. Replaced
+  with a `by_owner_open` index range on `(ownerUserId, completed, expectedAt)`.
+  **Found by the feature's own acceptance criteria**, which demanded that the
+  read be an index *range* rather than a bounded collect. The scope block in
+  §11.2 asserted a shape the first implementation did not have.
+- **`getPersonCommitmentCounts` was built and then removed.** A per-person
+  counter query would have been a second read of a set the panel already loads.
+  The UI counts from `listCommitments` instead, and the function was deleted
+  rather than left as an unused public endpoint.
+- **`peopleById` / `resolvePersonName` were made exports.** They already existed
+  inside `people.ts`; `commitments.ts` and `attention.ts` needed the same
+  tombstone-resolving read, and three private copies of one resolution rule is
+  how two of them end up disagreeing.
+
+### Boundaries this feature accepts
+
+- An `owedTo` with no expected date is `open` forever. That is an honest answer,
+  not a missing one — the user recorded that they are waiting, and never said
+  for how long.
+- A commitment whose person is later merged still resolves, through the same
+  tombstone path as a task's `personId` (ADR-023). No people mutation removes a
+  commitment; `deleteCommitment` **detaches** the follow-up tasks and reports how
+  many, so deleting is never a silent cascade.
+- The direction is immutable. `updateCommitment` cannot change it, because
+  flipping `owed` to `owedTo` is not an edit, it is a different claim about
+  someone else's conduct, and it should take a new assertion.
+
+### Verification
+
+30 unit fixtures, plus 7 commitment fixtures added to the ADR-006 hard-kind
+coverage fixture and one commitment per direction added to the ADR-006
+`learned.test.ts` fixture. **395 pass, 0 fail across 14 files.** **132 live
+invariants, 0 skips**, against the real deployment, covering all 15 acceptance
+criteria — including cross-user isolation and foreign-id refusal on all seven
+write paths, the four `commitment.*` activity kinds read back rather than
+assumed, and the budget audit.
+
+`assistant.ts` did **not** change — no transition moved and no weight-mutation
+point was touched (Do-Not-Touch #8). ADR-022's OCC invariant was nevertheless
+**re-armed and re-run rather than inherited**, because a new mutation writing
+user state is exactly the change that invariant exists to survive: run I, 3
+rounds × 8 concurrent mutations, 48 mutations, exactly one state row per user in
+every round, negative control able to see a deliberate duplicate. Cumulative
+1,936 mutations / 45 rounds / 0 duplicates, with the 21 pre-existing
+`nlp.test.ts` fixtures untouched — Do-Not-Touch #7, the token-consumption loop
+was not edited. Fixture removed and exports reverted.
+
+Related ADR: ADR-002, ADR-006, ADR-009, ADR-010, ADR-015, ADR-016, ADR-019,
+ADR-021, ADR-023, ADR-025, ADR-027
+Related defects: D42
+Budget: 4 of 4 new files · 1 of 1 new table · 0 deps · 1 abstraction
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -2901,6 +3053,7 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D40** | The Life Admin `stale` rule fired **only when the document had already expired**. The ordinary case went unreported: renewing early — which is exactly what R-006 tells people to do — ticking the task off, and the expiry never moving all read as ordinary progress. | **RESOLVED (CHANGE-0015)** — the rule is now stated as *the expiry is not later than the moment the user said they renewed*, which covers both a late renewal and a forgotten date. Found by the **live conformance harness, not the unit suite**: every unit fixture for `stale` used an already-expired document, so 37 fixtures were satisfied by a rule that missed what users actually do. The lesson is recorded because it is the third time a fixture set that only exercised the extreme case has hidden a defect (D34, D38, and now this). **A boundary is accepted**: an *early* renewal whose date never moved is still not detectable without storing the previous expiry, which ADR-025 rules out; the surface shows the completed renewal and the expiry side by side instead. |
 | **D41** | `documents:listDocuments`, `documents:getExpiring` and `attention:getAttention` each resolved renewal tasks **once per document** — an N+1 worth up to 200 queries on a reactively-subscribed query. The same defect class as D37 and D39, introduced by the feature that had just audited for it. | **RESOLVED (CHANGE-0015)** — one owner-scoped `tasks.by_owner_document` read per query, grouped by `documentId` in JavaScript. The database has already scoped the set, because Convex omits a row from an index when the indexed field is absent. Caught in self-review, not by a test, which is the third time that has been the only thing standing between this project and a regression it already knew about. |
 | D37 | `listPeople` and `getPerson` read **every task the user has ever created** in order to count open items per person, on a reactively-subscribed query. | **RESOLVED (CHANGE-0013)** — a `tasks.by_owner_person` index. Convex omits a document from an index when the indexed field is absent, so that range holds exactly the tasks that name somebody, which is the entire input these two functions need. The read is now scoped by the index rather than by a filter over everything the user owns. The wider audit found every other `.collect()` in `src/convex` is already index-scoped to one owner or one space, which is the correct shape for a product where each user is their own tenant; a table-wide scan would be the defect, and there is none. |
+| **D42** | **`getAttention` collected every commitment the user had ever made and filtered to the open, past-dated ones in JavaScript.** Not a table-wide scan — owner-scoped, so not the D37/D39 shape — but still a collect-then-filter, and on the *hottest* read in the product: the one that runs on every dashboard load and every attention feed tick. It also grows without limit as the user accumulates settled commitments, which is the one direction a personal history always grows. The §11.2 scope block had already asserted the shape the code should have (`by_owner_open` range, explicit `.take`), so the specification was right and the first implementation was not. | **RESOLVED (CHANGE-0016)** — a `commitments.by_owner_open` index on `(ownerUserId, completed, expectedAt)`, read as a range, so the database excludes settled and undated rows before anything is transferred. The lesson is now the general one rather than an instance of it: **for a derived-state query, assert the read is an index range in the acceptance criteria, not just a bounded collect** — a `.take(200)` cap hides an unbounded query from a reviewer exactly as effectively as no cap at all. The same fix removed the last `by_owner` collect from the attention path. Found by the feature's own criterion AC-3F-314, not by self-review — the first time in this project a criterion caught a performance defect rather than confirming one, which is the outcome the phase review asked for. |
 
 ### Intentionally accepted
 
@@ -2928,7 +3081,7 @@ approval**, not a note.
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
-| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue |
+| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -2942,36 +3095,45 @@ screen · no push notifications · no sixth spec file · no modification of
 ```
 Current phase:        3 — feature work (each feature needs its own spec + ADR +
                       budget before it starts). Features 1 (People), 2
-                      (Multi-object Capture) and 3 (Life Admin) are done.
+                      (Multi-object Capture), 3 (Life Admin) and 4
+                      (Commitments + Waiting On) are done.
 Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED, and so
-                      are phase 3 features 1 (People), 2 (Multi-object Capture)
-                      and 3 (Life Admin). Phase 0A remains BLOCKED on Q-001,
-                      which blocks only TASK-0A-003. Q-006 is open and
-                      non-blocking.
-Last completed:       CHANGE-0015 — Life Admin. A document is metadata only:
-                      label, expiry, lead time. The deadline is the expiry minus
-                      the lead time, because the expiry date is not the date you
-                      must act by. Seven lifecycle states, all derived, no status
-                      column (ADR-025). The renewal is an ordinary task pointing
-                      at the document (ADR-026). One new hard attention kind in
-                      the existing deadlines section.
-Next phase:           3 — Commitments + Waiting On, in the order the roadmap
-                      lists them.
+                      are phase 3 features 1 (People), 2 (Multi-object Capture),
+                      3 (Life Admin) and 4 (Commitments + Waiting On). Phase 0A
+                      remains BLOCKED on Q-001, which blocks only TASK-0A-003.
+                      Q-006 and Q-007 are open and non-blocking.
+Last completed:       CHANGE-0016 — Commitments + Waiting On. A promise the user
+                      made and a wait the user is in are one object with a
+                      direction (`owed` / `owedTo`), not two systems. Four
+                      states, all derived from (expectedAt, completed, now), no
+                      status column (ADR-025). Panel records the user's
+                      assertion and never claims what another person did
+                      (ADR-027), enforced by two copy functions rather than one
+                      template. An inbound wait is deliberately not a task, and
+                      no task is created without the user asking; following up
+                      does not settle the commitment. Outbound overdue is hard
+                      attention in `people`; inbound overdue is hard attention
+                      quieter, in `waitingOn` — the section that had existed since
+                      1.0 with no producer.
+Next phase:           3 — Finance expansion, then agents, in the order the
+                      roadmap lists them. Each needs its own spec section, ADR,
+                      budget and approval (§11.3).
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
-                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified eight
-                      times, most recently as run H after feature 3.
-                      Non-blocking: Q-002, Q-003, Q-004, Q-006.
+                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified nine
+                      times, most recently as run I after feature 4.
+                      Non-blocking: Q-002, Q-003, Q-004, Q-006, Q-007.
                       Phase 2 live handshake — blocked on two environment items,
                       neither of them code: GOOGLE_CLIENT_ID /
                       GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
                       D32, this deployment serving no application HTTP routes.
 
-Failing tests:        None. 358 fixtures pass; 0B, 0C, attention, 1.1, 1.5, 2, 3,
-                      3f and 4 conformance all pass live, plus the ADR-022 OCC
-                      suite re-verified (48 mutations, 0 duplicates, run H). The
-                      phase-2 harness reports one section as SKIP (D32) rather
-                      than as a pass. The phase-3 harnesses have no skips.
+Failing tests:        None. 395 fixtures pass across 14 files; 0B, 0C,
+                      attention, 1.1, 1.5, 2, 3, 3f, 4 and 4f conformance all pass
+                      live, plus the ADR-022 OCC suite re-verified (48 mutations,
+                      0 duplicates, run I). The phase-2 harness reports one
+                      section as SKIP (D32) rather than as a pass. The phase-3
+                      harnesses have no skips.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -3002,12 +3164,14 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          criterion passes except the live
                                          handshake, which is blocked on the
                                          environment (credentials + D32).
-  3      IN PROGRESS   —                 Features 1 (People, CHANGE-0013) and 2
-                                         (Multi-object Capture, CHANGE-0014)
-                                         VERIFIED. Remaining features (Life
-                                         Admin/documents, commitments, Finance
-                                         expansion, agents) each need their own
-                                         spec, ADR and budget (§11.3).
+  3      IN PROGRESS   —                 Features 1 (People, CHANGE-0013), 2
+                                         (Multi-object Capture, CHANGE-0014), 3
+                                         (Life Admin, CHANGE-0015) and 4
+                                         (Commitments + Waiting On,
+                                         CHANGE-0016) VERIFIED. Remaining
+                                         features (Finance expansion, agents)
+                                         each need their own spec, ADR and budget
+                                         (§11.3).
 ```
 
 ### Phase lifecycle status table
@@ -3021,12 +3185,12 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
-| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. Remaining features — commitments, Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
+| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. Remaining features — Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
-(People) and 2 (Multi-object Capture). Everything here is done to the limit of
-what the agent may decide. Nothing is SHIPPED — shipment is the user's decision
-alone (MAIN_AGENT §11.1).**
+(People), 2 (Multi-object Capture), 3 (Life Admin) and 4 (Commitments + Waiting
+On). Everything here is done to the limit of what the agent may decide. Nothing
+is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

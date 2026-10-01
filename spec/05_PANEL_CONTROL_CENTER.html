@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">27</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">15</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">16</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -477,15 +477,15 @@
           exists now. It contains no target architecture.</b> Target state is the pipeline
           opposite; the difference is the gap table.</p>
         <dl class="kv">
-          <dt>Exists</dt><dd>17 Convex tables, 4 routes, 5 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
-          <dt>Works</dt><dd>NL capture end to end — <b>multi-object</b>: one capture, several tasks, splitting on explicit structure only. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions. <b>People</b> — a person is a row with identity keys; a merge rewrites nothing and is exactly reversible.</dd>
+          <dt>Exists</dt><dd>25 Convex tables, 2 HTTP routes, 9 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
+          <dt>Works</dt><dd>NL capture end to end — <b>multi-object</b>: one capture, several tasks, splitting on explicit structure only. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions. <b>People</b> — a person is a row with identity keys; a merge rewrites nothing and is exactly reversible. <b>Commitments</b> — a promise and a wait are one object with a direction; Panel records the user's assertion and never claims what another person did.</dd>
           <dt class="broken">Broken</dt><dd><b>N2 / Q-001</b> — a guest who signs up by email silently loses all data. This is a product decision the agent is not permitted to make. <b>N1</b> was fixed and verified under real concurrency (ADR-022).</dd>
           <dt>Partial</dt><dd>Integrations (9 providers catalogued, none wired). Health (<code>useState</code>, resets on reload). Sharing (schema and grants exist in 0B; no UI yet).</dd>
-          <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001. Phase 3 feature 1 (People) is built and verified; features 2+ are specified but not built.</dd>
+          <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001. Phase 3 features 1 (People), 2 (Multi-object Capture), 3 (Life Admin) and 4 (Commitments + Waiting On) are built and verified; Finance expansion and agents are specified but not built.</dd>
           <dt>Unknown</dt><dd>Every product and business assumption. <code>.env</code> contents are unreadable to the agent. No analytics exists, so no defined metric is measurable.</dd>
         </dl>
         <p class="sub" style="margin-top:10px">Everything marked "works" above is covered by
-          <b>358 unit fixtures</b> plus nine live conformance harnesses run against the real
+          <b>395 unit fixtures</b> plus eleven live conformance harnesses run against the real
           deployment — evidence level 3, not level 1–2. That is a claim with a command
           attached, not an assertion.</p>
       </div>
@@ -494,7 +494,7 @@
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td><b>Closed</b> — 358 fixtures + 9 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 395 fixtures + 11 live harnesses</td><td><b>0A</b></td></tr>
           <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
           <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
           <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
@@ -1037,8 +1037,8 @@
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>358 pass, 0 fail</b> across 13 files.
-        Plus nine live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3, 4)
+      <div class="note"><code>bun test</code> — <b>395 pass, 0 fail</b> across 14 files.
+        Plus eleven live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3, 3f, 4, 4f)
         run against the deployed Convex backend. The phase-3 harnesses report
         <b>0 skips</b>; phase 2's reports one section as SKIP (D32).</div>
     </div>
@@ -1177,10 +1177,10 @@
       risks:"R8" },
 
     { id:"3", status:"IN PROGRESS",
-      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Features 1 (People), 2 (Multi-object Capture) and 3 (Life Admin) built and verified.",
+      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Features 1 (People), 2 (Multi-object Capture), 3 (Life Admin) and 4 (Commitments + Waiting On) built and verified.",
       deps:"2",
-      budget:{files:"per-feature — f1 used 4 of 6, f2 used 2 of 4, f3 used 4 of 4",tables:"per-feature — f1 used 1, f2 used 0, f3 used 1",deps:"0",abstractions:"per-feature — f1 used 1, f2 used 1, f3 used 1"},
-      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","One capture produces several tasks, each parsed independently — PASS, live (CHANGE-0014)","Unseparated capture is byte-identical to the single-task path — PASS, live","A bare \"and\" is never a separator; \"and then\" is — PASS, live","An unusable segment is dropped AND reported, never silently — PASS, live","The server's segmentation is authoritative over the client's — PASS, live","Documents drive expiry → renewal → task — PASS, live (CHANGE-0015)","A document is metadata only: label, expiry, lead time — never the document itself — PASS, live","The deadline is expiresAt minus a lead time, not the expiry — PASS, live","No status column: seven states all derived from (expiresAt, renewal task, now) — PASS, live (ADR-025)","The renewal is an ordinary task with documentId; the document holds no back-reference — PASS, live (ADR-026)","An open renewal produces no document item, so one renewal is never two — PASS, live","Completing the renewal generically leaves it `stale`, and stale is stated — PASS, live (this check found D40)","completeRenewal is atomic: a non-advancing new expiry is refused and changes nothing — PASS, live","deleteDocument detaches tasks rather than deleting them, and reports the count — PASS, live","All four document.* activity kinds are written and read back — PASS, live","The tax checklist, capture and the area catalogue are unchanged — PASS, live","Commitments support inbound and outbound — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
+      budget:{files:"per-feature — f1 used 4 of 6, f2 used 2 of 4, f3 used 4 of 4, f4 used 4 of 4",tables:"per-feature — f1 used 1, f2 used 0, f3 used 1, f4 used 1",deps:"0",abstractions:"per-feature — f1 used 1, f2 used 1, f3 used 1, f4 used 1"},
+      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","One capture produces several tasks, each parsed independently — PASS, live (CHANGE-0014)","Unseparated capture is byte-identical to the single-task path — PASS, live","A bare \"and\" is never a separator; \"and then\" is — PASS, live","An unusable segment is dropped AND reported, never silently — PASS, live","The server's segmentation is authoritative over the client's — PASS, live","Documents drive expiry → renewal → task — PASS, live (CHANGE-0015)","A document is metadata only: label, expiry, lead time — never the document itself — PASS, live","The deadline is expiresAt minus a lead time, not the expiry — PASS, live","No status column: seven states all derived from (expiresAt, renewal task, now) — PASS, live (ADR-025)","The renewal is an ordinary task with documentId; the document holds no back-reference — PASS, live (ADR-026)","An open renewal produces no document item, so one renewal is never two — PASS, live","Completing the renewal generically leaves it `stale`, and stale is stated — PASS, live (this check found D40)","completeRenewal is atomic: a non-advancing new expiry is refused and changes nothing — PASS, live","deleteDocument detaches tasks rather than deleting them, and reports the count — PASS, live","All four document.* activity kinds are written and read back — PASS, live","The tax checklist, capture and the area catalogue are unchanged — PASS, live","A promise and a wait are one object with a direction, not two systems — PASS, live (ADR-027)","Direction is a closed union at the schema validator and cannot be edited afterwards — PASS, live","No status column: four states all derived from (expectedAt, completed, now) — PASS, live (ADR-025)","A past-dated promise is one hard `commitment.overdue` in `people` at 0.85, action Done it — PASS, live","A past-dated wait is one quieter `commitment.waiting` in `waitingOn` at 0.6, action Follow up — PASS, live","`waitingOn` had no producer since phase 1.0; this feature gave it one, without a new tab or slug — PASS, live","No date, a distant date, or a merely `due` commitment produces no item; moving the date removes it — PASS, live","Panel never asserts what another person did — the settled inbound line reads 'You marked this received' — PASS, live (asserted as a property, not a sample)","Panel creates no task unasked; a follow-up appears only on request, and following up does not settle the commitment — PASS, live","Panel never trains on a kept commitment, in either direction — PASS, live (zero weight movement across four mutations)","The follow-up task the feature creates does train through the normal path — PASS, live","Merge rewrites nothing and a merged-away person still resolves; no people mutation removes a commitment — PASS, live (ADR-023)","deleteCommitment detaches follow-up tasks and reports the count — PASS, live","All four `commitment.*` activity kinds are written and read back — PASS, live","Every read is index-scoped and owner-prefixed; a foreign id is refused on all seven write paths — PASS, live (this check found D42)","The tax checklist, capture and the area catalogue are unchanged — PASS, live","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
       nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing","prose-conjunction splitting in capture","fuzzy or embedding matching","creating a person from a capture"],
       risks:"R7, R19" }
   ];
