@@ -678,6 +678,156 @@ Related ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-010, ADR-015, ADR-016,
 
 ---
 
+## CHANGE-0011
+
+```
+Date:       2026-10-01
+Phase:      1.5 — Integration framework
+Type:       feature
+Severity:   MAJOR
+Summary:    Panel now has one provider-agnostic path for connected tools: a
+            registry that answers the nine lifecycle questions for every
+            provider, an adapter contract, a single idempotent writer
+            (`applyBatch`), and a credential store that cannot be read by any
+            client function. No provider is wired up yet — that is phase 2 —
+            so `connected` is still Unknown everywhere.
+Why:        Phase 0B could only record that a user *wanted* a tool. Every
+            provider would otherwise have needed its own mutation, its own
+            idempotency logic and its own token handling, which is exactly the
+            shape ADR-012 and ADR-014 exist to prevent.
+Previous:    `connectTool` wrote a `pending-credentials` row and stopped. There
+            was no token storage, no cursor, no sync writer, and no scope
+            enforcement anywhere.
+New:        `src/lib/integrations/*` (the provider-agnostic contract),
+            `src/convex/credentials.ts` (the credential boundary),
+            `src/convex/integrations.ts` (the one writer), three tables, and a
+            scope allowlist that replaces the denylist approach.
+Files:      New (7 of the 7-file budget, exactly): src/lib/integrations/types.ts,
+             src/lib/integrations/batch.ts, src/lib/integrations/registry.ts,
+             src/lib/integrations/integrations.test.ts,
+             src/convex/credentials.ts, src/convex/integrations.ts,
+             scripts/conformance-1.5.ts.
+             Modified (2, no budget cost): src/convex/schema.ts (three tables,
+             three `expenses` columns, one index), scripts/spec-drift.ts (the
+             credential-containment check).
+Schema:     3 new tables as budgeted: `connectionTokens` (one row per
+             space+provider; the provider's blob never leaves the server),
+             `syncCursors` (opaque continuation token plus `lastSyncedAt`,
+             `runs` and a stable `lastErrorCode`), `oauthStates` (hashed state,
+             hashed PKCE verifier, single-use, 10-minute TTL).
+             `expenses` gained **optional** `externalId`, `provider` and
+             `upstreamChangedAt` plus a `by_space_externalId` index. Optional,
+             so every hand-entered expense stays valid and no migration was
+             required — the same reasoning as the 1.1 counters.
+Deps:       0. No HTTP client, no OAuth library: `fetch` is in Convex's
+             runtime, and a dependency here would have been one more thing to
+             audit for the privilege ADR-014 cares about.
+Abstraction: 1 — `NormalizedBatch` + `applyBatch`, one diff-then-patch writer
+             that every adapter must go through. `diffBatch` is pure and lives
+             in `src/lib`, so the write logic is testable without a database.
+Code:       `credentials.ts` exports no Convex endpoint at all. It is a module
+            of plain async helpers taking a `ctx`, so there is no public
+            function that could return a token even by accident. That is
+            ADR-014's containment expressed as a module boundary rather than a
+            comment, and `scripts/spec-drift.ts` now *checks* it: it greps
+            every public function in `src/convex` for a reference to
+            `connectionTokens` or `oauthStates` and fails if any file other
+            than `credentials.ts` mentions them.
+            `beginConnect` returns a `state` and a `codeChallenge`. The verifier
+            is hashed with SHA-256 before it is stored and is never returned; a
+            unit test greps the source of `beginConnect` and fails if a verifier
+            can reach the response, because that is the one leak that would
+            defeat PKCE entirely.
+            `consumeState` refuses a state that is expired, already used, or
+            bound to a different user. Authorisation codes are replayable by
+            design, so single-use is enforced on our side.
+            `applyBatch` diffs before it writes. A replayed sync creates
+            nothing, patches nothing, deletes nothing and reports every object
+            as `unchanged`. Deletion only happens when the adapter says the page
+            was **complete** — an incomplete page deletes nothing, so a
+            truncated response cannot empty a user's data.
+            A normalised kind with no table behind it *refuses* rather than
+            silently dropping rows: `insertObject` accepts `expense` today and
+            throws a named error for anything else. Dropping would have made a
+            half-wired adapter look like a working one.
+Tests:      bun test -> 234 pass, 0 fail (21 new 1.5 fixtures).
+             bun scripts/conformance-1.5.ts <url> -> 41/41 held live.
+             bun scripts/conformance-0b.ts, conformance-0c.ts,
+             conformance-attention.ts, conformance-1.1.ts -> all still pass
+             live; the OCC suite (ADR-022) was re-run this phase because 1.1
+             changed `recordOutcome`: 3 rounds x 8 concurrent mutations, 48
+             total, zero duplicates, negative control able to see a duplicate.
+             bunx convex dev --once -> Convex functions ready.
+             bunx tsc -b --noEmit -> clean.
+             bun run lint -> 3 errors / 19 warnings, unchanged. Zero new.
+             bun scripts/spec-drift.ts -> 18 pass, 1 warn, 0 fail (a new
+             credential-containment check; the other 17 are unchanged).
+Acceptance criteria, checked one by one:
+  every provider answers all nine lifecycle questions -> PASS. `IntegrationDef`
+    makes the nine questions required fields, so a provider that skips one is a
+    type error rather than an omission discovered in production. Google
+    Calendar, Nylas and Plaid are registered and each is validated at module
+    load.
+  no credential can be returned to a client -> PASS, twice over. `credentials.ts`
+    exports no endpoint, and the live harness asserts `hasCredentials` is a
+    boolean that reports presence, never the value.
+  state is single-use -> PASS live. A replayed callback reaches the same refusal
+    as a forged one.
+  replaying a batch writes nothing -> PASS live. Two syncs of the same page
+    produce two rows and then zero writes on the second pass.
+  a partial page cannot delete -> PASS live. An incomplete page deletes 0; a
+    complete page deletes exactly what upstream no longer has.
+  an unsupported kind refuses -> PASS, by unit fixture.
+  tenant isolation -> PASS live. A second user sees an empty registry and no
+    credentials for any provider.
+Defects found and fixed by this phase (D26, D27, D28, D29):
+  D26  `getUserIdentity().subject` is a composite `"<issuer>|<token>"` string,
+       not a Convex id. Casting it produced a value that passed the type checker
+       and then failed schema validation on `spaces.createdBy` — the sort of
+       defect that only appears under `schemaValidation: true`. The correct
+       call is `getAuthUserId` from `@convex-dev/auth/server`.
+  D27  Scope enforcement was a denylist of mutating words (`write`, `modify`,
+       `delete`, …). Google's `calendar.events` grants write access and contains
+       none of them, so a genuinely mutating scope passed. An allowlist of
+       known-read-only scopes and read-only suffixes (`readonly`, `read_only`,
+       `read`, `read:only`, `.ro`) now fails closed: an unrecognised scope is
+       refused, not assumed safe.
+  D28  Provider-supplied expense categories were cast to the closed
+       `expenseBucket` union. Any value from a non-Panel provider would have
+       been a schema-validation failure at write time — a crash caused by
+       someone else's data. `narrow()` maps to the closed vocabulary with an
+       explicit `Uncategorised` bucket and `medium` confidence instead.
+  D29  The ADR-022 OCC conformance suite's negative control seeded a state row
+       into a user that had none, so it wrote the *first* row and then asserted
+       two. It was reporting a failure against a detector that had nothing to
+       detect. Fixed by creating a real state row before seeding the duplicate;
+       the control now passes and means something. A test that cannot fail is
+       not evidence, and neither is one that cannot pass.
+Risks:      A provider adapter that lies about `scope` cannot be stopped at
+            Panel's boundary; `assertScope` checks what the registry *declares*,
+            not what the provider actually granted. The mitigation is
+            structural: only read-only scopes are ever declared, and the token
+            is never used to write.
+            `syncCursors.lastErrorCode` stores a stable code from a closed
+            vocabulary, never a provider response body, so a provider cannot get
+            its own error text into our database or into a screenshot.
+Deferred:   `Areas.tsx` still calls the 0A-era `connectTool`, which records
+            intent as `pending-credentials` and stops. That is deliberate for
+            1.5 — the real flow needs a redirect and credentials, which arrive in
+            phase 2 — and it is replaced, not extended, there. Until then no UI
+            can report a provider as connected, which is the honest answer.
+Decision:    `hasCredentials` (does a token exist) is reported to the client and
+            the token itself is not. A self-audit was written and then removed:
+            it had begun mutating `connectionTokens` from a public query to
+            keep the flag honest, which is precisely the capability the module
+            boundary exists to prevent. The flag is derived from the row's
+            existence at read time, and nothing about it is worth reopening the
+            boundary for.
+Related ADR: ADR-012, ADR-013, ADR-014, ADR-016, ADR-019, ADR-022
+```
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1404,11 +1554,18 @@ uninterpretable — a counter that cannot see a duplicate proves nothing.
 | B | 24 | 8 | 384 | 0 |
 | C | 32 | 10 | 640 | 0 |
 | D (final shipped script) | 32 | 10 | 640 | 0 |
-| **Total** | — | **33** | **1,744** | **0** |
+| E (re-run after 1.1 changed `recordOutcome`) | 8 | 3 | 48 | 0 |
+| **Total** | — | **36** | **1,792** | **0** |
 
 Run D re-executed the suite after the driver was decoupled from Convex codegen,
 so the artifact left in the repository is the one that was actually observed to
-pass.
+pass. Run E exists because ADR-022's own failure path requires re-verification
+whenever the code it reasons about changes: phase 1.1 altered `recordOutcome` —
+the exact function under test — so the suite was re-armed and re-run rather than
+assumed still valid. Doing so exposed a defect in the harness itself (D29): the
+negative control seeded the *first* state row for a user and then asserted two,
+so it was a control that could never pass for the right reason. Fixed, and the
+control now genuinely proves the detector can see a duplicate.
 
 The negative control reported `count === 2` on every run, establishing that the
 detector is capable of observing a violation. `samples` equalled the batch size
@@ -1492,7 +1649,7 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 
 | ID | Issue | Evidence | Scheduled |
 |---|---|---|---|
-| **N1** | Duplicate `assistantState` row breaks the dashboard permanently. Two concurrent completions both insert; `.unique()` then throws in `getDashboard` and `getModel`. | **RESOLVED and VERIFIED (CHANGE-0006)** — does not occur. The concurrency test fired 1,744 simultaneous mutations across 33 rounds against a live deployment and produced zero duplicate rows; a negative control proved the detector reports a real duplicate. Decision recorded in **ADR-022**; ADR-017 superseded. | `src/convex/assistant.ts` (`recordOutcome`) | Closed |
+| **N1** | Duplicate `assistantState` row breaks the dashboard permanently. Two concurrent completions both insert; `.unique()` then throws in `getDashboard` and `getModel`. | **RESOLVED and VERIFIED (CHANGE-0006, re-verified CHANGE-0011)** — does not occur. The concurrency test has now fired 1,792 simultaneous mutations across 36 rounds against a live deployment with zero duplicate rows; a negative control proved the detector reports a real duplicate. Decision recorded in **ADR-022**; ADR-017 superseded. | `src/convex/assistant.ts` (`recordOutcome`) | Closed |
 | **N2** | Guest accounts have no claim path → silent data loss on account upgrade. | `src/pages/Auth.tsx:83-95` | Phase 0A (ADR-018) |
 | **N5** | `rankTasks` returned `score: -Infinity` for completed tasks. | **RESOLVED (CHANGE-0005)** — `COMPLETED_TASK_SCORE = -1_000_000` is finite, so the value survives serialisation regardless of how Convex handles `-Infinity`. | `src/lib/scorer.ts` | Done |
 | **N7** | No enum validators: `area`, `bucket`, `recurrence`, `provider`, `country`, `status`, `priority` are bare `v.string()` / `v.number()`, with `schemaValidation: false`. | **RESOLVED (CHANGE-0008)** — ten closed unions in the schema and `schemaValidation: true`. `recurrence` is the one deliberate exception: its grammar is parameterised (`every:3:week`) and cannot be a Convex literal union, so it is enforced at its single write path in `src/lib/nlp.ts` and the reason is recorded in the schema. | — | Done |
@@ -1529,6 +1686,10 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D23** | `tanh(NaN)` returned -1, turning a bad score into "strongly dislike" — worse than the NaN that caused it. | **RESOLVED (CHANGE-0010)** — returns 0, meaning "no opinion". Same reasoning as D16. |
 | **D24** | The 1.0 conformance harness measured the Today cap using ranked work that a category rejection had just muted, so it was measuring suppression and reporting it as a cap failure. | **RESOLVED (CHANGE-0010)** — it now floods with overdue work, which cannot be suppressed, making it a pure cap test. A harness bug, fixed rather than re-run. |
 | **D25** | `getAttention` re-read the whole task set to build ranked items, duplicating a scan `getDashboard` already performs. | **RESOLVED (CHANGE-0010)** — the same single read is reused to build both `hardRules` and `learnedCandidates`; no second query was added. |
+| **D26** | `getUserIdentity().subject` is a composite `"<issuer>|<token>"` string, not a Convex id. Casting it type-checked and then failed schema validation on `spaces.createdBy`. | **RESOLVED (CHANGE-0011)** — `getAuthUserId` from `@convex-dev/auth/server` is the correct call. Only possible to find under `schemaValidation: true` (CHANGE-0008), which is the argument for turning validation on before it is comfortable. |
+| **D27** | Scope enforcement was a denylist of mutating words. Google's `calendar.events` grants write access and matches none of them, so a genuinely mutating scope passed the check. | **RESOLVED (CHANGE-0011)** — an allowlist of known read-only scopes plus read-only suffixes, failing closed on anything unrecognised. Confirms ADR-013's "minimum scope" was a statement, not an enforcement, until now. |
+| **D28** | Provider-supplied expense categories were cast to the closed `expenseBucket` union, so any non-Panel value would have been a schema-validation failure at write time — a crash caused by someone else's data. | **RESOLVED (CHANGE-0011)** — `narrow()` maps to the closed vocabulary with an explicit `Uncategorised` bucket and `medium` confidence. |
+| **D29** | The ADR-022 OCC conformance suite's negative control seeded a state row into a user that had none, so it wrote the *first* row and asserted two — reporting failure against a detector with nothing to detect. | **RESOLVED (CHANGE-0011)** — a real state row is created before the duplicate is seeded. The control passes and the PASS is interpretable again. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
 
 ### Intentionally accepted
@@ -1555,8 +1716,7 @@ approval**, not a note.
 | **0C** | 5 | 2 (`modelSnapshots`, `featureFlags`) | 0 | 1 (`takeSnapshot` — the restore-point helper; the deterministic-id upsert slot was never needed, ADR-022) | Renumbering feature indices 0–7 · a migration framework |
 | **1.0** | 11 | 1 (`attentionState`) | 0 | 1 (attention pipeline) | The scorer in the hard-rule path · an impressions table · notification delivery · a block/plugin framework |
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
-| **1.5** | 7 | 3 | 0 | 1 | Per-provider mutations · per-provider UI · mutating scopes |
-| **1.5** | 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
+| **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
 | **3** | per-feature | per-feature | 0 | per-feature | Any of it without its own spec section, ADR, budget and approval |
 
@@ -1570,19 +1730,24 @@ screen · no push notifications · no sixth spec file · no modification of
 ## Current Development State
 
 ```
-Current phase:        1.5 — Integration framework
-Current objective:    Phases 0B, 0C, 1.0 and 1.1 are VERIFIED. Phase 0A
+Current phase:        2 — Google Calendar (inbound)
+Current objective:    Phases 0B, 0C, 1.0, 1.1 and 1.5 are VERIFIED. Phase 0A
                       remains BLOCKED on Q-001, which blocks only TASK-0A-003.
-Last completed:       CHANGE-0010 — learned attention ranking. Two item classes,
-                      four appended features, five-signal feedback, exploration,
-                      and suppression that cannot reach a rule.
-Next phase:           1.5 — no blockers.
+Last completed:       CHANGE-0011 — integration framework. A registry that makes
+                      the nine lifecycle questions mandatory, an adapter
+                      contract, one idempotent diff-then-patch writer, and a
+                      credential store with no public function that can read it.
+Next phase:           2 — the Google Calendar adapter. No code blocker; the live
+                      handshake needs GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
-                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified.
+                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified twice,
+                      most recently after 1.1 changed `recordOutcome`.
                       Non-blocking: Q-002, Q-003, Q-004.
+                      Phase 2 credentials — needed for a *live* handshake only.
+                      Everything else in phase 2 is buildable and is being built.
 
-Failing tests:        None. 213 fixtures pass; 0B, 0C, attention and 1.1
+Failing tests:        None. 234 fixtures pass; 0B, 0C, attention, 1.1 and 1.5
                       conformance all pass live.
 
 Known risks:
@@ -1607,8 +1772,12 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          with evidence; live conformance passes.
   1.1    VERIFIED      —                 CHANGE-0010. All acceptance criteria met
                                          with evidence; live conformance passes.
-  1.5    IN PROGRESS   —                 Depends on 1.1 (satisfied)
-  2      NOT STARTED   credentials       Depends on 1.5; needs GOOGLE_CLIENT_ID/SECRET
+  1.5    VERIFIED      —                 CHANGE-0011. 7 files / 3 tables / 0 deps /
+                                         1 abstraction, exactly at budget.
+  2      IN PROGRESS   credentials       Depends on 1.5 (satisfied). The adapter,
+                                         minimisation and cursor logic are
+                                         buildable now; a live handshake needs
+                                         GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
   3      NOT STARTED   —                 Depends on 2
 ```
 
@@ -1621,11 +1790,11 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **0C** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0008. Clamp, decaying rate, versioning, automatic restore points, byte-exact rollback, reset, pause, feature flags, ten enum validators, `schemaValidation: true`. Verified by 35 new unit fixtures and a live conformance run. |
 | **1.0** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0009. Eight hard-rule sections with caps, decay, de-duplication, grouping, escalation and pins; four feedback mutations enforced server-side; nothing stored but the feedback actually given. 11 files / 1 table / 0 deps / 1 abstraction, exactly at budget. Verified by 41 unit fixtures and a live conformance run. |
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
-| **1.5** | IN PROGRESS | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 1.1 (satisfied) |
-| **2** | NOT STARTED | — | — | user credentials | Depends on 1.5 |
-| **3** | NOT STARTED | — | — | — | Depends on 2 |
+| **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
+| **2** | **IN PROGRESS** | Hardik (standing roadmap approval) | 2026-10-01 | user credentials for the live handshake only | Depends on 1.5 (satisfied) |
+| **3** | NOT STARTED | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 2 |
 
-**Phases 0A, 0B, 0C, 1.0 and 1.1 are done to the limit of what the agent may
+**Phases 0B, 0C, 1.0, 1.1 and 1.5 are done to the limit of what the agent may
 decide. Nothing is SHIPPED — shipment is the user's decision alone
 (MAIN_AGENT §11.1).**
 

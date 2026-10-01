@@ -154,6 +154,51 @@ export interface IntegrationDef {
  */
 export interface Adapter {
   readonly def: IntegrationDef;
+  /**
+   * The authorisation request, built from framework-supplied PKCE values.
+   *
+   * Split this way because the *state* and the *code challenge* are Panel's —
+   * generated, hashed and stored by `credentials.ts` — while the host, the
+   * parameter names, `access_type`, and above all the presence or absence of a
+   * client secret are the provider's. If the framework built the URL, every
+   * provider-specific decision would leak into the framework; if the adapter
+   * built it alone, every provider would have to reinvent PKCE.
+   *
+   * `redirectUri` is returned rather than only embedded, because the token
+   * exchange must send the *identical* string and a mismatch is the single most
+   * common reason a provider rejects a token request.
+   *
+   * Required, so the contract is total. An adapter whose `authFlow` is not
+   * `oauth-pkce` throws `not_configured` here, and nothing calls it.
+   */
+  authorizationRequest(args: { state: string; codeChallenge: string }): {
+    url: string;
+    redirectUri: string;
+  };
+  /**
+   * Exchanges an authorisation code for tokens.
+   *
+   * Called from the server only, and only from an action — a mutation may not
+   * touch the network. `verifier` is the PKCE verifier, read server-side from
+   * `oauthStates`; it is required for an `oauth-pkce` adapter and ignored by a
+   * `link-token` one, where there is no code to protect. It is here in the
+   * signature rather than hidden inside `state` because PKCE requires the
+   * verifier to be *sent to the provider*, and an adapter that had to go and
+   * look it up would be reaching into someone else's table.
+   *
+   * Returning tokens to a server caller is safe; returning them to a browser is
+   * not, and nothing in this framework does that.
+   */
+  exchangeCode(args: {
+    code: string;
+    state: string;
+    redirectTo: string;
+    verifier?: string;
+  }): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+  }>;
   /** Pulls one page. Never mutates Panel state. */
   fetchPage(args: {
     accessToken: string;
@@ -162,9 +207,43 @@ export interface Adapter {
   }): Promise<NormalizedBatch>;
 }
 
-/** Scopes Panel will never accept, whatever an adapter declares. */
-const MUTATING_SCOPE_PATTERN =
-  /(^|[.:/_-])(write|writes|modify|delete|create|update|send|publish|manage|full|all|compose|insert)([.:/_-]|$)/i;
+/**
+ * Read-only scopes are **allowlisted**, not denylisted.
+ *
+ * The first version of this check was a blocklist of dangerous words. It was
+ * wrong within a day: Google's own `calendar.events` grants write access to
+ * events and contains none of the words on the list, so it sailed through. A
+ * denylist fails open on every scope nobody thought of, which for a security
+ * control is the worst possible direction to fail in.
+ *
+ * An allowlist fails closed: a new scope is refused until someone has looked at
+ * it and said it is safe. That is the correct bias for something controlling
+ * access to a user's calendar and mail.
+ */
+const READ_ONLY_SUFFIXES = ["readonly", "read_only", "read", "read:only", ".ro"];
+
+/**
+ * Scopes that are read-only despite not carrying a read marker.
+ *
+ * Each one was checked by hand against its provider documentation. The comment
+ * says why, because "it looked safe" is not a durable reason.
+ */
+const KNOWN_READ_SCOPES: Record<string, string> = {
+  transactions: "Plaid. Read-only transaction data; cannot move money.",
+  "email.read_only": "Nylas. Cannot send or delete.",
+  "calendar.read_only": "Nylas. Cannot create, edit or delete events.",
+  "https://www.googleapis.com/auth/calendar.readonly": "Google. View calendars only.",
+  profile: "OIDC profile. Describes the user; grants no access to their data.",
+  email: "OIDC email. The address only; grants no mailbox access.",
+  openid: "OIDC identifier. No resource access.",
+};
+
+/** True when a scope is one Panel is willing to request. */
+export function isReadOnlyScope(scope: string): boolean {
+  const lower = scope.toLowerCase();
+  if (lower in KNOWN_READ_SCOPES) return true;
+  return READ_ONLY_SUFFIXES.some((suffix) => lower.endsWith(suffix));
+}
 
 /**
  * Refuses a registry entry that asks for anything Panel will not grant.
@@ -177,10 +256,10 @@ export function assertScope(def: IntegrationDef): void {
   if (def.authFlow === "none") return;
   if (def.scopes.length === 0) throw new IntegrationFailure("not_configured", "No scope declared.");
   for (const scope of def.scopes) {
-    if (MUTATING_SCOPE_PATTERN.test(scope)) {
+    if (!isReadOnlyScope(scope)) {
       throw new IntegrationFailure(
         "invalid_scope",
-        "Panel does not ask for write access to a connected tool.",
+        "Panel only requests scopes it has checked to be read-only.",
       );
     }
   }

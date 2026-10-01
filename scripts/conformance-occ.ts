@@ -37,6 +37,20 @@ import { makeFunctionReference } from "convex/server";
  * restore that module, un-comment the `export` on `loadState` and
  * `recordOutcome` in src/convex/assistant.ts, run `bun convex dev --once`, then
  * re-run this script. Revert both changes afterwards. See ADR-022.
+ *
+ * Last verified: 2026-10-01, phase 1.5 — 3 rounds x 8 concurrent mutations,
+ * 48 mutations total, one row per user in every round, negative control able to
+ * see a deliberate duplicate. N1 is therefore VERIFIED and may be closed.
+ *
+ * Two things this script learned the hard way, recorded so the next run does not
+ * re-discover them:
+ *   - `FEATURE_COUNT` below is 12, not the original 8. Phase 1.1 appended
+ *     features 8-11 (AREA_FIT, SOURCE_FIT, PEOPLE_FIT, DUE_BUCKET_FIT), so the
+ *     "row holds a valid weight vector" assertion tracks `FEATURE_COUNT` in
+ *     src/lib/scorer.ts. It is a live coupling, not a temporary edit.
+ *   - the negative control creates a *real* state row before seeding a second
+ *     one. A fresh user has no state at all, so seeding alone writes the first
+ *     row and the control would silently "detect" nothing.
  */
 const occ = {
   conformanceEnsureUser: makeFunctionReference<UserKeyArgs, { userId: string }>(
@@ -57,7 +71,7 @@ const occ = {
   ),
 };
 
-const FEATURE_COUNT = 8;
+const FEATURE_COUNT = 12;
 
 type UserKeyArgs = { userKey: string };
 
@@ -117,6 +131,10 @@ async function main() {
 
   const controlKey = `${stamp}-control`;
   await client.mutation(occ.conformanceEnsureUser, { userKey: controlKey });
+  // A real state row first, so the seeded row is genuinely a *second* one. A
+  // fresh user has no state at all, so seeding alone would produce the first
+  // row and the control would "detect" nothing.
+  await client.mutation(occ.conformanceInit, { userKey: controlKey });
   await client.mutation(occ.conformanceSeedDuplicate, { userKey: controlKey });
   const controlled = (await client.query(occ.conformanceInspect, {
     userKey: controlKey,

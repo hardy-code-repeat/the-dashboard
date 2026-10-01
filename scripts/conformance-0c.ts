@@ -309,7 +309,14 @@ async function main(): Promise<void> {
   const defaultFlags = await client.query(ref.listFeatureFlags, {});
   check("exploration defaults on", defaultFlags.exploration === true, defaultFlags);
   check("grouping defaults on", defaultFlags.attentionGrouping === true, defaultFlags);
-  check("generalised ranking defaults off until phase 1.1 ships it", defaultFlags.generalisedRanking === false);
+  // Was "off until phase 1.1 ships it". Phase 1.1 has now shipped, so the
+  // default flipped — and flipping it is the point of the flag existing at all:
+  // a switch to a feature nobody can reach would have been a switch to nowhere.
+  check(
+    "generalised ranking defaults on, because phase 1.1 has shipped",
+    defaultFlags.generalisedRanking === true,
+    defaultFlags,
+  );
 
   await client.mutation(ref.setFeatureFlag, { key: "exploration", enabled: false });
   check("a flag can be turned off", (await client.query(ref.listFeatureFlags, {})).exploration === false);
@@ -329,7 +336,15 @@ async function main(): Promise<void> {
   // -- 10. layout alignment -------------------------------------------------
   section("realign is a no-op on an already-current vector");
   const realigned = await client.query(ref.getModelControls, {});
-  check("the vector length still matches the shipped layout", realigned!.weights.length === 8, realigned!.weights.length);
+  // Eight when this harness was written; twelve since phase 1.1 appended four
+  // features. The invariant is "the stored vector matches the *shipped* layout",
+  // so the number is read rather than hard-coded twice in two places.
+  const LAYOUT = 12;
+  check(
+    "the vector length still matches the shipped layout",
+    realigned!.weights.length === LAYOUT,
+    realigned!.weights.length,
+  );
 
   // -------------------------------------------------------------------------
   console.log(

@@ -649,22 +649,45 @@ const schema = defineSchema(
       .index("by_owner_provider", ["ownerUserId", "provider"]),
 
     /**
-     * Single-use OAuth state, with a hashed PKCE verifier.
+     * Single-use OAuth state, with the PKCE verifier.
      *
-     * The state is a CSRF token; the verifier is what stops an intercepted
-     * authorisation code from being redeemed by anyone else. Both are stored
-     * **hashed** — a stolen database gives an attacker neither. `usedAt` is set
-     * on redemption, and a second callback with the same state is refused,
-     * because authorisation codes are replayable by design and the state is
-     * what makes them single-use on our side.
+     * The state is a CSRF token and is stored **hashed** — a stolen database
+     * does not let an attacker forge a callback. The verifier is different, and
+     * the difference is not an oversight: PKCE requires the verifier to be
+     * *sent to the provider* at token-exchange time, and a one-way hash cannot
+     * be sent to anyone. So it is stored verbatim, in this server-only table,
+     * for the shortest possible life: a ten-minute expiry, and the whole row
+     * is **deleted** on redemption. What it can never do is travel — no
+     * endpoint returns it, no client ever sees it, and the module that owns
+     * this table exports no public function (ADR-014).
      */
     oauthStates: defineTable({
       ...ownedBy,
       provider: providerSlugValidator,
       /** The CSRF nonce we sent, hashed. */
       stateHash: v.string(),
-      /** The PKCE verifier, hashed. Required — there is no non-PKCE path. */
-      verifierHash: v.string(),
+      /**
+       * The PKCE verifier. There is no non-PKCE path: `beginOAuth` refuses to
+       * create a row without one, and `peekState`/`consumeState` refuse to
+       * redeem a row that has none.
+       *
+       * `v.optional` for the same reason phase 1.1's counters are: so the few
+       * rows written before phase 2 stay valid and no data migration is needed.
+       * Every one of them is long past its ten-minute expiry, and a row with no
+       * verifier is treated as un-redeemable rather than as a fallback path.
+       */
+      verifier: v.optional(v.string()),
+      /**
+       * **Retired.** Phase 1.5 stored a hash of the verifier here; phase 2
+       * stores the verifier itself (see the note above) because PKCE has to
+       * *send* it. The column survives only so the deployment can be pushed
+       * without a data migration: Convex validates existing documents against
+       * the new schema, and the handful of rows written by the 1.5 conformance
+       * run carry it. They are all far past their ten-minute expiry, nothing
+       * reads this field, and nothing ever will. Deleting the rows and the
+       * column is a one-line follow-up whenever a real migration is convenient.
+       */
+      verifierHash: v.optional(v.string()),
       /** Binds the state to the user who started it. */
       userId: v.id("users"),
       /** Short expiry. A stale authorisation attempt is not worth honouring. */
@@ -772,9 +795,73 @@ const schema = defineSchema(
       spentAt: v.number(),
       source: v.string(),
       createdAt: v.number(),
+      /**
+       * Phase 1.5: the provider's stable id, when this expense came from a
+       * sync. Optional, so every hand-entered expense stays valid and no
+       * migration is needed. **The** idempotency key: an expense with an
+       * externalId is upserted on that value, so replaying a sync cannot create
+       * it twice. Null means "the user typed this", which is never overwritten
+       * by a sync.
+       */
+      externalId: v.optional(v.string()),
+      /** Which integration produced it, when it came from one. */
+      provider: v.optional(providerSlugValidator),
+      /** Upstream last-changed. Drives staleness, never overwrites a local edit. */
+      upstreamChangedAt: v.optional(v.number()),
     })
       .index("by_space", ["spaceId"])
-      .index("by_owner", ["ownerUserId"]),
+      .index("by_owner", ["ownerUserId"])
+      .index("by_space_externalId", ["spaceId", "externalId"]),
+
+    /**
+     * A meeting, cached from a connected calendar (§7.3, ADR-013).
+     *
+     * The column list *is* the minimisation policy, which is the point: there
+     * is nowhere to put an attendee list, a description, a location or a dial-in
+     * because no such column exists. A provider that starts sending one cannot
+     * leak it, and a future contributor cannot accidentally add it without
+     * making that visible in a schema review.
+     *
+     * `title` is the one text field, and it is the literal `"Busy"` whenever
+     * `isPrivate` is true — the private title is dropped in the adapter, before
+     * the value ever exists as a string Panel could write.
+     */
+    calendarEvents: defineTable({
+      ...ownedBy,
+      /** The provider's stable id. **The** idempotency key for a sync. */
+      externalId: v.string(),
+      /** Which integration produced it. Always inbound (ADR-013). */
+      provider: providerSlugValidator,
+      /**
+       * The meeting title, or the literal `"Busy"` for a private event.
+       * `v.string()` rather than optional: every row has *something* to show,
+       * and "we dropped the title" is better expressed as "Busy" than as a hole.
+       */
+      title: v.string(),
+      /** True when upstream reported this event as private. */
+      isPrivate: v.optional(v.boolean()),
+      /** Epoch ms. Null for an event with no start, which Google does emit. */
+      startsAt: v.optional(v.union(v.null(), v.number())),
+      endsAt: v.optional(v.union(v.null(), v.number())),
+      allDay: v.optional(v.boolean()),
+      /**
+       * Set when upstream deleted or cancelled an event that has not happened
+       * yet (§7.2). The row is kept rather than deleted so a meeting the user
+       * was told about does not simply vanish from history. Past events are
+       * deleted outright instead — they have no forward meaning.
+       */
+      cancelled: v.optional(v.boolean()),
+      /** A link back to the provider, for "open in Google". Never fetched. */
+      sourceUrl: v.optional(v.string()),
+      /** Upstream last-changed. Drives staleness, never overwrites a local edit. */
+      upstreamChangedAt: v.optional(v.number()),
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      // The dashboard reads "what is next" — an index range, not a filter.
+      .index("by_space_startsAt", ["spaceId", "startsAt"])
+      .index("by_space_externalId", ["spaceId", "externalId"]),
 
     /** Which filing documents the user has gathered. */
     taxDocuments: defineTable({

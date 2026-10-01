@@ -519,6 +519,66 @@ function checkProtectedAreas(fundamentals: string) {
 // the decision survives. That is only useful if the banner stays honest: the
 // superseded entry must keep existing, its named successor must exist, and it
 // must not simultaneously claim to be active.
+/**
+ * ADR-014: credentials are server-only by construction.
+ *
+ * The guarantee is "no public Convex function outside `credentials.ts` names
+ * the token tables". A comment saying so is not a guarantee, so this greps the
+ * code — with comments stripped first, because several modules legitimately
+ * *explain* where credentials live without touching them, and flagging the
+ * documentation would push someone to delete the explanation rather than fix
+ * the code.
+ */
+function checkCredentialContainment() {
+  const dir = join(ROOT, "src", "convex");
+  if (!existsSync(dir)) {
+    record("credential containment", "fail", "src/convex/ is missing");
+    return;
+  }
+
+  const FORBIDDEN = ["connectionTokens", "oauthStates"];
+  const offenders: string[] = [];
+  let scanned = 0;
+
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".ts")) continue;
+    if (name.startsWith("_generated")) continue;
+    // The schema *defines* the tables; credentials.ts is the only module
+    // allowed to read or write them. Everything else is a consumer.
+    if (name === "credentials.ts" || name === "schema.ts") continue;
+    scanned++;
+
+    const code = stripComments(readFileSync(join(dir, name), "utf8"));
+    if (FORBIDDEN.some((t) => code.includes(t))) offenders.push(name);
+  }
+
+  if (offenders.length > 0) {
+    record(
+      "credential containment",
+      "fail",
+      `${offenders.length} module(s) outside credentials.ts name a credential table: ${offenders.join(", ")}`,
+    );
+    return;
+  }
+
+  // The module itself must still publish nothing a client can call.
+  const credentials = stripComments(readFileSync(join(dir, "credentials.ts"), "utf8"));
+  if (/export const \w+ = (query|mutation|action|internalQuery|internalMutation|internalAction)\(/.test(credentials)) {
+    record("credential containment", "fail", "credentials.ts exports a Convex endpoint");
+    return;
+  }
+
+  record(
+    "credential containment",
+    "pass",
+    `${scanned} modules scanned; credentials.ts exports no endpoint (ADR-014)`,
+  );
+}
+
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+}
+
 function checkSupersededAdrs(changelog: string) {
   // The terminator is an explicit end-of-input, not `$`: this regex carries
   // the `m` flag for the `^` anchors, which would also make `$` match every
@@ -601,6 +661,7 @@ function main() {
   checkHtmlSync(specs["05_PANEL_CONTROL_CENTER.html"], adrIds, changeIds.length);
   checkSupersededAdrs(changelog);
   checkPaths(specs);
+  checkCredentialContainment();
 
   report();
 
