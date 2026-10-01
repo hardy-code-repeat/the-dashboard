@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Panel — Control Centre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#f4f2ea; --ink:#141414; --card:#fff; --yellow:#e8f24e; --red:#e2483c;
+    --blue:#3a6fe0; --muted:#5c5c5c; --line:#141414; --wash:#e8e6dc;
+    --font-display:"Archivo Black",system-ui,sans-serif;
+    --font-mono:"Space Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font-mono),monospace;
+       font-size:13px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  a{color:inherit}
+  h1,h2,h3{font-family:var(--font-display);text-transform:uppercase;letter-spacing:-.02em;line-height:1.1}
+  h1{font-size:clamp(28px,5vw,52px)}
+  h2{font-size:22px}
+  h3{font-size:14px}
+
+  /* ---- neobrutalist primitives (mirrors src/index.css) ---- */
+  .brutal{border:2px solid var(--line);box-shadow:4px 4px 0 0 var(--ink)}
+  .brutal-sm{border:2px solid var(--line);box-shadow:2px 2px 0 0 var(--ink)}
+  .flat{border:2px solid var(--line)}
+  .tag{display:inline-flex;align-items:center;gap:.35rem;border:2px solid var(--line);
+       padding:1px 7px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+  .t-y{background:var(--yellow)} .t-r{background:var(--red);color:#fff}
+  .t-b{background:var(--blue);color:#fff} .t-w{background:var(--wash)}
+  .t-ink{background:var(--ink);color:#fff}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+  .strip{height:10px;display:flex}
+  .strip i{flex:1} .strip i:nth-child(1){background:var(--yellow)}
+  .strip i:nth-child(2){background:var(--red)} .strip i:nth-child(3){background:var(--blue)}
+
+  /* ---- header ---- */
+  header{border-bottom:2px solid var(--line);background:var(--card);padding:26px 0 22px}
+  .hdr{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-end;justify-content:space-between}
+  .brand{display:flex;gap:14px;align-items:center}
+  .mark{width:52px;height:52px;display:grid;place-items:center;background:var(--yellow);
+        border:2px solid var(--line);box-shadow:4px 4px 0 0 var(--ink);font-size:24px}
+  .sub{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .stamps{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* ---- provenance banner ---- */
+  .prov{border:2px dashed var(--line);background:var(--yellow);padding:12px 14px;margin:22px 0;
+       font-size:11px;text-transform:uppercase;letter-spacing:.02em}
+  .prov b{font-family:var(--font-display)}
+
+  /* ---- nav ---- */
+  nav{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:2px solid var(--line);
+      padding:9px 0;overflow-x:auto}
+  nav .wrap{display:flex;gap:7px;white-space:nowrap}
+  nav button{font:inherit;font-size:10px;font-weight:700;text-transform:uppercase;cursor:pointer;
+            background:var(--card);border:2px solid var(--line);padding:6px 11px}
+  nav button:hover{background:var(--yellow)}
+  nav button[aria-current="true"]{background:var(--ink);color:#fff}
+
+  /* ---- sections ---- */
+  section{padding:38px 0;border-bottom:2px solid var(--line)}
+  .sechead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .sechead .src{font-size:9px;text-transform:uppercase;color:var(--muted);letter-spacing:.06em}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .g3{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .card{background:var(--card);border:2px solid var(--line);box-shadow:4px 4px 0 0 var(--ink);padding:16px}
+  .card h3{margin-bottom:8px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:5px 12px;font-size:11px}
+  .kv dt{text-transform:uppercase;color:var(--muted);font-weight:700}
+  .kv dd{word-break:break-word}
+  ul.tick{list-style:none;font-size:12px}
+  ul.tick li{padding-left:16px;position:relative;margin-bottom:5px}
+  ul.tick li:before{content:"■";position:absolute;left:0;font-size:8px;top:4px}
+  ul.tick.no li:before{content:"□"}
+  ol.num{padding-left:18px;font-size:12px} ol.num li{margin-bottom:5px}
+
+  /* ---- arch map ---- */
+  .flow{display:flex;flex-direction:column;gap:0;align-items:center}
+  .node{width:100%;max-width:460px;background:var(--card);border:2px solid var(--line);
+        box-shadow:4px 4px 0 0 var(--ink);padding:12px 14px}
+  .node b{font-family:var(--display)}
+  .node span{display:block;font-size:10px;color:var(--muted);text-transform:uppercase;margin-top:3px}
+  .arrow{font-size:16px;padding:5px 0;line-height:1}
+  .node.a{background:var(--wash)} .node.b{background:var(--yellow)}
+  .node.c{background:var(--blue);color:#fff} .node.d{background:var(--red);color:#fff}
+  .node.c span,.node.d span{color:rgba(255,255,255,.82)}
+
+  /* ---- roadmap ---- */
+  .timeline{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .ph{background:var(--card);border:2px solid var(--line);padding:12px;cursor:pointer;text-align:left;
+      font:inherit;display:flex;flex-direction:column;gap:7px;min-height:132px}
+  .ph:hover{box-shadow:4px 4px 0 0 var(--ink)}
+  .ph[aria-pressed="true"]{box-shadow:4px 4px 0 0 var(--ink);background:var(--yellow)}
+  .ph .id{font-family:var(--display);font-size:22px;line-height:1}
+  .ph .obj{font-size:10px;text-transform:uppercase;line-height:1.35;flex:1}
+
+  /* ---- detail panel ---- */
+  .detail{background:var(--card);border:2px solid var(--line);box-shadow:6px 6px 0 0 var(--ink);
+          padding:20px;margin-top:18px}
+  .detail h3{margin-bottom:4px}
+
+  /* ---- filters ---- */
+  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
+  .chips button{font:inherit;font-size:9px;font-weight:700;text-transform:uppercase;cursor:pointer;
+                background:var(--card);border:2px solid var(--line);padding:5px 10px}
+  .chips button[aria-pressed="true"]{background:var(--ink);color:#fff}
+
+  .adr{background:var(--card);border:2px solid var(--line);padding:14px;margin-bottom:12px}
+  .adr .top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .adr h4{font-family:var(--display);font-size:12px;text-transform:uppercase}
+  .adr p{font-size:11.5px;margin-bottom:6px}
+  .adr p:last-child{margin-bottom:0}
+  .adr .lab{font-weight:700;text-transform:uppercase;font-size:9px;color:var(--muted);letter-spacing:.06em}
+  .hide{display:none}
+
+  /* ---- health ---- */
+  .health{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+  .stat{border:2px solid var(--line);padding:14px}
+  .stat .lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+  .stat .val{font-family:var(--display);font-size:28px;margin:6px 0 3px;word-break:break-word}
+  .stat .note{font-size:10px;line-height:1.4}
+  .ok{background:var(--yellow)} .warn{background:var(--wash)} .bad{background:var(--red);color:#fff}
+  .unk{background:var(--card)}
+
+  table{width:100%;border-collapse:collapse;font-size:11px}
+  th,td{text-align:left;padding:7px 9px;border:2px solid var(--line);vertical-align:top}
+  th{background:var(--ink);color:#fff;font-size:9px;text-transform:uppercase;letter-spacing:.06em}
+  tbody tr:nth-child(even){background:var(--wash)}
+  code{background:var(--wash);padding:1px 5px;font-size:11px}
+  .unknown{font-style:italic;color:var(--muted)}
+  footer{padding:30px 0 50px;font-size:10px;text-transform:uppercase;color:var(--muted)}
+  @media (max-width:640px){
+    .brutal,.brutal-sm,.detail{box-shadow:3px 3px 0 0 var(--ink)}
+  }
+  @media print{nav,.chips{display:none}}
+</style>
+</head>
+<body>
+
+<div class="strip"><i></i><i></i><i></i></div>
+
+<header>
+  <div class="wrap">
+    <div class="hdr">
+      <div class="brand">
+        <div class="mark">P</div>
+        <div>
+          <p class="sub">Panel · Development Control System</p>
+          <h1>Control Centre</h1>
+        </div>
+      </div>
+      <div class="stamps">
+        <span class="tag t-ink">Spec version 1.0</span>
+        <span class="tag t-b"><span id="spec-adr-count">19</span> ADRs</span>
+        <span class="tag t-y"><span id="spec-change-count">3</span> changes</span>
+        <span class="tag t-w">Read-only view</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="prov">
+    <b>This page is a view, not a source of truth.</b>
+    The four Markdown files in <code>/spec</code> are authoritative. If anything
+    here disagrees with them, they are right and this page is stale — regenerate
+    it. Run <code>bun scripts/spec-drift.ts</code> to check. Last synced:
+    <b>2026-10-01</b>.
+  </div>
+</div>
+
+<nav>
+  <div class="wrap">
+    <button data-goto="overview">Overview</button>
+    <button data-goto="product">Product</button>
+    <button data-goto="architecture">Architecture</button>
+    <button data-goto="roadmap">Roadmap</button>
+    <button data-goto="phase">Current Phase</button>
+    <button data-goto="decisions">Decisions</button>
+    <button data-goto="changelog">Changelog</button>
+    <button data-goto="risks">Risks</button>
+    <button data-goto="system">System</button>
+    <button data-goto="runbook">Runbook</button>
+    <button data-goto="health">Spec Health</button>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<!-- ============ OVERVIEW ============ -->
+<section id="overview">
+  <div class="sechead"><h2>Overview</h2><span class="src">Source: 02_CHANGELOG.md → Current Development State</span></div>
+  <div class="grid g4">
+    <div class="card">
+      <h3>Current Phase</h3>
+      <p class="sub" style="margin-bottom:6px">Pre-Phase</p>
+      <p><strong>Spec system establishment</strong></p>
+      <p class="sub" style="margin-top:8px">Next: <strong>0A</strong> — awaiting approval. Not started.</p>
+    </div>
+    <div class="card">
+      <h3>Objective</h3>
+      <p>Establish the development control system so architecture decisions survive
+         beyond a single conversation.</p>
+    </div>
+    <div class="card">
+      <h3>Blockers</h3>
+      <p><strong>None technical.</strong></p>
+      <p style="margin-top:6px">One decision pending: approval to begin Phase 0A.</p>
+    </div>
+    <div class="card">
+      <h3>Tests</h3>
+      <p class="unknown">Unknown — no test suite exists.</p>
+      <p class="sub" style="margin-top:6px">Tracked as debt D10/D11. Highest-priority Phase 0A item.</p>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <h3>Progress</h3>
+      <ul class="tick">
+        <li><b>Phases 0A → 3</b> — all specified, none started.</li>
+        <li><b>Architecture review</b> — complete; decisions recorded as 19 ADRs.</li>
+        <li><b>Spec system</b> — complete (CHANGE-0001).</li>
+        <li><b>Baseline defect record</b> — complete (CHANGE-0002).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Next Action</h3>
+      <p><strong>Approve Phase 0A.</strong></p>
+      <p style="margin-top:8px">Objective: establish regression fixtures, then fix two
+         production-breaking defects (N1 duplicate state row, N2 silent guest data
+         loss), then make recurring tasks work and task creation atomic.</p>
+      <p class="sub" style="margin-top:10px">Budget: 4 files · 0 tables · 1 dep</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PRODUCT ============ -->
+<section id="product">
+  <div class="sechead"><h2>Product</h2><span class="src">Source: 03_PRODUCT_CONTEXT.md</span></div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h3>Thesis</h3>
+    <p style="font-size:13px;line-height:1.6">Most dashboards die because they are
+      <b>organisational tools pretending to be operational tools</b>. Panel wins by
+      never asking the user to maintain a second system — it derives its value from
+      data their existing tools already generate, and spends that value on one thing
+      only: telling the person what to do next.</p>
+  </div>
+
+  <div class="grid g3">
+    <div class="card"><h3>What it is</h3>
+      <ul class="tick">
+        <li>A personal operating <b>layer</b></li>
+        <li>Answers "what needs attention right now?"</li>
+        <li>Sits above Gmail, Calendar, banking, health, Notion</li>
+        <li>Learns from your own completions, and says why</li>
+      </ul>
+    </div>
+    <div class="card"><h3>What it is not</h3>
+      <ul class="tick no">
+        <li>Not another Notion / Asana / Jira</li>
+        <li>Not a banking app or fitness tracker</li>
+        <li>Not a CRM, chatbot or Zapier</li>
+        <li>Not a blank-canvas dashboard</li>
+        <li>Not an AI wrapper</li>
+      </ul>
+    </div>
+    <div class="card"><h3>Segments</h3>
+      <ul class="tick">
+        <li><b>Overloaded individual</b> — primary</li>
+        <li><b>Self-employed / freelancer</b> — primary</li>
+        <li><b>Family co-ordinator</b> — secondary</li>
+        <li><b>Privacy-sensitive pro</b> — secondary</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Competitive landscape — what to learn, what not to copy</h3>
+    <table>
+      <thead><tr><th>Category</th><th>Panel should learn</th><th>Panel must NOT copy</th></tr></thead>
+      <tbody>
+        <tr><td><b>Task managers</b><br><span class="sub">Todoist, Things, TickTick</span></td>
+            <td>Capture quality is the front door; their parsing is the benchmark.</td>
+            <td>Not a place to <i>plan</i>. Panel wants to know what <i>is</i>.</td></tr>
+        <tr><td><b>Dashboards</b><br><span class="sub">Glance, Heimdall, Homer</span></td>
+            <td>Glance has <b>no task management</b> — because tasks need entry. Integrations must <i>feed</i> tasks.</td>
+            <td>The configurable widget grid. That is the blank-canvas dashboard.</td></tr>
+        <tr><td><b>Finance</b><br><span class="sub">YNAB, Monarch, Lunch Money</span></td>
+            <td>Bank connection UX and transaction hygiene.</td>
+            <td>A double-entry ledger. Also: confident financial advice.</td></tr>
+        <tr><td><b>Family</b><br><span class="sub">FamFam, shared sheets</span></td>
+            <td>Sharing must be simple and legible. Nobody wants to manage ACLs.</td>
+            <td>A purpose-built family app bolted alongside a personal one.</td></tr>
+        <tr><td><b>Personal CRM</b><br><span class="sub">Dex, Monica, Clay</span></td>
+            <td>What a useful person profile contains: dates, cadence, what is owed each way.</td>
+            <td>Salesforce. Panel is not for tracking strangers.</td></tr>
+        <tr><td><b>Automation</b><br><span class="sub">Zapier, Make, IFTTT</span></td>
+            <td>Reliable normalisation and idempotent re-runs (ADR-012).</td>
+            <td>A trigger builder, workflow canvas, or plugin marketplace.</td></tr>
+        <tr><td><b>Health</b><br><span class="sub">Whoop, Oura, Fitbit</span></td>
+            <td>Passive-by-default beats active-by-default. This is the model.</td>
+            <td>Building sensors. Consume health context; do not manufacture it.</td></tr>
+        <tr><td><b>Knowledge</b><br><span class="sub">Notion, Obsidian</span></td>
+            <td>Nothing about structure. Only what makes a database feel fast.</td>
+            <td>Any of it. MAIN_AGENT names Notion first.</td></tr>
+        <tr><td><b>Calendar AI</b><br><span class="sub">Reclaim, Clockwise</span></td>
+            <td>"Defend time for tasks" is a strong candidate attention rule.</td>
+            <td>Auto-writing to the user's calendar. That is a <i>confirm</i> action.</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="margin-top:10px">Strategic read: every category knows one
+      domain well and is blind to the relationships between domains. The value is in
+      the relationships — and relationships only exist where several kinds are held
+      at once.</p>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <h3>Research honesty</h3>
+      <p style="font-size:11.5px"><b>There is no primary research with Panel users.</b>
+        No interviews, no usability testing, no cohort or conversion data. Every
+        product belief is inherited from adjacent categories or is our own reasoning.</p>
+      <p style="font-size:11.5px;margin-top:8px">Phase 3 should not begin before
+        real user contact, because by then the cost of being wrong compounds.</p>
+    </div>
+    <div class="card">
+      <h3>Metrics reality</h3>
+      <p style="font-size:11.5px"><b>No analytics, no telemetry, no event pipeline.</b>
+        Most defined metrics are therefore not currently measurable.</p>
+      <p style="font-size:11.5px;margin-top:8px">North star: <b>Weekly Useful
+        Attention</b> — attention items per week the user actually acts on.</p>
+      <p style="font-size:11.5px;margin-top:8px">Guard metric: <b>Trust &amp; privacy
+        incidents</b> — any non-zero value is a stop-the-line event.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ARCHITECTURE ============ -->
+<section id="architecture">
+  <div class="sechead"><h2>Architecture</h2><span class="src">Source: 04_SYSTEM_FUNDAMENTALS.md §1, §7</span></div>
+
+  <div class="grid g2">
+    <div>
+      <h3 style="margin-bottom:14px">Target pipeline</h3>
+      <div class="flow">
+        <div class="node a"><b>External Tools</b><span>Google · Banks · Work · Health</span></div>
+        <div class="arrow">▼</div>
+        <div class="node"><b>Integrations</b><span>registry + adapter · one normalised path</span></div>
+        <div class="arrow">▼</div>
+        <div class="node"><b>Normalised Data</b><span>NormalizedBatch — objects + links + cursor</span></div>
+        <div class="arrow">▼</div>
+        <div class="node b"><b>Panel Objects</b><span>typed entity tables, one per kind</span></div>
+        <div class="arrow">▼</div>
+        <div class="node b"><b>Relationships</b><span>links — closed LinkRel vocabulary</span></div>
+        <div class="arrow">▼</div>
+        <div class="node"><b>Activity</b><span>append-only · controlled taxonomy</span></div>
+        <div class="arrow">▼</div>
+        <div class="node c"><b>Attention</b><span>computed, never stored</span></div>
+        <div class="arrow">▼</div>
+        <div class="node d"><b>Actions</b><span>automatic · proposed · confirm</span></div>
+      </div>
+      <p class="sub" style="margin-top:14px">Phases 0A–3 add the <b>arrows</b>, not the
+        boxes. No new object kinds are added before Phase 3.</p>
+    </div>
+
+    <div>
+      <h3 style="margin-bottom:14px">Current → target gaps</h3>
+      <table>
+        <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
+        <tbody>
+          <tr><td>Testing</td><td>No suite exists at all</td><td><b>0A</b></td></tr>
+          <tr><td>Model state</td><td>Duplicate row breaks the app (N1)</td><td><b>0A</b></td></tr>
+          <tr><td>Accounts</td><td>Guest data loss path (N2)</td><td><b>0A</b></td></tr>
+          <tr><td>Recurrence</td><td>Parsed, never respawns</td><td><b>0A</b></td></tr>
+          <tr><td>Task creation</td><td>Two calls; area can orphan</td><td><b>0A</b></td></tr>
+          <tr><td>Ownership</td><td>userId only; no spaces</td><td><b>0B</b></td></tr>
+          <tr><td>Relationships</td><td>None</td><td><b>0B</b></td></tr>
+          <tr><td>History</td><td>Only <code>completedAt</code></td><td><b>0B</b></td></tr>
+          <tr><td>Queries</td><td>Collect-all + JS filter ×6</td><td><b>0B</b></td></tr>
+          <tr><td>Validation</td><td>Off + bare strings</td><td><b>0C</b></td></tr>
+          <tr><td>Model safety</td><td>No clamp/version/rollback</td><td><b>0C</b></td></tr>
+          <tr><td>Attention</td><td>A 3-line brief</td><td><b>1.0</b></td></tr>
+          <tr><td>Attention learning</td><td>Task completion only</td><td><b>1.1</b></td></tr>
+          <tr><td>Integrations</td><td>Stubbed; records intent</td><td><b>1.5</b></td></tr>
+          <tr><td>Calendar</td><td>Nothing</td><td><b>2</b></td></tr>
+          <tr><td>People / docs / commitments</td><td>Faked as task titles</td><td><b>3</b></td></tr>
+          <tr><td>Sharing UI</td><td>Schema in 0B; UI deferred</td><td>P2</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ROADMAP ============ -->
+<section id="roadmap">
+  <div class="sechead"><h2>Roadmap</h2><span class="src">Source: 02_CHANGELOG.md → Phase complexity budgets</span></div>
+  <p class="sub" style="margin-bottom:14px">Select a phase to see its budget.
+    Status ladder: IDEA → RESEARCHED → SPECIFIED → APPROVED → IMPLEMENTING →
+    IMPLEMENTED → VERIFIED → SHIPPED.</p>
+
+  <div class="timeline" id="timeline"></div>
+
+  <div class="detail" id="phaseDetail" aria-live="polite">
+    <h3>Select a phase</h3>
+    <p>Click any phase above.</p>
+  </div>
+</section>
+
+<!-- ============ CURRENT PHASE ============ -->
+<section id="phase">
+  <div class="sechead"><h2>Current Phase</h2><span class="src">Source: 02_CHANGELOG.md, 04_SYSTEM_FUNDAMENTALS.md</span></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3>Pre-Phase — spec system establishment</h3>
+      <p style="margin:8px 0"><b>Status: ACTIVE.</b> CHANGE-0001 complete.</p>
+      <dl class="kv">
+        <dt>Goal</dt><dd>Make architecture decisions durable rather than conversational.</dd>
+        <dt>Deliverables</dt><dd>Five spec artifacts, a drift detector, a read-only control centre.</dd>
+        <dt>Schema</dt><dd>None. No application code or dependency changed.</dd>
+        <dt>Validation</dt><dd><code>bun scripts/spec-drift.ts</code>, <code>bunx tsc -b --noEmit</code>, <code>bun run lint</code></dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h3>Next — Phase 0A (not started)</h3>
+      <dl class="kv">
+        <dt>Goal</dt><dd>Make the current promises true; add the missing safety net.</dd>
+        <dt>Task 1</dt><dd>Regression fixtures for nlp (20), tax (34), scorer.</dd>
+        <dt>Task 2</dt><dd>Fix N1 — duplicate <code>assistantState</code> row.</dd>
+        <dt>Task 3</dt><dd>Fix N2 — guest claim path, or remove guest sign-in.</dd>
+        <dt>Task 4</dt><dd>Verify N5 (<code>-Infinity</code> serialisation).</dd>
+        <dt>Task 5</dt><dd>Wire <code>nextOccurrence</code> into completion.</dd>
+        <dt>Task 6</dt><dd>Atomic <code>addTask({input, area})</code>.</dd>
+        <dt>Task 7</dt><dd>Resolve N3, N6, N8.</dd>
+        <dt>Files</dt><dd>4 new maximum. 0 tables.</dd>
+        <dt>Tests</dt><dd>Every task above carries a regression test.</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card">
+      <h3>Definition of done — 0A</h3>
+      <ul class="tick">
+        <li>20 NLP + 34 tax fixtures passing</li>
+        <li>No <code>Infinity</code>/<code>NaN</code> in any dashboard payload</li>
+        <li>Two concurrent completions leave exactly one state row</li>
+        <li>Guest can claim data, or anonymous sign-in is gone</li>
+        <li>Completing a recurring task yields the next occurrence — once, not twice</li>
+        <li><code>addTask</code> is one call; no orphaned tasks</li>
+        <li>Feature names derive from one definition</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>0A risks &amp; must-nots</h3>
+      <ul class="tick no">
+        <li>Must NOT introduce new object kinds</li>
+        <li>Must NOT change behaviour beyond the listed defects</li>
+        <li>Must NOT change the schema</li>
+        <li>Must NOT touch <code>vite.config.ts</code> or auth config</li>
+      </ul>
+      <p class="sub" style="margin-top:10px">Exceeding the budget is a stop
+        condition requiring approval (ADR-016).</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DECISIONS ============ -->
+<section id="decisions">
+  <div class="sechead"><h2>Decisions</h2><span class="src">Source: 02_CHANGELOG.md → Architecture Decisions</span></div>
+  <div class="chips" id="adrFilters"></div>
+  <div id="adrList"></div>
+
+  <h3 style="margin:26px 0 12px">Rejected — do not re-raise without new evidence</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Decision</th><th>Why rejected</th></tr></thead>
+    <tbody>
+      <tr><td><b>RJD-001</b></td><td>Generic <code>objects</code> table / EAV</td><td>Destroys type safety and indexing.</td></tr>
+      <tr><td><b>RJD-002</b></td><td>Generic agent framework</td><td>Becomes a Zapier clone.</td></tr>
+      <tr><td><b>RJD-003</b></td><td>Push / SMS notifications in v1</td><td>Fastest route to being a spam app.</td></tr>
+      <tr><td><b>RJD-004</b></td><td>Auto-merging people by name</td><td>"Raj" ≠ "Raj". Merge is confirmed and reversible.</td></tr>
+      <tr><td><b>RJD-005</b></td><td>Settings / configuration screen</td><td>Dashboard is computed, not configured.</td></tr>
+      <tr><td><b>RJD-006</b></td><td>Learned negative <i>category</i> feature</td><td>Would let the model discover "suppress tax".</td></tr>
+      <tr><td><b>RJD-007</b></td><td>Deleting 4 of 5 tax countries</td><td>Removes working functionality. Modularise + depth badge instead.</td></tr>
+      <tr><td><b>RJD-008</b></td><td><code>objectSpaces</code> join table</td><td>Two sources of truth for where an object lives.</td></tr>
+      <tr><td><b>RJD-009</b></td><td><code>attentionImpressions</code> table</td><td>Answers a question whose answer is "no".</td></tr>
+      <tr><td><b>RJD-010</b></td><td>Dashboard block/plugin framework</td><td>One 757-line file would become an abstraction hierarchy.</td></tr>
+      <tr><td><b>RJD-011</b></td><td>Training on non-action as label 0</td><td>Self-reinforcing collapse.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ CHANGELOG ============ -->
+<section id="changelog">
+  <div class="sechead"><h2>Changelog</h2><span class="src">Source: 02_CHANGELOG.md</span></div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="top" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <span class="tag t-y">CHANGE-0001</span><span class="tag t-b">architecture</span>
+      <span class="sub">2026-10-01</span>
+    </div>
+    <h3>Established the spec-driven development system</h3>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>Why:</b> the project had a strong
+      architecture review but no durable record of it. Decisions were being
+      re-derived from conversation each session, which is how architecture
+      silently drifts.</p>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>New behaviour:</b> five
+      authoritative specification files under <code>/spec</code>, a drift detector,
+      and a read-only HTML control centre. Markdown is authoritative.</p>
+    <p style="font-size:11.5px"><b>Schema affected:</b> none. No application code,
+      schema, or dependency was changed.</p>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="top" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <span class="tag t-y">CHANGE-0002</span><span class="tag t-w">refactor</span>
+      <span class="sub">2026-10-01</span>
+    </div>
+    <h3>Recorded eight verified defects (N1–N9)</h3>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>Why:</b> two are
+      production-breaking and neither is visible by using the app normally. They
+      must not be rediscovered late.</p>
+    <p style="font-size:11.5px"><b>Schema affected:</b> none. No fixes applied —
+      they are scheduled. N1 and N2 are Phase 0A blockers.</p>
+  </div>
+
+  <div class="card">
+    <div class="top" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <span class="tag t-y">CHANGE-0003</span><span class="tag t-w">refactor</span>
+      <span class="sub">2026-10-01</span>
+    </div>
+    <h3>Recorded the validation baseline — lint fails at baseline</h3>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>Why:</b> MAIN_AGENT §8 lists
+      lint as a post-coding gate. A gate that already fails on untouched code is not
+      a gate — it is noise that trains everyone to ignore it.</p>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>New behaviour:</b> the real
+      numbers are recorded — <b>12 errors, 19 warnings</b>, all pre-existing, <b>zero
+      in <code>spec/</code> or <code>scripts/</code></b>. Until a cleanup phase the
+      gate is <i>"no NEW problems"</i>, not <i>"zero problems"</i>.</p>
+    <p style="font-size:11.5px"><b>Schema affected:</b> none. The drift script also
+      gained an exact CHANGE-id count check.</p>
+  </div>
+</section>
+
+<!-- ============ RISKS ============ -->
+<section id="risks">
+  <div class="sechead"><h2>Risks</h2><span class="src">Source: 02_CHANGELOG.md → Current Development State</span></div>
+  <table>
+    <thead><tr><th>ID</th><th>Risk</th><th>Severity</th><th>Mitigation</th><th>Phase</th><th>Owner</th></tr></thead>
+    <tbody>
+      <tr><td><b>R1</b></td><td>Concurrent user actions duplicate or corrupt state</td><td><span class="tag t-r">Critical</span></td><td>Deterministic-id upserts (ADR-017)</td><td>0A</td><td>agent</td></tr>
+      <tr><td><b>R2</b></td><td>Model self-reinforcement — hides what it under-ranks</td><td><span class="tag t-r">High</span></td><td>No learning from absence; snooze neutral (ADR-004/005)</td><td>1.1</td><td>agent</td></tr>
+      <tr><td><b>R3</b></td><td>Personalisation suppresses a legal/tax deadline</td><td><span class="tag t-r">High</span></td><td>Hard rules bypass the scorer entirely (ADR-006)</td><td>1.0</td><td>agent</td></tr>
+      <tr><td><b>R4</b></td><td>Cross-tenant leak from mixed userId/spaceId scoping</td><td><span class="tag t-r">High</span></td><td>Single access resolver; deny by default (ADR-009)</td><td>0B</td><td>agent</td></tr>
+      <tr><td><b>R6</b></td><td>Credential leakage via a new public query</td><td><span class="tag t-r">High</span></td><td>Internal-only module + grep gate (ADR-014)</td><td>1.5</td><td>agent</td></tr>
+      <tr><td><b>R7</b></td><td>Capture creates wrong objects with real consequences</td><td><span class="tag t-y">Medium</span></td><td>Per-kind confidence thresholds</td><td>3</td><td>agent</td></tr>
+      <tr><td><b>R8</b></td><td>Calendar upsert storm rewrites every row</td><td><span class="tag t-y">Medium</span></td><td>Diff-then-patch in <code>applyBatch</code></td><td>1.5</td><td>agent</td></tr>
+      <tr><td><b>R10</b></td><td>Attention becomes a spam surface</td><td><span class="tag t-y">Medium</span></td><td>Per-section caps, decay, grouping (ADR-003)</td><td>1.0</td><td>agent</td></tr>
+      <tr><td><b>R11</b></td><td>Feature index drift silently corrupts meaning</td><td><span class="tag t-y">Medium</span></td><td>Frozen 0–7 + <code>weightsVersion</code> (ADR-010)</td><td>0C</td><td>agent</td></tr>
+      <tr><td><b>R12</b></td><td><code>schemaValidation: true</code> surfaces pre-existing junk</td><td><span class="tag t-y">Medium</span></td><td>Dry-run audit first; flip last</td><td>0C</td><td>agent</td></tr>
+      <tr><td><b>R13</b></td><td><b>Infrastructure growing faster than product value</b></td><td><span class="tag t-r">Critical</span></td><td>Mandatory complexity budget (ADR-016); 1.0 ships with no ML</td><td>all</td><td>user</td></tr>
+      <tr><td><b>R15</b></td><td><code>-Infinity</code> serialisation (<b>unverified</b>)</td><td><span class="tag t-y">Medium</span></td><td>Verify in 0A; finite sentinel regardless</td><td>0A</td><td>agent</td></tr>
+      <tr><td><b>R18</b></td><td>Grantee sees more than intended</td><td><span class="tag t-y">Medium</span></td><td>Grants fail closed on unknown kind/area</td><td>0B</td><td>agent</td></tr>
+      <tr><td><b>R19</b></td><td>Agent cascade — one bad sync floods proposals</td><td><span class="tag t-y">Medium</span></td><td>10/run and 50/space/day caps, counted not silently dropped</td><td>3</td><td>agent</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ SYSTEM ============ -->
+<section id="system">
+  <div class="sechead"><h2>System</h2><span class="src">Source: 04_SYSTEM_FUNDAMENTALS.md §2–§7</span></div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>Layers</h3>
+      <table>
+        <thead><tr><th>Path</th><th>Responsibility</th></tr></thead>
+        <tbody>
+          <tr><td><code>src/lib/</code></td><td>Pure intelligence. No I/O, no React, no Convex imports.</td></tr>
+          <tr><td><code>src/convex/</code></td><td>Backend. Mutations, queries, internal functions, schema, auth.</td></tr>
+          <tr><td><code>src/pages|components/</code></td><td>UI. Convex reactive queries; no duplicated server state.</td></tr>
+          <tr><td><code>spec/</code></td><td>Authoritative specifications. Five files, no more.</td></tr>
+          <tr><td><code>scripts/</code></td><td>One-off tooling. Not part of the app.</td></tr>
+          <tr><td><code>vite.config.ts</code></td><td><b>Never modify.</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Attention model</h3>
+      <table>
+        <thead><tr><th>Signal</th><th>Label</th><th>Weight</th></tr></thead>
+        <tbody>
+          <tr><td>acted</td><td>1</td><td>1.0</td></tr>
+          <tr><td>completed</td><td>1</td><td>1.0</td></tr>
+          <tr><td>rejected</td><td>0</td><td>1.0 + suppression set</td></tr>
+          <tr><td>dismissed</td><td>0</td><td><b>0.25</b></td></tr>
+          <tr><td><b>snoozed</b></td><td><b>none</b></td><td>timing only</td></tr>
+          <tr><td><i>no feedback</i></td><td><b>none</b></td><td><b>never trained</b></td></tr>
+        </tbody>
+      </table>
+      <p class="sub" style="margin-top:10px">Clamp ±3.0 · lr decays by samples ·
+        min 12 samples to rank · min 5 to train dismissal · ≥1 exploration slot per
+        section · snapshots + rollback + reset.</p>
+    </div>
+  </div>
+
+  <div class="grid g3" style="margin-top:16px">
+    <div class="card">
+      <h3>Agents — three tiers</h3>
+      <ul class="tick">
+        <li><b>automatic</b> — safe internal ops only</li>
+        <li><b>proposed</b> — user accepts, never auto-executes</li>
+        <li><b>confirm</b> — money, sending, sharing, deletion, tax filing</li>
+      </ul>
+      <p class="sub" style="margin-top:8px">Idempotency keys are deterministic
+        hashes. Never mutate user data without acceptance.</p>
+    </div>
+    <div class="card">
+      <h3>Security model</h3>
+      <ul class="tick">
+        <li>Ownership ≠ access; sharing never changes owner</li>
+        <li>Many-to-many space membership</li>
+        <li>Grants fail closed; deny by default</li>
+        <li>Credentials server-only, internal functions only</li>
+        <li>Private data is <b>not stored</b></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Integrations</h3>
+      <ul class="tick">
+        <li>One adapter → one <code>NormalizedBatch</code> → one writer</li>
+        <li>Idempotent on (provider, externalId)</li>
+        <li>Calendar <b>inbound only</b>, <code>calendar.readonly</code></li>
+        <li>Private events stored as the literal "Busy"</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Non-negotiable rules (abridged — full list in SYSTEM_FUNDAMENTALS §10)</h3>
+    <ol class="num">
+      <li>Typed entity tables. No generic object table. No EAV.</li>
+      <li><code>links</code> holds relationships only, from a closed vocabulary.</li>
+      <li>Ownership separate from access; membership many-to-many.</li>
+      <li>Deny by default.</li>
+      <li>Hard rules bypass learned ranking entirely.</li>
+      <li>No learning from absence. Snooze is not negative feedback.</li>
+      <li>No learned category suppression.</li>
+      <li>Agent idempotency mandatory; risky actions require confirmation.</li>
+      <li>Credentials server-only; minimum OAuth scope.</li>
+      <li><b>No external LLM API. Ever.</b></li>
+      <li>No speculative frameworks. Attention is computed, not stored.</li>
+      <li>Markdown is the specification; testing is a gate.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ RUNBOOK ============ -->
+<section id="runbook">
+  <div class="sechead"><h2>Runbook</h2><span class="src">Source: 04_SYSTEM_FUNDAMENTALS.md §8</span></div>
+  <p class="sub" style="margin-bottom:14px">Verified against
+    <code>package.json</code> on 2026-10-01. Commands that do not exist are marked
+    NOT AVAILABLE rather than invented.</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>Available</h3>
+      <table>
+        <tbody>
+          <tr><td><b>Install</b></td><td><code>bun install</code></td></tr>
+          <tr><td><b>Typecheck</b></td><td><code>bunx tsc -b --noEmit</code></td></tr>
+          <tr><td><b>Build</b></td><td><code>bun run build</code></td></tr>
+          <tr><td><b>Lint</b></td><td><code>bun run lint</code> — <b>fails at baseline: 12 errors, 19 warnings</b></td></tr>
+          <tr><td><b>Format</b></td><td><code>bun run format</code></td></td></tr>
+          <tr><td><b>Convex codegen</b></td><td><code>bun convex dev --once</code></td></tr>
+          <tr><td><b>Spec drift</b></td><td><code>bun scripts/spec-drift.ts</code></td></tr>
+          <tr><td><b>Dev server</b></td><td><code>bun run dev</code> — <b>platform-owned; the agent must not run it</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Not available</h3>
+      <ul class="tick no">
+        <li><b>Tests — NOT AVAILABLE.</b> No <code>test</code> script and no test
+          files exist. <code>bun test</code> would need no new dependency, but Phase
+          0A must add the fixtures first. Any claim that Panel is tested is false.</li>
+        <li><b>Reset local data — NOT AVAILABLE.</b> Convex is deployed, not a local
+          backend. No documented reset command; do not improvise one.</li>
+      </ul>
+      <p class="sub" style="margin-top:12px">Platform constraints: never start or
+        stop the dev server · never modify <code>vite.config.ts</code> · never edit
+        <code>.env</code> · never hand-edit <code>src/convex/_generated</code> · no
+        <code>sed</code> or shell redirection for source edits.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SPEC HEALTH ============ -->
+<section id="health">
+  <div class="sechead"><h2>Spec Health</h2><span class="src">Computed from the four Markdown sources</span></div>
+
+  <div class="health">
+    <div class="stat unk">
+      <div class="lbl">Spec files present</div>
+      <div class="val unknown">Unknown</div>
+      <div class="note">A static page cannot stat the filesystem. Run
+        <code>bun scripts/spec-drift.ts</code> to verify the five exist and that no
+        sixth was added.</div>
+    </div>
+    <div class="stat ok">
+      <div class="lbl">Decisions recorded</div>
+      <div class="val"><span id="spec-adr-count-2">19</span></div>
+      <div class="note">ADRs plus rejected decisions. Not re-litigated without new evidence.</div>
+    </div>
+    <div class="stat warn">
+      <div class="lbl">Open risks</div>
+      <div class="val">14</div>
+      <div class="note">2 critical, 4 high. R13 (infrastructure outpacing product) is the standing strategic risk.</div>
+    </div>
+    <div class="stat warn">
+      <div class="lbl">Blocking defects</div>
+      <div class="val">2</div>
+      <div class="note">N1 duplicate state row · N2 silent guest data loss. Both Phase 0A.</div>
+    </div>
+    <div class="stat unk">
+      <div class="lbl">Failing tests</div>
+      <div class="val unknown">Unknown</div>
+      <div class="note">No test suite exists. This page cannot determine test status and will not guess.</div>
+    </div>
+    <div class="stat unk">
+      <div class="lbl">Spec/code drift</div>
+      <div class="val unknown">Unknown</div>
+      <div class="note">Cannot be determined from a static page. Run <code>bun scripts/spec-drift.ts</code>.</div>
+    </div>
+    <div class="stat warn">
+      <div class="lbl">Immediate tech debt</div>
+      <div class="val">8</div>
+      <div class="note">N1–N8 recorded; N1 and N2 are blockers. Plus 13 deferred items (D1–D13).</div>
+    </div>
+    <div class="stat warn">
+      <div class="lbl">Lint baseline</div>
+      <div class="val">12 / 19</div>
+      <div class="note">12 errors, 19 warnings, all pre-existing. Zero in spec/ or
+        scripts/. Gate is "no NEW problems" until cleaned. <code>spec-drift.ts</code> passes.</div>
+    </div>
+    <div class="stat unk">
+      <div class="lbl">Metrics measurable</div>
+      <div class="val unknown">Unknown</div>
+      <div class="note">No analytics or telemetry exists. Most defined metrics are unmeasurable today.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:18px">
+    <h3>Missing required fields</h3>
+    <ul class="tick">
+      <li><b>None in the specification set.</b> All four Markdown documents carry the sections their spec requires.</li>
+      <li>Outstanding gap is <b>product</b>, not documentation: there is no primary user research, and no analytics to measure the defined metrics.</li>
+    </ul>
+    <h3 style="margin-top:16px">How to verify</h3>
+    <p style="font-size:11.5px">This page is generated by hand and kept in sync by
+      discipline, not automation. The check that matters is mechanical:</p>
+    <p style="font-size:12px;margin-top:8px"><code>bun scripts/spec-drift.ts</code></p>
+    <p style="font-size:11.5px;margin-top:8px">It verifies the five files exist and
+      no sixth was added, that every Convex schema table is documented, that every
+      <code>bun run</code> command referenced actually exists in
+      <code>package.json</code>, that the runbook does not claim a test command
+      that isn't there, that ADR ids are unique, that every phase declares a
+      complexity budget, and that this page's counts agree with the changelog.
+      Exits non-zero on drift.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    Panel Control Centre · a read-only view of <code>/spec</code> ·
+    Markdown is authoritative · generated 2026-10-01 ·
+    open locally in a browser · no build step, no dependencies
+  </footer>
+</footer>
+
+</div><!-- /wrap -->
+
+<script>
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------ data
+     Embedded snapshot. The Markdown files remain authoritative; this is a
+     convenience copy. `bun scripts/spec-drift.ts` compares the counts below
+     against 02_CHANGELOG.md and fails if they diverge.                        */
+
+  var PHASES = [
+    { id:"0A", status:"APPROVED — awaiting approval",
+      obj:"Regression fixtures, then two blocking defects, then recurrence and atomic task creation.",
+      deps:"none — first phase",
+      budget:{files:"4",tables:"0",deps:"1 (optional test script)",abstractions:"1"},
+      criteria:["20 NLP + 34 tax fixtures passing","No Infinity/NaN in dashboard payload","Two concurrent completions leave exactly one state row","Guest can claim data, or anonymous sign-in removed","Recurring completion yields next occurrence, exactly once","addTask is a single call","Feature names derive from one definition"],
+      nots:["new object kinds","new public exports","behaviour changes beyond listed defects","schema changes"],
+      risks:"R1, R15" },
+
+    { id:"0B", status:"SPECIFIED",
+      obj:"Ownership and access foundation: spaces, links, activity, and the query-idiom fixes.",
+      deps:"0A",
+      budget:{files:"9",tables:"5",deps:"0",abstractions:"1"},
+      criteria:["Every table has ownerUserId + spaceId; 26 functions signed off","Grep gate: no public query filters on userId for reads","Backfill is idempotent","links rejects unknown rel; meta is scalar-only","canRead table-tested incl. expired/revoked/over-broad grants","ActivityKind is a closed union","Six collect-all sites now indexed"],
+      nots:["object/EAV tables","per-entity sharing logic","a second access path"],
+      risks:"R4, R18" },
+
+    { id:"0C", status:"SPECIFIED",
+      obj:"Model versioning and data integrity: clamps, decay, rollback, and schema validation.",
+      deps:"0B",
+      budget:{files:"5",tables:"2",deps:"0",abstractions:"1"},
+      criteria:["alignWeights round-trips len-8 → len-12 without shifting 0–7","200 steps never exceed |w| = 3.0","Effective lr halves by samples ≈ 50","restoreModel returns a byte-identical vector","resetModel preserves every user object","Zero bare v.string() on enum-ish fields","Dry-run audit clean, then schemaValidation: true"],
+      nots:["renumbering feature indices 0–7","a migration framework"],
+      risks:"R11, R12" },
+
+    { id:"1.0", status:"APPROVED (architecture)",
+      obj:"Attention Engine with hard rules only. No learning in the loop at all.",
+      deps:"0C",
+      budget:{files:"11",tables:"1",deps:"0",abstractions:"1"},
+      criteria:["Eight sections present","Per-section caps and total cap 24 enforced by test","Dedup collapses fingerprints; grouping collapses ≥3 same-source","Half-life decay verified with an injected clock","Snooze returns the item on time","Escalation level 2 refuses dismissal","No rules.ts output reaches the scorer","Dashboard split with an explicit switch, no plugin registry"],
+      nots:["the scorer in the hard-rule path","an impressions table","notification delivery","a block/plugin framework"],
+      risks:"R3, R10" },
+
+    { id:"1.1", status:"APPROVED (architecture)",
+      obj:"Learned attention ranking, generalised features, and five-signal feedback.",
+      deps:"1.0",
+      budget:{files:"8",tables:"0–1",deps:"0",abstractions:"1"},
+      criteria:["v1 features bit-identical to scorer.ts on a 40-case fixture","Below 12 samples ranking equals the prior","Below 5 samples dismissal is recorded but not trained","Snooze provably never produces label 0","No-feedback produces zero weight updates","Every section surfaces ≥1 explore item","Rejecting a tax item 5× does not remove a hard-rule deadline","Activity powers the 7-day chart"],
+      nots:["negative category features","training from absence","changes to indices 0–7"],
+      risks:"R2" },
+
+    { id:"1.5", status:"APPROVED (architecture)",
+      obj:"Integration framework: registry, adapter contract, applyBatch, OAuth, token security.",
+      deps:"1.1",
+      budget:{files:"7",tables:"3",deps:"0",abstractions:"1"},
+      criteria:["applyBatch twice on identical input produces zero writes","A changed field rewrites only that field","No public function outside the credentials module touches connectionTokens","OAuth state is single-use; replayed callback rejected","PKCE verifier required and stored hashed","Every provider error maps to a stable code with no provider body","Disconnect deletes tokens in the same mutation that flips status"],
+      nots:["per-provider mutations","per-provider UI","broader than minimum scopes","mutating calendar scopes"],
+      risks:"R6" },
+
+    { id:"2", status:"APPROVED (architecture)",
+      obj:"Google Calendar — real OAuth, inbound-only sync, data minimisation. Needs credentials.",
+      deps:"1.5",
+      budget:{files:"5",tables:"1",deps:"0",abstractions:"0"},
+      criteria:["calendar.readonly only; registry rejects a mutating scope","A private event is stored as \"Busy\" and the title exists nowhere in the DB","Recurring masters stored once; instances not duplicated","Upstream deletion marks cancelled / orphanedSource, never deletes a user-touched task","Stale >48h banners; >7d suppresses from Attention","Disconnect → reconnect → full resync produces no duplicates","Manual end-to-end: connect, see a real meeting, revoke, see it go stale"],
+      nots:["writing to Google","storing private event titles","storing attendees/descriptions/locations","a second OAuth path"],
+      risks:"R8" },
+
+    { id:"3", status:"SPECIFIED",
+      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents.",
+      deps:"2",
+      budget:{files:"per-feature",tables:"per-feature",deps:"0",abstractions:"per-feature"},
+      criteria:["People first-class with reversible merge (tombstone + identityKeys)","Capture has per-kind confidence thresholds; server result is authoritative","Documents drive expiry → renewal → task","Commitments support inbound and outbound","Each agent has fixtures for fire / non-fire / double-run","Agent proposals are capped and counted, never silently truncated"],
+      nots:["anything without its own spec section, ADR, budget and approval"],
+      risks:"R7, R19" }
+  ];
+
+  var ADRS = [
+    {id:"ADR-001",t:"No external AI or LLM API",c:"Product",s:"Panel uses no external inference. All intelligence is deterministic in-house TypeScript. Makes the intelligence testable with plain fixtures and every ranking explainable.",c2:"Bounded parsing vocabulary; new sentence patterns are code, not prompts."},
+    {id:"ADR-002",t:"Three-layer architecture",c:"Architecture",s:"src/lib (pure) → src/convex (persistence, learning) → UI. Dependency direction never reverses.",c2:"Anything in src/lib must be pure with an injectable clock."},
+    {id:"ADR-003",t:"Attention is computed, never stored",c:"Intelligence",s:"Items are produced by a pure function at query time. Only feedback about items is persisted.",c2:"A new source contributes automatically, with no write path and no UI. Query cost grows with data."},
+    {id:"ADR-004",t:"No learning from absence",c:"Intelligence",s:"Training happens only on explicit feedback. Silence is never evidence.",c2:"Slower to learn, but it cannot collapse. No impressions table needed."},
+    {id:"ADR-005",t:"Snooze is a timing signal, not negative feedback",c:"Intelligence",s:"Snooze produces no label. It writes snoozedUntil and feeds only the timing feature if later acted on.",c2:"Timing features carry the snooze signal; there is no 'irrelevant' learning from snooze."},
+    {id:"ADR-006",t:"Hard rules bypass the learned ranker",c:"Intelligence",s:"Rule-fired items are never passed to the scorer, ordered by deterministic severity, immune to learned suppression.",c2:"The only structural guarantee that a tax deadline cannot be personalised away."},
+    {id:"ADR-007",t:"Typed entity tables, no generic object table",c:"Database",s:"One table per object kind. No objects-with-JSON, no EAV.",c2:"A new object kind means a new table — which is why new tables need approval."},
+    {id:"ADR-008",t:"links holds relationships only",c:"Database",s:"A closed LinkRel vocabulary with direction, provenance, confidence and visibility. Domain attributes stay on entities.",c2:"If you need to query by it, promote it to a typed indexed column. meta is capped at scalars."},
+    {id:"ADR-009",t:"Ownership is separate from access",c:"Security",s:"ownerUserId + spaceId on every object; many-to-many spaceMembers; sharing is a grant that never writes owner or space.",c2:"Answers: ownership never changes on sharing; one user may own many spaces; one home space per object."},
+    {id:"ADR-010",t:"Feature layout frozen; weights versioned",c:"Intelligence",s:"Indices 0–7 are frozen. New features append at 8+. weightsVersion + alignWeights + a bit-identical regression test.",c2:"Stored weights outlive the code that wrote them."},
+    {id:"ADR-011",t:"Agents are pure functions with three safety tiers",c:"Architecture",s:"automatic / proposed / confirm, enforced by the return type rather than convention.",c2:"No DAG, no trigger builder, no plugin registry. Agents never mutate user data without acceptance."},
+    {id:"ADR-012",t:"Integrations normalise through one provider-agnostic path",c:"Integrations",s:"One adapter contract, one NormalizedBatch, one idempotent applyBatch. No connector gets its own UI or business logic.",c2:"Adding an integration becomes: write an adapter, add a registry entry."},
+    {id:"ADR-013",t:"Calendar is inbound-only, minimum scope, minimised",c:"Integrations",s:"calendar.readonly. Panel never writes to Google. Private events are stored as the literal 'Busy'.",c2:"The safest data is the data that was never stored."},
+    {id:"ADR-014",t:"Credentials are server-only by construction",c:"Security",s:"connectionTokens reachable only from internal functions in a module exporting no public query. Errors map to stable codes.",c2:"Structural and grep-checkable, rather than a convention that one careless query can break."},
+    {id:"ADR-015",t:"Attention ships in two phases",c:"Architecture",s:"1.0 delivers hard rules with no learning in the loop. 1.1 adds learned ranking.",c2:"Value arrives earlier, and a model bug becomes distinguishable from a rule bug."},
+    {id:"ADR-016",t:"Complexity budget is mandatory",c:"Product",s:"Every phase declares max files, tables, deps, abstractions and must-nots. Exceeding it is a stop condition.",c2:"A budget that is not enforced is not a budget. Some legitimate work will pause for approval — intended."},
+    {id:"ADR-017",t:"State rows use deterministic ids",c:"Database",s:"Single-row-per-user state is upserted with a deterministic document id, not read-then-insert. Fixes N1.",c2:"Makes the invariant structural rather than timing-dependent."},
+    {id:"ADR-018",t:"Guest accounts need a claim path or removal",c:"Security",s:"Fixes N2. Anonymous sign-in currently orphans all data on account upgrade — silent data loss is prohibited.",c2:"Must be resolved before any sharing work."},
+    {id:"ADR-019",t:"Spec-driven development; Markdown is authoritative",c:"Product",s:"Five persistent control artefacts. The HTML control centre is a read-only view. Drift is detected mechanically.",c2:"Five files is enough to be authoritative and few enough to stay accurate."}
+  ];
+
+  /* ------------------------------------------------------------- rendering */
+
+  function el(id){ return document.getElementById(id); }
+
+  function renderPhases(){
+    var host = el("timeline");
+    host.innerHTML = "";
+    PHASES.forEach(function(p, i){
+      var b = document.createElement("button");
+      b.className = "ph";
+      b.type = "button";
+      b.setAttribute("aria-pressed", "false");
+      b.dataset.idx = String(i);
+      b.innerHTML =
+        '<span class="id">' + p.id + '</span>' +
+        '<span class="tag t-w">' + p.status + '</span>' +
+        '<span class="obj">' + p.obj + '</span>';
+      b.addEventListener("click", function(){
+        Array.prototype.forEach.call(host.children, function(c){ c.setAttribute("aria-pressed","false"); });
+        b.setAttribute("aria-pressed","true");
+        renderDetail(p);
+      });
+      host.appendChild(b);
+    });
+  }
+
+  function renderDetail(p){
+    var c = p.budget;
+    var html =
+      '<h3>Phase ' + p.id + ' — ' + p.status + '</h3>' +
+      '<p style="margin:8px 0 14px;font-size:12px">' + p.obj + '</p>' +
+      '<div class="grid g2">' +
+        '<div><p class="lab sub">Dependencies</p><p style="font-size:11.5px">' + p.deps + '</p>' +
+        '<p class="lab sub" style="margin-top:12px">Complexity budget</p>' +
+        '<dl class="kv" style="margin-top:6px">' +
+          '<dt>Files</dt><dd>' + c.files + '</dd>' +
+          '<dt>Tables</dt><dd>' + c.tables + '</dd>' +
+          '<dt>Deps</dt><dd>' + c.deps + '</dd>' +
+          '<dt>Abstractions</dt><dd>' + c.abstractions + '</dd>' +
+        '</dl></div>' +
+        '<div><p class="lab sub">Acceptance criteria</p>' +
+        '<ul class="tick" style="margin-top:6px">' +
+        p.criteria.map(function(x){ return "<li>" + x + "</li>"; }).join("") + '</ul></div>' +
+      '</div>' +
+      '<div class="grid g2" style="margin-top:16px">' +
+        '<div><p class="lab sub">Must NOT introduce</p>' +
+        '<ul class="tick no" style="margin-top:6px">' +
+        p.nots.map(function(x){ return "<li>" + x + "</li>"; }).join("") + '</ul></div>' +
+        '<div><p class="lab sub">Risks</p><p style="font-size:11.5px;margin-top:6px">' + p.risks + '</p>' +
+        '<p class="sub" style="margin-top:10px">Exceeding the budget is a stop condition requiring approval (ADR-016).</p></div>' +
+      '</div>';
+    el("phaseDetail").innerHTML = html;
+  }
+
+  var CATS = ["all","architecture","product","security","database","integrations","intelligence"];
+
+  function renderAdrs(){
+    var f = el("adrFilters"), l = el("adrList");
+    f.innerHTML = "";
+    CATS.forEach(function(cat){
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = cat;
+      b.setAttribute("aria-pressed", cat === "all" ? "true" : "false");
+      b.addEventListener("click", function(){
+        Array.prototype.forEach.call(f.children, function(x){ x.setAttribute("aria-pressed","false"); });
+        b.setAttribute("aria-pressed","true");
+        drawAdrs(cat);
+      });
+      f.appendChild(b);
+    });
+
+    function drawAdrs(cat){
+      l.innerHTML = "";
+      ADRS.filter(function(a){ return cat === "all" || a.c === cat; }).forEach(function(a){
+        var d = document.createElement("div");
+        d.className = "adr";
+        d.innerHTML =
+          '<div class="top"><span class="tag t-ink">' + a.id + '</span>' +
+          '<h4>' + a.t + '</h4><span class="tag t-b">' + a.c + '</span></div>' +
+          '<p><span class="lab">Decision</span><br>' + a.s + '</p>' +
+          '<p><span class="lab">Consequence</span><br>' + a.c2 + '</p>';
+        l.appendChild(d);
+      });
+    }
+    drawAdrs("all");
+  }
+
+  function renderHealth(){
+    // The ADR count is embedded data, so it can be reported. Anything that
+    // requires reading the filesystem or running a process is reported as
+    // Unknown rather than guessed.
+    el("spec-adr-count-2").textContent = String(ADRS.length);
+  }
+
+  function initNav(){
+    var btns = Array.prototype.slice.call(document.querySelectorAll("nav button"));
+    btns.forEach(function(b){
+      b.addEventListener("click", function(){
+        var t = el(b.dataset.goto);
+        if (t) t.scrollIntoView({ behavior:"smooth", block:"start" });
+      });
+    });
+    var sections = btns.map(function(b){ return el(b.dataset.goto); });
+    if (!("IntersectionObserver" in window)) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        btns.forEach(function(b){
+          b.setAttribute("aria-current", b.dataset.goto === en.target.id ? "true" : "false");
+        });
+      });
+    }, { rootMargin:"-20% 0px -70% 0px" });
+    sections.forEach(function(s){ if (s) io.observe(s); });
+  }
+
+  renderPhases();
+  renderAdrs();
+  renderHealth();
+  initNav();
+})();
+</script>
+</body>
+</html>
