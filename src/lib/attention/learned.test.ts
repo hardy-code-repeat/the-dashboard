@@ -375,6 +375,21 @@ test("ADR-006 — the server's hard-kind list covers exactly what the rules emit
       { _id: "c2", provider: "gcal", label: "Old", status: "connected", connectedAt: NOW - 9 * DAY },
     ],
     documents: [{ requirementId: "w2", label: "W-2", readiness: 0.9, missing: ["x"] }],
+    // Phase 3 feature 3. One expiring document, so `document.expiring` is
+    // reachable from this fixture — a hard kind nothing can emit is a
+    // suppression bypass waiting to happen, which is what the assertion below
+    // exists to prevent.
+    expiring: [
+      {
+        id: "doc1",
+        label: "Passport",
+        attention: true,
+        severity: 0.8,
+        deadlineAt: NOW + DAY,
+        expiresAt: NOW + 31 * DAY,
+        detail: "Expires in 31 days — renew by 1 Jan 2027",
+      },
+    ],
     calendar: [
       { _id: "e1", title: "Standup", startsAt: NOW + HOUR, endsAt: NOW + 2 * HOUR },
       { _id: "e2", title: "Later", startsAt: NOW + 30 * HOUR, endsAt: NOW + 31 * HOUR },

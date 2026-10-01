@@ -3,6 +3,7 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { buildAttention, SECTION_BUDGET, type AttentionFeedback } from "../lib/attention/pipeline";
+import { describeDocument } from "../lib/documents";
 import { allIntegrations } from "../lib/integrations/registry";
 import { learnedCandidates } from "../lib/attention/ranked";
 import { hardRules, isHardKind } from "../lib/attention/rules";
@@ -12,6 +13,7 @@ import {
   type ConnectionView,
   type DeadlineView,
   type DocumentView,
+  type ExpiryView,
   type TaskView,
 } from "../lib/attention/sources";
 import {
@@ -26,6 +28,7 @@ import {
 import { filingYearFor, COUNTRIES, readinessScore } from "../lib/tax";
 
 import type { DataModel, Id } from "./_generated/dataModel";
+import { pickRenewal, renewalRef } from "./documents";
 import { mutation, query } from "./_generated/server";
 import { AUTO_SNAPSHOT_EVERY, MAX_SUPPRESSION_ENTRIES, requireUserId, takeSnapshot } from "./assistant";
 import { ensurePersonalSpace } from "./spaces";
@@ -217,6 +220,44 @@ export const getAttention = query({
       missing: missingLabels,
     }));
 
+    // --- life-admin documents (phase 3, feature 3) --------------------------
+    //
+    // Read through `by_owner_expiry`, whose range holds **only documents that
+    // have an expiry** — Convex omits a row from an index when the indexed
+    // field is absent. An undated document can never be attention, so this
+    // query never reads one: the set the rule needs is exactly the set the
+    // index returns, and there is no JavaScript filtering in between.
+    //
+    // The renewal task is then resolved per document through `by_owner_document`,
+    // an index range holding only tasks that are renewals. The lifecycle state
+    // is computed by `src/lib/documents.ts` and arrives as a *decision*, so the
+    // rule and the Life Admin surface cannot disagree about it.
+    const expiringDocs = await ctx.db
+      .query("documents")
+      .withIndex("by_owner_expiry", (q) => q.eq("ownerUserId", userId))
+      .collect();
+
+    const expiryViews: ExpiryView[] = [];
+    for (const doc of expiringDocs) {
+      const renewalRows = await ctx.db
+        .query("tasks")
+        .withIndex("by_owner_document", (q) =>
+          q.eq("ownerUserId", userId).eq("documentId", doc._id),
+        )
+        .collect();
+      const state = describeDocument(doc, renewalRef(pickRenewal(renewalRows)), now);
+      if (!state.attention) continue;
+      expiryViews.push({
+        id: doc._id,
+        label: doc.label,
+        attention: true,
+        severity: state.severity,
+        deadlineAt: state.deadlineAt,
+        expiresAt: doc.expiresAt ?? null,
+        detail: state.detail,
+      });
+    }
+
     /**
      * Meetings, unless the calendar is too old to trust.
      *
@@ -249,6 +290,7 @@ export const getAttention = query({
       deadlines: deadlineViews,
       connections: connectionViews,
       documents: documentViews,
+      expiring: expiryViews,
       calendar: calendarViews,
       enabledAreas: areas.map((a) => a.slug),
       taxYearLabel: country.taxYearLabel(taxYear),

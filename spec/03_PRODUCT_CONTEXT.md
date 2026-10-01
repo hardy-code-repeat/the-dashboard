@@ -668,3 +668,97 @@ where it is architectural, an ADR.
   of Feature 2. The rest is recorded as D38, to be fixed when an activity view
   actually needs them — not by deleting the taxonomy, which is the correct
   design and should stay.
+
+### R-006 — Is an expiry date the deadline? Or is it the deadline minus the time renewal takes?
+
+- **Date:** 2026-10-01 · **Sources:** USAGov "Renew an adult passport" (usa.gov,
+  last updated 23 Mar 2026, read 2026-10-01); US Department of State
+  "Get Your Processing Time" (travel.state.gov, read 2026-10-01); GOV.UK
+  "Renew your driving licence" (gov.uk, read 2026-10-01); Virginia DMV
+  licence renewal notice (dmv.virginia.gov, read 2026-10-01); Utah DMV
+  registration renewal (dmv.utah.gov, read 2026-10-01) · **Confidence:** High
+  (every figure below is from the issuing authority's own page)
+- **Question:** The roadmap line is "expiry → renewal chain". The obvious
+  implementation is "on the expiry date, tell the user to renew". If that is the
+  design, the product is wrong in a way every one of its users will discover.
+- **Evidence:**
+  1. **The expiry date is not the deadline.** USAGov warns in its own words:
+     *"Renew early. Passport processing times vary. And some countries and
+     airlines deny entry if your passport expires in less than 6 months."* A
+     passport valid for 10 years therefore has a **renewal** deadline roughly
+     six months before its **validity** deadline.
+  2. **Renewal takes weeks, not minutes.** State Department: routine passport
+     processing is 4–6 weeks *plus mailing*, and online renewal is only
+     available if the user is not travelling for at least 6 weeks. GOV.UK:
+     a renewed driving licence takes up to 3 weeks by post, and longer if a
+     medical or personal detail has to be checked.
+  3. **Authorities already work in a lead window.** Virginia DMV mails renewal
+     reminders **90 days** before a licence expires; Utah allows a vehicle
+     registration renewal from **60 days** before expiry. Two different
+     jurisdictions, two different numbers, both far from zero.
+  4. **The validity period varies per document and per person.** A US passport
+     is 10 years, a UK driving licence from age 70 is renewed every **3
+     years**, insurance is 1 year. There is no single "renew every N" cadence
+     that would be correct — which is why recurrence is the wrong mechanism.
+- **Finding:** **Lead time is the load-bearing concept, and it is not a
+  constant.** The chain is *expiry → renewal window opens → renew → new expiry*.
+  The window cannot be inferred from the expiry date; it has to be something the
+  user states per document. That is why `leadDays` is a field on the document
+  rather than a global setting, and why Panel must not invent a default that
+  claims to be true for every country and every document.
+- **Affected area:** Life Admin, Attention, the task model.
+- **Implication:** The renewal **task** is due at `expiresAt − leadDays`, and
+  that date is computed by the server rather than typed by the user. It also
+  kills a tempting shortcut: expressing renewal as a *recurring* task
+  (`tasks.recurrence`) would respawn the reminder on a fixed cadence and would
+  be wrong for every document whose validity period is not that cadence — and
+  it would keep firing from a date that had already been replaced by a renewal.
+- **Status:** **Decision**, scoped in SYSTEM_FUNDAMENTALS §11.2 and recorded as
+  ADR-025. The residual question — what default lead time, if any, a brand-new
+  user should be offered — is deliberately answered *against* a confident
+  default; see the scope block.
+
+### R-007 — Should Panel store the document, or only the fact that it exists and when it stops being valid?
+
+- **Date:** 2026-10-01 · **Sources:** House of Commons Library, "Digital ID in
+  the UK" (commonslibrary.parliament.uk, CBP-10369, read 2026-10-01); ICO
+  "A guide to the data protection principles" — data minimisation and purpose
+  limitation (ico.org.uk, read 2026-10-01); European Commission Digital
+  Identity Wallet security guidance, which frames data minimisation as a
+  *design constraint* (read 2026-10-01); Panel's own ADR-013 · **Confidence:**
+  High for the principle; the specific architectures are out of scope and were
+  not relied on
+- **Question:** "Life Admin / documents" reads like a document manager. The
+  roadmap says "expiry → renewal chain". Which of those is it?
+- **Evidence:**
+  1. **The problem being solved is calendar-shaped, not storage-shaped.** Every
+     failure mode in R-006 is *discovering too late that something expired*.
+     None of them is "I could not find the PDF".
+  2. **Digital-identity programmes converge on the same rule, for the same
+     reason.** The Commons Library brief records that reusable digital IDs
+     *enable* data minimisation — the credential is presented and shared on
+     explicit consent rather than hoarded centrally. The ICO's minimisation
+     and purpose-limitation principles are the binding constraint for anything
+     Panel does with identity data.
+  3. **Panel has already made this call once, and it is the house style.**
+     ADR-013 stores a private calendar event as the literal string `"Busy"`:
+     *the safest data is the data that was never stored.* An expiry reminder
+     needs three facts — what the thing is, when it expires, how early to warn —
+     and nothing else. Every additional field (document number, image, scan,
+     file reference) is data Panel cannot act on, cannot delete on the user's
+     behalf, and would be responsible for.
+- **Finding:** **A life-admin document in Panel is metadata about keeping a
+  credential valid, not the credential.** No file content, no upload, no storage
+  integration, no document numbers. The feature's entire value — noticing an
+  expiry before it costs something — needs none of it.
+- **Affected area:** Life Admin, privacy (§4), integrations.
+- **Implication:** Two consequences worth stating because they are tempting and
+  wrong. (a) **No file storage is introduced**, so there is no storage model,
+  access-control list, retention policy or export path to get wrong; a missing
+  one is safer than a badly-built one. (b) Because the document is metadata,
+  its lifecycle must be **derived** rather than stored — a stored status that
+  can disagree with the expiry date it summarises is exactly the D34 defect
+  class, and this feature has a strong incentive to build one (a natural
+  instinct is to add `status: "expired"`).
+- **Status:** **Decision**, recorded as ADR-025 and scoped in
+  SYSTEM_FUNDAMENTALS §11.2.

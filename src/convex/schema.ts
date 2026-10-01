@@ -112,6 +112,14 @@ export const ACTIVITY_KINDS = [
   "person.updated",
   "person.merged",
   "person.unmerged",
+  // Phase 3 feature 3. All four are written on their own write path and read
+  // back by `documents:documentAudit` — R-005 found kinds that were declared
+  // here and never written anywhere, and D38 is that defect. Declaring less
+  // would not have fixed it; writing them did.
+  "document.created",
+  "document.deleted",
+  "document.renewal_started",
+  "document.renewed",
   "commitment.made",
   "attention.acted",
   "attention.dismissed",
@@ -144,6 +152,12 @@ export const activityKindValidator = v.union(
   v.literal("person.updated"),
   v.literal("person.merged"),
   v.literal("person.unmerged"),
+  // Phase 3 feature 3. Mirrors ACTIVITY_KINDS above; the two lists are written
+  // out separately because a Convex validator has to be a static literal union.
+  v.literal("document.created"),
+  v.literal("document.deleted"),
+  v.literal("document.renewal_started"),
+  v.literal("document.renewed"),
   v.literal("commitment.made"),
   v.literal("attention.acted"),
   v.literal("attention.dismissed"),
@@ -209,6 +223,14 @@ export const areaSlugValidator = v.union(
   v.literal("relationships"),
   v.literal("health"),
   v.literal("home"),
+  // Phase 3 feature 3. A passport is not part of running a place, so widening
+  // `home` would have misdescribed an area that is already correct. This is one
+  // more row in the *existing* tab list, not a second page system.
+  //
+  // Note for the next editor: `schema-vocab.test.ts` reads this union's source
+  // with a regex and treats every double-quoted string as a literal, so no
+  // comment in here may contain a quoted phrase.
+  v.literal("life"),
 );
 
 /** The provider catalogue in src/lib/areas.ts. */
@@ -517,6 +539,22 @@ const schema = defineSchema(
        * single task. Reads resolve through `mergedIntoId`.
        */
       personId: v.optional(v.id("people")),
+
+      /**
+       * Phase 3 feature 3: the life-admin document this task renews.
+       *
+       * The renewal is an **ordinary task**, not a sub-record of the document.
+       * The task points at the document and the document holds no reference
+       * back (ADR-026) — the same shape as `personId` above, and for the same
+       * three reasons: the lookup is an index range rather than a reverse scan,
+       * the document never has to be patched when a task is created, completed
+       * or deleted, and a row can always answer a question about itself.
+       *
+       * It may point at a **deleted** document. `deleteDocument` clears this
+       * field rather than deleting the task, because Do-Not-Touch #9 forbids
+       * deleting user data as a side effect of another action.
+       */
+      documentId: v.optional(v.id("documents")),
     })
       .index("by_space", ["spaceId"])
       .index("by_owner", ["ownerUserId"])
@@ -538,7 +576,19 @@ const schema = defineSchema(
        * still the row a task points at (ADR-023), and the read resolves the
        * chain rather than needing the index to follow it.
        */
-      .index("by_owner_person", ["ownerUserId", "personId"]),
+      .index("by_owner_person", ["ownerUserId", "personId"])
+
+      /**
+       * Phase 3 feature 3: tasks that are *renewals*, and nothing else.
+       *
+       * Same reasoning as `by_owner_person` above, and the same failure it was
+       * added to prevent. Convex omits a document from an index when the
+       * indexed field is absent, so this range holds exactly the tasks carrying
+       * a `documentId`. Without it, every read of "does this document have a
+       * renewal?" would be a full scan of the user's tasks — on a reactively
+       * subscribed query, which is the shape of D37 and D39.
+       */
+      .index("by_owner_document", ["ownerUserId", "documentId"]),
 
     /**
      * A person (phase 3, feature 1).
@@ -954,6 +1004,75 @@ const schema = defineSchema(
       .index("by_owner", ["ownerUserId"])
       // Phase 0B query-idiom fix: the toggle is a point lookup, not a scan.
       .index("by_owner_requirement", ["ownerUserId", "requirementId"]),
+
+    /**
+     * A life-admin document (phase 3, feature 3).
+     *
+     * **This is metadata about keeping a credential valid. It is not the
+     * document.** A label, a date it stops being valid, and how early to warn.
+     * No file, no image, no document number, no storage reference — R-007, and
+     * the same reasoning ADR-013 used to store a private calendar event as the
+     * literal string `"Busy"`. The safest data is the data that was never
+     * stored, and every failure mode this feature exists to prevent is
+     * calendar-shaped rather than storage-shaped.
+     *
+     * **There is no status column, on purpose (ADR-025).** The seven states are
+     * a pure function of `expiresAt`, the linked renewal task and `now`
+     * (`src/lib/documents.ts`). A status would be a *copy* of two other fields,
+     * and a copy is exactly where they disagree without anything noticing —
+     * the D34 defect class, which was a roll-up permanently zero because its
+     * fields were never populated, and which compiled cleanly throughout.
+     *
+     * This table is deliberately **not** a generalisation of `taxDocuments`.
+     * That table is a filing checklist: one row per requirement id in a closed
+     * static country catalogue, with no label, no date and no lifecycle.
+     * `requirementId` is a key into `COUNTRIES[c].documents`, `readinessScore`
+     * maps it back to a catalogue entry, and `by_owner_requirement` allows one
+     * row per requirement. A passport is in no tax catalogue, so none of that
+     * applies to it, and coupling the two would drag a user domain object into
+     * Do-Not-Touch #1.
+     */
+    documents: defineTable({
+      ...ownedBy,
+
+      /** What the user calls it. The only free text on the row; 1–80, trimmed. */
+      label: v.string(),
+
+      /**
+       * Epoch ms this document stops being valid. **Optional**: absent means
+       * "no expiry recorded", which is a real, watchable, permanently silent
+       * state — not an error and not a missing field.
+       */
+      expiresAt: v.optional(v.number()),
+
+      /**
+       * How many days before `expiresAt` the renewal has to start (R-006).
+       *
+       * Not a constant: Virginia DMV reminds at 90 days, Utah opens renewal at
+       * 60, and a passport needs 4–6 weeks plus mailing. Optional, falling back
+       * to `DEFAULT_LEAD_DAYS`, and the UI says it is a default rather than a
+       * figure from an authority — a table of real lead times would be
+       * `tax.ts` again, and Do-Not-Touch #1 exists because unverifiable figures
+       * are a liability.
+       */
+      leadDays: v.optional(v.number()),
+
+      /** Whose document this is. Reuses phase 3 feature 1 wholesale. */
+      personId: v.optional(v.id("people")),
+
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      /**
+       * Convex omits a document from an index when the indexed field is absent,
+       * so this range holds **exactly the documents that have an expiry** —
+       * which is precisely the set the Attention rule needs, and narrower than
+       * the list read. This index exists so the attention query is bounded by
+       * what it actually uses rather than by how many documents a person owns
+       * (D37, D39).
+       */
+      .index("by_owner_expiry", ["ownerUserId", "expiresAt"]),
 
     // ---------- integrations ----------------------------------------------
 

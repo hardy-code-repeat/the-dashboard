@@ -2420,6 +2420,158 @@ becomes a security decision rather than an engineering one: an adapter that
 can add keys can, over enough syncs, manufacture a duplicate on its own. The
 answer will not be a better threshold.
 
+### ADR-025 — A life-admin document is metadata, and its lifecycle is derived
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 3 (CHANGE-0015).
+Extends ADR-003, ADR-007, ADR-013, ADR-023; evidence in R-006 and R-007.
+
+**Decision.** A document in Panel is **metadata about keeping a credential
+valid** — a label, an expiry date, a lead time, an owner and an optional
+person. There is no file, no image, no document number and no storage
+integration. Its lifecycle is **not stored either**: the seven states
+(`undated`, `valid`, `due`, `renewing`, `renewing-late`, `expired`, `stale`)
+are a pure function of `(expiresAt, the linked renewal task)` and `now`.
+There is no `status` column.
+
+**Context.** The roadmap says "Expiry → renewal chain" in one line, and
+"Life Admin / documents" in another. Read together the second line looks like a
+document manager, and that reading would have cost this project a storage
+model, an access-control list, a retention policy and an export path — none of
+which the problem needs.
+
+The problem is calendar-shaped. Every failure mode is *discovering too late
+that something expired*; none of them is "I could not find the PDF" (R-007).
+And the deadline is not the date people assume it is: a US passport valid for
+ten years has a renewal deadline roughly six months before its validity
+deadline, because carriers refuse entry on a short-validity passport and the
+State Department needs 4–6 weeks plus mailing (R-006). Two states already
+issued at 90 and 60 days respectively. Lead time is the load-bearing concept,
+and it is not a constant — a UK licence from age 70 renews every 3 years, a
+policy every 1.
+
+The second half of the decision follows from the first. There is a strong,
+cheap instinct to add `status: "expired"` to the row. That instinct produces
+precisely the defect class this project has already paid for twice: **D34**, a
+roll-up whose fields were never populated and which was therefore permanently
+zero while compiling cleanly, and **D38**, an activity kind declared in a closed
+taxonomy and never written. A status column is a *copy* of two other fields,
+and a copy is a place for the three to disagree — with no query able to tell,
+because the copy is what the query reads.
+
+**Alternatives considered.**
+- *Extend `taxDocuments`.* Rejected on four independent grounds, in §11.2: its
+  `requirementId` is a key into a closed static country catalogue and a
+  passport is in no such catalogue; `readinessScore` maps that id back to a
+  catalogue entry, so a non-catalogue row scores as nothing; `by_owner_requirement`
+  permits exactly one row per requirement, so two passports could not coexist;
+  and it would couple a user domain object to Do-Not-Touch #1.
+- *Store the document, with a file reference or an attachment.* Rejected: no
+  part of the expiry chain needs it, and the Commons Library's own finding is
+  that reusable digital IDs *enable* minimisation — the credential is presented
+  on consent, not hoarded centrally (R-007). Panel already decided this once
+  with ADR-013, which stores a private calendar event as the literal string
+  `"Busy"`. The safest data is the data that was never stored.
+- *Store a `status` column.* Rejected as described above: a second copy of
+  `expiresAt` and the renewal task, with no mechanism that can detect drift.
+- *Express renewal as `tasks.recurrence`.* Rejected: a fixed cadence is wrong
+  for every document whose validity period is not that cadence, and it keeps
+  firing from a date a renewal has already replaced.
+- *Per-country, per-document-type lead times in a catalogue.* Rejected: that is
+  `tax.ts` again — a table of figures this project cannot audit at source, and
+  Do-Not-Touch #1 exists because unverifiable figures are a liability rather
+  than a feature. The default is labelled as a default and is per-document
+  overridable.
+- *A `date-unknown` state distinct from `undated`.* Rejected: it changes no
+  behaviour, and a state with no behaviour is a field that can go stale.
+
+**Why chosen.** Every state is a function of two stored values, so it cannot
+be wrong. The one genuine hazard — the user completing the renewal task through
+the ordinary dashboard checkbox, which trains the model correctly and never
+touches `expiresAt` — is *detected* by the same derivation, as `stale`, and
+stated on the surface. The design turns the most likely silent failure into a
+visible state instead of trying to prevent it with a special case in a general
+mutation.
+
+**Consequences.**
+- Adding a state means adding a branch to one pure function and a fixture for
+  it. It never means a migration, and it can never leave existing rows behind
+  in a state the code no longer produces.
+- `stale` is a state the product arguably did not need, and it exists purely
+  because the honest alternative was to hide a data-integrity failure.
+- `expiresAt` may be absent, and a document with no date is *valid, watched,
+  and silent*. That is a real answer, not a missing one.
+- A renewal completed late — producing an expiry already in the past — is
+  allowed, and correctly reads as `expired`. A renewal that does not *advance*
+  the date is refused outright.
+
+**Conditions for revisiting.** Revisit if a user-visible need appears for
+renewal history beyond the new expiry date (a `renewals` list is the additive
+answer, not a status column), or if a storage integration is ever approved —
+which would be a new ADR superseding this one on the first decision, not an
+amendment.
+
+### ADR-026 — The renewal is an ordinary task that points at the document
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 3 (CHANGE-0015).
+Extends ADR-008, ADR-009, ADR-023; mirrors the `tasks.personId` decision of
+phase 3 feature 1.
+
+**Decision.** `tasks` gains `documentId` and `by_owner_document`. The renewal
+is a normal task row; **the document holds no reference to it**. Every read of
+"does this document have a renewal, and is it open?" goes through
+`by_owner_document`.
+
+**Context.** The obvious alternative is the reverse: `documents.renewalTaskId`,
+kept up to date by whatever creates and deletes the task. It fails in three
+ways that only show up after the feature has been used for a while. The lookup
+becomes a reverse scan rather than an index range. Tasks are created, completed,
+respawned and deleted constantly, so the document has to be patched on every one
+of those paths — including `setTaskCompleted`, which is not this feature's code.
+And a document whose `renewalTaskId` points at a deleted task is a row that
+cannot answer a question about itself.
+
+This is the same shape as `tasks.personId`, and the same reasoning as ADR-023:
+**nothing rewrites anything, and every read resolves through the relation.**
+Keeping it identical means the second half of the feature needed no new
+mechanism at all — it reused a decision that was already made and paid for.
+
+**Alternatives considered.**
+- *`documents.renewalTaskId`.* Rejected as above.
+- *A `renewals` table — one row per renewal attempt, with its own status.* It
+  is a second task lifecycle, a second set of states, and a second thing to keep
+  consistent with the first. Everything it would hold, `tasks` already holds.
+- *A `links` row with `occursBefore` or `partOf`.* Rejected: ADR-008 is explicit
+  that `links` holds relationships only and that anything needing to be *queried
+  by* must be a typed indexed column. "Which task is this document's renewal?" is
+  exactly a query, and the vocabulary happens to contain a plausible-looking
+  rel that would have been the wrong tool.
+- *No link at all — renewal is a task the user titles by hand.* Rejected: then
+  nothing can tell that "Renew passport" concerns the passport, the attention
+  rule cannot avoid double-reporting, and completing it cannot move the expiry.
+
+**Why chosen.** The renewal inherits the entire task lifecycle for free — hard
+rules, the learned ranker, recurrence handling, completion training through
+`recordOutcome`, the dashboard checkbox — and it costs one optional column and
+one index. Feature 1 already established that this direction works, and reusing
+it is the reason the feature fits its budget at all.
+
+**Consequences.**
+- `deleteDocument` clears `documentId` on the document's tasks instead of
+  deleting them, and reports how many it detached. Do-Not-Touch #9: never
+  delete user data as a side effect of another action.
+- The renewal task is created in `area: "general"` on purpose, so it appears in
+  the user's main task list whether or not they enabled the `life` area.
+- `completeRenewal` calls `recordOutcome` — it is a second **caller** of the one
+  weight-mutation point (Do-Not-Touch #8), never a second writer.
+- Because the renewal is an ordinary task, a user *can* complete it the generic
+  way. That is allowed on purpose, and `stale` exists to make the consequence
+  visible.
+
+**Conditions for revisiting.** None foreseeable. If renewals ever need to
+outlive the task — an application number, a fee paid, a reference — that is
+fields on the task, not a new table, until the fields stop being about an act
+the user is doing.
+
 ---
 
 ## Rejected Decisions

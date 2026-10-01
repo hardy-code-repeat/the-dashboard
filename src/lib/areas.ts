@@ -15,7 +15,14 @@
  * identical, so adding an area without widening the schema fails the suite
  * instead of silently rejecting writes.
  */
-export type AreaSlug = "general" | "finance" | "relationships" | "health" | "home";
+export type AreaSlug =
+  | "general"
+  | "finance"
+  | "relationships"
+  | "health"
+  | "home"
+  /** Phase 3 feature 3 — the expiry → renewal chain. */
+  | "life";
 
 /** The closed integration-provider vocabulary. Mirrored in schema.ts. */
 export type ProviderSlug =
@@ -35,7 +42,7 @@ export interface AreaDef {
   /** One-line pitch shown in the "add an area" picker. */
   blurb: string;
   /** Which dashboard tab body this area renders. */
-  kind: "tasks" | "finance" | "people" | "health" | "home" | "custom";
+  kind: "tasks" | "finance" | "people" | "health" | "home" | "life" | "custom";
   accent: "primary" | "secondary" | "accent" | "card" | "muted";
   /** Suggested starter tasks, created only if the user asks to seed. */
   starterTasks?: string[];
@@ -96,6 +103,16 @@ export const AREAS: AreaDef[] = [
       "deep clean every month",
       "service boiler every year",
     ],
+  },
+  {
+    slug: "life",
+    label: "Life admin",
+    blurb: "Passport, licence, insurance — the things that expire.",
+    kind: "life",
+    accent: "accent",
+    // No starter tasks. A starter *document* would be Panel inventing a
+    // passport for the user, and a starter task would be a renewal for a
+    // document that does not exist. The surface starts empty on purpose.
   },
 ];
 

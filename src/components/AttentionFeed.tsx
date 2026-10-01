@@ -5,6 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -81,6 +82,7 @@ export function AttentionFeed() {
   const snoozed = useMutation(api.attention.attentionSnoozed);
   const rejected = useMutation(api.attention.attentionRejected);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
+  const startRenewal = useMutation(api.documents.startRenewal);
   const [busy, setBusy] = useState<string | null>(null);
 
   if (attention === undefined) {
@@ -120,6 +122,13 @@ export function AttentionFeed() {
       if (TASK_KINDS.has(item.kind)) {
         await setCompleted({ id: item.sourceId as never, completed: true });
       }
+      // An expiring document's button says "Start renewal", so it has to
+      // actually start one. A button that only records that it was pressed
+      // would be the kind of lie the rest of this feed is careful not to tell —
+      // and it is precisely the silent no-op STEP 20 asks us to look for.
+      if (item.kind === START_RENEWAL) {
+        await startRenewal({ id: item.sourceId as Id<"documents"> });
+      }
     });
   }
 
@@ -157,6 +166,9 @@ const TASK_KINDS = new Set([
   "task.due",
   "task.someday",
 ]);
+
+/** Attention kinds whose action is to *start* something rather than finish it. */
+const START_RENEWAL = "document.expiring";
 
 /**
  * The feedback payload for an item.

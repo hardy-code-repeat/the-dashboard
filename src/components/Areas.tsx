@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "convex/react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Calendar,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronUp,
@@ -37,6 +38,7 @@ export function areaIcon(kind: string) {
     case "people": return Users;
     case "health": return HeartPulse;
     case "home": return Home;
+    case "life": return CalendarClock;
     default: return Circle;
   }
 }

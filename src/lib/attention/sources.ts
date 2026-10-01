@@ -57,6 +57,31 @@ export interface DocumentView {
 }
 
 /**
+ * One life-admin document, as the rules are allowed to see it (phase 3,
+ * feature 3).
+ *
+ * Deliberately flat and deliberately small: an id, whether it deserves an item
+ * now, how urgent that is, and the two dates that explain why. The lifecycle
+ * state itself is **not** here — it is computed once, server-side, by
+ * `src/lib/documents.ts`, and arrives as a decision rather than as raw inputs
+ * this file would have to re-derive (and could re-derive differently).
+ */
+export interface ExpiryView {
+  id: string;
+  label: string;
+  /** True only for the `due`, `expired` and `stale` states. */
+  attention: boolean;
+  /** 0..1, or null when `attention` is false. */
+  severity: number | null;
+  /** `expiresAt - leadDays`: the deadline, not the expiry (R-006). */
+  deadlineAt: number | null;
+  /** The date the document stops being valid. */
+  expiresAt: number | null;
+  /** The one-line explanation, so this file never invents wording. */
+  detail: string;
+}
+
+/**
  * One meeting, as the rules are allowed to see it.
  *
  * Five fields. There is no description, no attendee and no location here,

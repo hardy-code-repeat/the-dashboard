@@ -111,12 +111,19 @@ type TaskRow = {
   ownerUserId: Id<"users">;
   spaceId: Id<"spaces">;
   title: string;
+  completed: boolean;
   priority: Priority;
   dueAt?: number | null;
   tags?: string[];
   recurrence?: string | null;
   area: AreaSlug;
   personId?: Id<"people">;
+  /** Phase 3 feature 3: the life-admin document this task renews (ADR-026). */
+  documentId?: Id<"documents">;
+  /** Present on every real row; needed by `featuresOf` for the `AGE` feature. */
+  createdAt: number;
+  completedAt?: number | null;
+  featuresAtCompletion?: number[];
 };
 
 /** Shape of a persisted assistant row. Exported so a second training path can
@@ -615,6 +622,72 @@ async function spawnNextOccurrence(ctx: GenericMutationCtx<DataModel>, task: Tas
   });
 }
 
+/**
+ * The completion transition, extracted so there is exactly one of it.
+ *
+ * `setTaskCompleted` and `documents:completeRenewal` both need to complete a
+ * task *and* train on it, because a finished renewal is a genuine outcome. If
+ * each path wrote its own version, the second one would be the copy that
+ * silently skipped `featuresAtCompletion` or the `task.completed` row — the
+ * D34 shape again, this time about an audit trail rather than a counter.
+ *
+ * This is a **caller** of `recordOutcome`, not a second writer: the single
+ * weight-mutation point is untouched (Do-Not-Touch #8).
+ *
+ * Returns true when a real not-completed → completed transition happened, which
+ * is what makes it idempotent under a duplicate click or an OCC retry.
+ */
+export async function completeTask(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+  spaceId: Id<"spaces">,
+  task: TaskRow,
+  now: number,
+): Promise<boolean> {
+  // Only a real transition trains the model or respawns the recurrence. This
+  // is what makes completing an already-completed task a no-op, whether it
+  // arrives as a duplicate click or as an OCC retry.
+  const completing = !task.completed;
+
+  await ctx.db.patch(task._id, { completed: true, completedAt: now });
+
+  if (!completing) return false;
+
+  // Capture the features the task had *at resolution time* — training on
+  // today's features for a task resolved today is the honest signal.
+  const state = await loadState(ctx, userId);
+  const behaviour = toBehaviour(state);
+
+  // Phase 3: `PEOPLE_FIT` finally has something real to read. The key is the
+  // person **id**, not a name — two people called "Raj" must not share
+  // completion evidence. Rows written before phase 3 keyed this counter by a
+  // free-text name; those keys simply stop being read, because a name is
+  // exactly the thing that cannot identify a person safely. The column is
+  // optional and nothing migrates.
+  const features = featuresOf(task);
+  const x = extractFeatures(features, behaviour, new Date(now));
+
+  await ctx.db.patch(task._id, { featuresAtCompletion: x });
+  await recordOutcome(ctx, userId, spaceId, state, x, features, 1, new Date(now));
+
+  // One append-only row per real completion. This is what the seven-day
+  // chart reads, so it is written on the transition and not derived from the
+  // task's current state — a completion that is later cleared away still
+  // happened, and still counts.
+  await ctx.db.insert("activity", {
+    spaceId,
+    actor: "user",
+    kind: "task.completed",
+    objectId: task._id,
+    at: now,
+  });
+
+  // Respawn before returning so the next occurrence exists by the time the
+  // caller sees the completion. Idempotent — see spawnNextOccurrence.
+  await spawnNextOccurrence(ctx, task);
+  return true;
+}
+
 export const setTaskCompleted = mutation({
   args: { id: v.id("tasks"), completed: v.boolean() },
   handler: async (ctx, args) => {
@@ -624,50 +697,15 @@ export const setTaskCompleted = mutation({
 
     const spaceId = await ensurePersonalSpace(ctx, userId);
     const now = Date.now();
-    // Only a real transition trains the model or respawns the recurrence. This
-    // is what makes completing an already-completed task a no-op, whether it
-    // arrives as a duplicate click or as an OCC retry.
-    const completing = args.completed && !task.completed;
 
-    await ctx.db.patch(args.id, {
-      completed: args.completed,
-      completedAt: args.completed ? now : null,
-    });
-
-    if (completing) {
-      // Capture the features the task had *at resolution time* — training on
-      // today's features for a task resolved today is the honest signal.
-      const state = await loadState(ctx, userId);
-      const behaviour = toBehaviour(state);
-
-      // Phase 3: `PEOPLE_FIT` finally has something real to read. The key is the
-      // person **id**, not a name — two people called "Raj" must not share
-      // completion evidence. Rows written before phase 3 keyed this counter by a
-      // free-text name; those keys simply stop being read, because a name is
-      // exactly the thing that cannot identify a person safely. The column is
-      // optional and nothing migrates.
-      const features = featuresOf(task);
-      const x = extractFeatures(features, behaviour, new Date());
-
-      await ctx.db.patch(args.id, { featuresAtCompletion: x });
-      await recordOutcome(ctx, userId, spaceId, state, x, features, 1, new Date());
-
-      // One append-only row per real completion. This is what the seven-day
-      // chart reads, so it is written on the transition and not derived from the
-      // task's current state — a completion that is later cleared away still
-      // happened, and still counts.
-      await ctx.db.insert("activity", {
-        spaceId,
-        actor: "user",
-        kind: "task.completed",
-        objectId: args.id,
-        at: now,
-      });
-
-      // Respawn before returning so the next occurrence exists by the time the
-      // client sees the completion. Idempotent — see spawnNextOccurrence.
-      await spawnNextOccurrence(ctx, task as TaskRow);
+    // Unticking is the one path that is genuinely a plain patch: there is no
+    // transition to guard, because a task that was already open stays open.
+    if (!args.completed) {
+      await ctx.db.patch(args.id, { completed: false, completedAt: null });
+      return;
     }
+
+    await completeTask(ctx, userId, spaceId, task as TaskRow, now);
   },
 });
 

@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AreaPicker, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
 import { FinanceArea } from "@/components/FinanceArea";
+import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
 import { planCapture } from "@/lib/capture";
 import { describeDue } from "@/lib/nlp";
@@ -428,6 +429,8 @@ export default function Dashboard() {
               <PeopleArea />
             ) : activeArea === "health" ? (
               <HealthArea />
+            ) : activeArea === "life" ? (
+              <LifeAdminArea />
             ) : (
               <TasksArea
                 area={activeArea}

@@ -30,6 +30,7 @@ import {
   type ConnectionView,
   type DeadlineView,
   type DocumentView,
+  type ExpiryView,
   type TaskView,
 } from "./sources";
 
@@ -42,6 +43,12 @@ export interface RuleInput {
   deadlines: DeadlineView[];
   connections: ConnectionView[];
   documents: DocumentView[];
+  /**
+   * Life-admin documents (phase 3, feature 3). Optional so an existing caller
+   * that has no documents yet keeps compiling, and so the absence is a real
+   * "none" rather than an accident.
+   */
+  expiring?: ExpiryView[];
   /** Meetings from a connected calendar. Empty when nothing is connected. */
   calendar?: CalendarView[];
   /** Areas the user has switched on, so a task in a disabled area stays quiet. */
@@ -65,6 +72,11 @@ export const HARD_KINDS: readonly string[] = [
   "task.imminent",
   "deadline.tax",
   "document.incomplete",
+  // A document whose renewal window has opened (phase 3, feature 3). Hard for
+  // the same reason `deadline.tax` is: it is a fixed date, not a preference,
+  // and a model that learns to bury "your passport expires in eight days" has
+  // learned the wrong thing.
+  "document.expiring",
   "connection.unfinished",
   "connection.stale",
   // A meeting that is about to start. Phase 2 adds it, and it is here rather
@@ -306,6 +318,54 @@ export function calendarRules(input: RuleInput, now: number): AttentionCandidate
 }
 
 /**
+ * Life-admin documents that need a renewal started.
+ *
+ * **Three anti-spam mechanisms, no new machinery.** This is the whole design of
+ * the rule, and each line is load-bearing:
+ *
+ *  1. `attention` is false outside the lead window, so a document renewing in
+ *     nine months emits nothing. One item per document, only when the user's
+ *     own lead time says it is time.
+ *  2. A document with a renewal in progress emits **nothing** — the server
+ *     decided that upstream and said so in the flag. This is the line that stops
+ *     one renewal producing two items, which is how an attention feed teaches
+ *     people to ignore it.
+ *  3. The existing `deadlines` budget of 4 caps the rest, and the pipeline
+ *     already reports how many items the caps hid.
+ *
+ * The rule does no deciding of its own: `severity`, `deadlineAt` and `detail`
+ * all arrive from `src/lib/documents.ts`. This file cannot disagree with the
+ * Life Admin surface about what state a document is in, because it is told.
+ */
+export function expiryRules(input: RuleInput, now: number): AttentionCandidate[] {
+  const out: AttentionCandidate[] = [];
+
+  for (const doc of input.expiring ?? []) {
+    if (!doc.attention) continue;
+    const severity = clamp01(doc.severity ?? 0);
+    if (severity <= 0) continue;
+
+    out.push({
+      kind: "document.expiring",
+      sourceId: doc.id,
+      section: "deadlines",
+      class: "hard",
+      severity,
+      title: doc.label,
+      detail: doc.detail,
+      dueAt: doc.deadlineAt,
+      escalation: escalate(doc.deadlineAt, severity, now),
+      // Past its date, or contradicted by a renewal the user already ticked
+      // off. Both have to be dealt with rather than filed away.
+      pinned: severity >= 0.9,
+      action: { label: "Start renewal", kind: "document.renew" },
+    });
+  }
+
+  return out;
+}
+
+/**
  * Every hard rule, in one call.
  *
  * The order here is the order rules are listed for a human, and it is also the
@@ -319,6 +379,7 @@ export function hardRules(input: RuleInput, now: number): AttentionCandidate[] {
     ...calendarRules(input, now),
     ...connectionRules(input, now),
     ...documentRules(input, now),
+    ...expiryRules(input, now),
   ];
 }
 

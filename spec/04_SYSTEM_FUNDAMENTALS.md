@@ -845,6 +845,198 @@ Answering these from the *existing* architecture rather than from invention:
 - **Blocked by:** a human decision. The agent may recommend, not decide.
 - **Interim behaviour:** Feature 2 ships with (a) — created tasks are ordinary `panel`-origin tasks and the capture path adds no training signal. If the user later prefers (b), it is an additive change to the feature layout, not a redesign.
 
+#### Phase 3, feature 3 — Life Admin: the expiry → renewal chain (APPROVED · IN PROGRESS)
+
+> **Status 2026-10-01.** APPROVED as a roadmap line (`Life Admin / documents |
+> APPROVED | 3 | Expiry → renewal chain`, PRODUCT_CONTEXT §5.2). As with Feature
+> 2, the line is a *name*, not a specification, and this block was written
+> before any code from the evidence in R-006 and R-007 rather than by
+> inventing a product.
+
+##### The audit that had to happen first
+
+The instruction was explicit: do not assume a new `documents` table is required,
+and do not assume `taxDocuments` can be generalised. Both were checked against
+the repository before anything was designed.
+
+| Question | What the repository actually does |
+|---|---|
+| What is `taxDocuments`? | `{ ownerUserId, spaceId, requirementId, gatheredAt }` — one row per **requirement id from a closed static country catalogue** (`COUNTRIES[c].documents`), toggled on and off. `gatheredAt` is when the user ticked it, not an expiry. There is no label, no date, no lifecycle. |
+| What does `toggleDocument` do? | A point lookup on `by_owner_requirement`, then either insert or delete. It is a **checklist toggle**, not a document lifecycle operation. Nothing depends on its shape beyond the Finance checklist UI, `life:getFinance` and the `document.incomplete` hard rule. |
+| Can `taxDocuments` absorb this feature? | **No, and four independent reasons.** (1) `requirementId` is a catalogue id; a passport is in no tax catalogue. (2) `readinessScore(country.documents, gatheredIds)` maps `requirementId` back to a catalogue entry, so a non-catalogue row would score as nothing. (3) `by_owner_requirement` gives one row per requirement — two passports could not coexist. (4) It would couple a user domain object to Do-Not-Touch #1, the verified tax figures. It stays exactly as it is. |
+| Can `tasks` express it instead? | It expresses the **renewal action** and nothing else. A task has no expiry and no identity; `recurrence` respawns on a fixed cadence, which R-006 shows is wrong for a document whose validity period is 10 years, 3 years or 1 year, and which would keep firing after a renewal replaced the date. |
+| Does a `documents` table genuinely need to exist? | **Yes.** Proven by elimination above, not assumed. ADR-007 already requires one table per object kind, and §3.2 has listed `documents` as a target table since the beginning. |
+| Where does it live in the UI? | The existing **Tab system**. `home` renders a generic task list today and its own blurb is "Repairs, cleaning, and the admin of running a place" — a passport is not that, and widening `home` would distort an area that is already correct. Feature 3 adds one `AreaSlug` (`life`) and one body in the Dashboard switch. **No second Page system.** |
+
+##### The specification gap this had to close
+
+Six questions were unanswerable from the roadmap line, and each changes what
+gets built:
+
+1. **What is a "document"?** Unanswered, and it decides whether this is a
+   document manager.
+2. **What is the deadline — the expiry, or something earlier?** Unanswered,
+   and R-006 shows the obvious answer is wrong.
+3. **What states does the chain have?** Unanswered, and the temptation is to
+   invent a status enum.
+4. **What happens on renewal completion, and who sets the new date?** This is
+   the step that silently fails.
+5. **Does expiry become Attention, and as what?** Notification-spam risk.
+6. **Is expiry a learning signal?** Q-006's cousin.
+
+| Question | Answer, and why it follows |
+|---|---|
+| What is a document? | **Metadata about keeping a credential valid.** Label, expiry date, how early to warn. No file, no number, no scan (R-007). |
+| The deadline | **`expiresAt − leadDays`.** Not the expiry. The expiry is when the document stops working; the deadline is when the user has to start (R-006). |
+| States | **Seven, all derived** from `(expiresAt, the linked renewal task)` and `now`. **No stored status field** (ADR-025). |
+| On renewal completion | **One atomic mutation** sets the new expiry *and* completes the task. The generic task path stays reachable, so the model also detects the case where it was used and the date never moved. |
+| Attention | **One new hard kind**, `document.expiring`, in the existing `deadlines` section, which already has a budget, a cap and a disclosed overflow count. |
+| Learning | **No new index and no new signal from authorship.** A completed renewal is already a real outcome and trains through the existing path. |
+
+##### 12.0 Scope block — Life Admin / documents
+
+| Field | Value |
+|---|---|
+| **Feature** | Life Admin — a document with an expiry, and the renewal that keeps it valid |
+| **Problem it solves** | Panel knows every tax deadline in five countries and can tell you a filing document is missing. It knows **nothing** about the passport, the licence, the insurance or the vehicle registration. The failure those share is discovered late and expensively — a passport with under six months left is refused by some carriers; a licence lapse is a missed shift; an insurance lapse is an unpaid claim. R-006: the deadline is not the expiry date, and nobody can be reminded at a date they were never told about. |
+| **User outcome** | Keep one list of the things that expire, and be told at the point where starting is still possible. |
+| **IN SCOPE** | A `documents` table holding **metadata only**; a derived expiry state machine in `src/lib/documents.ts`; the renewal expressed as an **ordinary `tasks` row** pointing at the document; an atomic renewal completion; one new hard Attention kind; one new `AreaSlug` (`life`) rendering a Life Admin surface in the **existing Tab system**; four `document.*` activity kinds that are actually written and readable back. |
+| **OUT OF SCOPE** | File storage, upload, images, document numbers, references or scans (R-007) · automatic renewal, payments, bookings, government submissions or any external action · natural-language capture of documents · merging two documents · a per-country or per-document-type catalogue of lead times · a `status` column · a new Attention section · a second prioritisation system · email or push notifications · any change to `taxDocuments`, `toggleDocument` or the Finance checklist. |
+| **DO NOT TOUCH** | `taxDocuments` and `toggleDocument` exactly as they are · Do-Not-Touch #1 (`tax.ts` figures) · #6 (scorer maths) · #7 (`nlp.ts` token loop) · #8 (`recordOutcome` as the single weight-mutation point — `completeRenewal` is a second **caller**, never a second writer) · #9 (`disableArea` re-homes rather than deletes) · ADR-010 feature layout (indices 0–7; `FEATURE_COUNT` stays 12, `WEIGHTS_VERSION` stays 1) · ADR-023/024 · the `deadlines` section budget of 4. |
+| **Supported object types** | The document and its renewal task. **Nothing else.** A capture still creates tasks only (Feature 2, unchanged). |
+| **Existing objects reused** | `tasks` (the renewal, with `documentId`) · `people` (a document may name whose it is) · `areas` (`life`, via `enableArea`/`disableArea`) · `activity` (the audit) · `attention` (the rule, the section, the budget, the feedback path) · `spaces` (`ensurePersonalSpace`) · `schema.objectKindValidator` (`document` is **already** a declared literal) · `schema.LINK_RELS` (`occursBefore` is available if ever needed — not used in this feature). |
+
+##### The domain model, and why it is this small
+
+**`documents`** — five columns, one of them required:
+
+| Column | Type | Why it exists |
+|---|---|---|
+| `ownerUserId`, `spaceId` | ids | ADR-009. Every product object carries both. |
+| `label` | `string` (1–80, trimmed) | What the user calls it. The only free text in the row. |
+| `expiresAt` | `number?` | Epoch ms. **Optional**: absent means "no expiry recorded", and such a row never becomes Attention. |
+| `leadDays` | `number?` | How many days before expiry the renewal must start. Optional, defaulting to `DEFAULT_LEAD_DAYS` — see the honesty note below. |
+| `createdAt` | `number` | Ordering, and the sort key for the list. |
+
+Indexes: `by_space`, `by_owner`, and `by_owner_expiry`
+(`ownerUserId, expiresAt`). The third exists because Convex omits a document
+from an index when the indexed field is absent, so that range holds **exactly
+the documents that have an expiry** — which is precisely the set Attention
+needs, and it is narrower than the list read. D37 and D39 were both unbounded
+collects; this index is the reason the Attention read is bounded by what it
+actually uses.
+
+**`tasks.documentId`** plus `by_owner_document`, mirroring `tasks.personId`
+exactly. The **task points at the document; the document never points at the
+task.** Three reasons: the query "the renewal for this document" is an index
+range rather than a reverse scan; task rows are created and deleted constantly
+and a document holding a task id would need patching on every one of them; and
+ADR-023's principle — *nothing rewrites anything, every read resolves through
+the relation* — generalises for free.
+
+**What is deliberately NOT stored:**
+
+| Not stored | Why it is derived instead |
+|---|---|
+| `status` / `state` | A stored status can disagree with the two inputs it summarises. That is the D34 defect class exactly, and the D34 lesson is that a "nothing happened" roll-up compiled cleanly and was permanently zero. |
+| `renewalStartedAt` | "Renewal underway" **is** "there is an open task with this `documentId`". Storing it would create a second copy that can drift. |
+| `renewedAt` / renewal history | `activity` already records the event, and the *evidence* that a renewal happened is the new expiry date, which is on the row. |
+| `validityDays` / a cadence | R-006: validity periods differ per document *and per person* (10y passport, 3y licence from 70, 1y insurance). A cadence would be confidently wrong. |
+
+**What belongs where, answered:**
+
+| Question | Answer |
+|---|---|
+| The document itself | label, expiry, lead time |
+| The renewal process | a `tasks` row — `title` is where "what renewal involves" lives, which is why the table needs no notes field |
+| A task | the action, its due date, its completion — unchanged |
+| Attention | computed, never stored (ADR-003) |
+| A person | `personId`, for "this is Raj's passport", reusing Feature 1 wholesale |
+| A space | `ensurePersonalSpace`; `disableArea` re-homes tasks and never deletes documents |
+
+##### The chain, precisely — expiry → renewal → new expiry
+
+A pure function `describeDocument(doc, renewalTask, now)` returns one of seven
+states. There is **no stored state machine**, so no state can be wrong (ADR-025).
+
+| State | Condition | Attention? | What the surface offers |
+|---|---|---|---|
+| `undated` | no `expiresAt` | no | “Add the date so Panel can watch it” |
+| `valid` | `expiresAt − now > lead` | no | the date, and how long until the window opens |
+| `due` | `0 < expiresAt − now <= lead`, no open renewal | **yes** | **Start renewal** |
+| `renewing` | an open renewal task exists, expiry not yet passed | no — the task speaks for itself | “Renewal in progress”, linking to the task |
+| `renewing-late` | an open renewal task exists, expiry passed | no — the task is already `task.overdue` | as above, flagged late |
+| `expired` | `expiresAt <= now`, no open renewal | **yes**, pinned | **Start renewal** |
+| `stale` | `expiresAt <= now` and a renewal task completed at a time **after** `expiresAt`, with the expiry never advanced | **yes**, highest severity | **Record the new expiry** |
+
+The explicit cases the chain has to handle, and how:
+
+- **No expiry / renewal date unknown** → `undated`. The row exists, Panel is
+  honest that it cannot watch it, and nothing nags. *Rejected alternative: a
+  separate `date-unknown` state.* It would change no behaviour, so it is not
+  created (step 11: do not create states the product does not need).
+- **Expiry known, far off** → `valid`. Silent.
+- **Renewal date unknown** — the same thing as “expiry unknown”, because the
+  renewal date is *computed* from the expiry and the lead time. There is
+  nothing else it could be known from. This is a consequence of R-006, not an
+  omission.
+- **Renewal required / underway / renewed** → `due` / `renewing` / the new
+  `expiresAt`. “Renewed” is an **event in `activity`, not a state**: once the
+  new date is set, the document is simply `valid` or `due` again, which is
+  correct — a renewed passport *is* a passport with a later date.
+- **Renewal failed or incomplete** → `stale`. This is the state the whole
+  design is built to make visible. The renewal task is an ordinary task, so the
+  user *can* complete it through the normal dashboard checkbox, which trains
+  the model correctly and never touches `expiresAt`. Without `stale` that is a
+  silent data-integrity failure: a completed task next to a document that still
+  reads as expired. With it, the surface says exactly what happened.
+
+**Lead time — an honesty decision.** R-006 found 90 days (Virginia DMV), 60
+days (Utah DMV), 4–6 weeks plus mailing (State Department) and 6 months
+(USAGov’s entry warning). These are not one number and they are not
+country-independent. Panel therefore ships **one clearly-labelled default of 30
+days**, overridable per document, and states in the UI that it is a default and
+not a figure from any authority. A catalogue of per-country, per-document lead
+times would be a `tax.ts`-shaped table of figures this project cannot audit —
+and Do-Not-Touch #1 exists because unverifiable figures are exactly the
+liability. If a user wants the DMV's 90 days, they type 90.
+
+**The new expiry must move forward.** `completeRenewal` refuses a
+`newExpiresAt` that is not later than the current expiry, with a plain message.
+A chain that can run backwards is not a chain. A *renewal completed late*,
+producing a date that is already in the past, is **allowed** — that is reality,
+and the state machine will correctly report `expired`.
+
+##### Lifecycle, authorization, attention, learning
+
+| Field | Value |
+|---|---|
+| **Lifecycle** | `createDocument` → `startRenewal` (creates the linked task, due at `expiresAt − leadDays`) → `completeRenewal({ id, newExpiresAt })` (**one mutation**: sets the expiry, completes the task, trains through `recordOutcome`, writes activity) → the document returns to `valid`/`due` on the new date. `cancelRenewal` clears the task. `deleteDocument` removes the row and **clears `documentId` on its tasks rather than deleting them** (Do-Not-Touch #9: never delete user data as a side effect of another action) and reports how many tasks it detached. |
+| **Authorization** | `requireUserId` on every write; `row.ownerUserId !== userId` → throw on every write; every read scoped by a `by_owner*` index. A `personId` supplied on a document is ownership-checked exactly as `addTask` does. **No mutation accepts `ownerUserId` or `spaceId`** — there is no “view as” path, matching Feature 1. |
+| **Ownership / space** | `ensurePersonalSpace` once per create; every document and every renewal task carries the caller's own `ownerUserId` + that space. A renewal task is created in `area: "general"` **on purpose** — it must appear in the user's main task list, where they can see and complete it, and coupling its visibility to whether they enabled the `life` area would hide work they explicitly asked for. |
+| **Duplicate behavior** | **No deduplication and no refusal.** Two rows with the same label stay separate until the user deletes one. A label is not identity — the same reasoning as ADR-024 — and refusing to create a second "Car insurance" would be wrong the moment someone holds two. Merging is not in scope and is not added. |
+| **Attention behavior** | One new hard kind, **`document.expiring`**, in the existing **`deadlines`** section (fixed dates, rules only — and the existing `document.incomplete` tax rule is already there). Fires for `due`, `expired` and `stale` **only**. `severity` is deterministic, rising from 0.6 at the window edge to 0.95 at expiry; `expired` and `stale` are `pinned`. `dueAt` is `expiresAt − leadDays`. `class: "hard"`, so it is never scored, never suppressed and never personalised (ADR-006). Action: **Start renewal**, which on press calls `startRenewal` — the same rule as `task.imminent`, whose button completes the task. |
+| **Anti-spam, explicitly** | Three mechanisms, no new machinery: (1) a document outside its lead window emits **nothing**; (2) a document with an open renewal emits **nothing**, because the task already speaks — this is what stops one renewal producing two items; (3) the existing `deadlines` budget of 4 caps the rest, and the pipeline **already** reports `hiddenByCap` to a UI that already says how many items the caps hid. Nothing is truncated silently. |
+| **Area behaviour** | Attention from documents does **not** consult `enabledAreas`, consistently with `deadline.tax` and `document.incomplete`, which do not. A fixed date is a fact, not a preference; disabling an area is a statement about what to *work on*, not licence to stop being told a passport expired. `disableArea("life")` re-homes the renewal tasks to `general` and leaves every document alone. |
+| **Learning implications** | **No new feature index, no new signal from authorship, nothing to add to the frozen layout.** Creating a document is authorship — the same reasoning that produced the Q-006 interim answer. Completing a renewal is a **real outcome** and trains through the existing `recordOutcome` path with no new plumbing, because the renewal is an ordinary task. `FEATURE_COUNT` stays 12, `WEIGHTS_VERSION` stays 1, indices 0–7 untouched, and nothing migrates. |
+| **Capture behavior** | **None. Out of scope, deliberately.** Recognising “my passport expires in March” is a *parser* decision, and R-004 established that ambiguous extraction is where user data gets damaged. Adding it would mean new vocabulary in Do-Not-Touch #7. Documents are created by explicit action in the Life Admin surface. |
+| **Privacy** | Metadata only: label, expiry, lead time, owner, optional person. **No file, no number, no scan, no reference, no storage integration** (R-007). Nothing to export, retain or delete beyond one row. `document.created` / `.deleted` carry the label in `meta` only if it is already visible to the owner — the activity table is owner-scoped by space. |
+
+##### Audit, performance, budget, acceptance
+
+| Field | Value |
+|---|---|
+| **Audit** | Four new kinds in the closed taxonomy — `document.created`, `document.deleted`, `document.renewal_started`, `document.renewed` — and **every one of them is written on its own path and read back** by `documents:documentAudit`. R-005 found a taxonomy full of kinds that were declared and never written, and D38 is that defect; the fix is to make the write checkable, not to declare less. `completeRenewal` additionally writes `task.completed`, which is already a genuinely-written kind, because the task really did complete. |
+| **Performance** | List read: `by_owner` (bounded by how many documents a person has). Attention read: **`by_owner_expiry`** — an index range holding only dated documents. Renewal-task lookups: `by_owner_document`. `deleteDocument` reads its own tasks through that index and patches them in one transaction. **No `.collect()` anywhere without a `by_owner*` prefix**, and no JavaScript-side cross-user filtering. The audit read is `by_space_at` **with** a range and a `.take(AUDIT_SCAN_LIMIT)`, which is the D39 shape done correctly. |
+| **Input bounds** | `label` trimmed, 1–80. `leadDays` an integer 0–365. `expiresAt` and `newExpiresAt` must be finite — `NaN`/`Infinity` refused at the boundary (the N5 lesson), not coerced. `completeRenewal` refuses a non-advancing expiry. `startRenewal` on a document that already has an **open** renewal returns the existing task rather than creating a second. |
+| **Dependencies** | Phase 3 Features 1 and 2 (both VERIFIED) — `personId` reuse and the task model. Phases 0B/0C for `ownerUserId`/`spaceId` and validation. Nothing else. |
+| **Blockers** | **None.** Q-001 and Q-006 are untouched by this feature and are not waited on. Google credentials and D32 are unrelated. |
+| **Complexity budget (ADR-016)** | **4 new files · 1 new table · 0 deps · 1 abstraction** (the derived expiry state machine, `src/lib/documents.ts`). The one table is proven necessary above; a feature that needed two would be a different feature. |
+| **Out of budget** | New activity kinds, the new `AreaSlug`, and `tasks.documentId` are *edits to existing files*, counted against no file budget — as they were in Features 1 and 2. |
+| **ACCEPTANCE CRITERIA** | (1) A document with an expiry inside its lead window and no renewal produces exactly one `document.expiring` hard item, in `deadlines`, with `dueAt = expiresAt − leadDays`. (2) The same document with an **open** renewal task produces **no** document item, and the task produces its own — one renewal, one item. (3) `startRenewal` creates a task with `documentId` set and `dueAt` equal to the computed deadline, and `by_owner_document` returns it. (4) `completeRenewal` sets the new expiry, completes the task, and the document returns to `valid`; the **old expiry is gone**, not retained as history on the row. (5) Completing the renewal task through the **generic** `setTaskCompleted` leaves the document `stale`, and `stale` is visible and stated. (6) Every read and write is owner-scoped: a second account sees zero documents, and a foreign document id is refused on all five write paths. (7) `deleteDocument` detaches the document from its tasks without deleting them, and reports the count. (8) The audit read returns a real row for each of the four `document.*` kinds with the real counts — written, not assumed. (9) Nothing regresses: the 21 `nlp.test.ts` fixtures, the 34 `tax.test.ts` fixtures, the tax checklist (`toggleDocument` → `getFinance` → `document.incomplete`) and the existing capture behaviour are all byte-for-byte unchanged. (10) Budget: 4 files / 1 table / 0 deps / 1 abstraction. (11) `FEATURE_COUNT` is 12, `WEIGHTS_VERSION` is 1, and no table other than `documents` gained a column. |
+| **Verification** | Unit fixtures for the state machine (pure, injected clock — every state reachable from a fixture, including the boundaries). A live harness deciding all eleven criteria, including cross-user isolation, the byte-identical tax regression, and the read-back audit. **If `assistant.ts` is touched at all, ADR-022 OCC is re-armed and re-run — not inherited.** |
+| **Risk** | The real risk is drift toward a document manager. The defences are the file/table budget, the OUT OF SCOPE list, and the fact that the feature is honestly complete without storage: the expiry chain is finished when the new date is recorded, and there is nothing else to build. |
+
 ### 11.3 Scope rules
 
 - Work outside `IN SCOPE` is **not done**, however trivial. It becomes an Open
