@@ -65,6 +65,7 @@ export const objectKindValidator = v.union(
   // activity row cannot claim to be about something that does not exist.
   v.literal("subscription"),
   v.literal("account"),
+  v.literal("agentProposal"),
 );
 export type ObjectKind = Infer<typeof objectKindValidator>;
 
@@ -245,6 +246,10 @@ export const activityKindValidator = v.union(
   v.literal("agent.proposed"),
   v.literal("agent.executed"),
   v.literal("agent.skipped"),
+  // Phase 3 feature 6. The runner requires this flag on enrolment **and**
+  // re-checks it on every run, so switching it off stops scheduled agents for
+  // everybody immediately. A gate that can only be turned on is not a gate.
+  v.literal("debug_agents_v1"),
 );
 export type ActivityKind = Infer<typeof activityKindValidator>;
 
@@ -374,6 +379,10 @@ export const featureFlagValidator = v.union(
   v.literal("generalisedRanking"),
   v.literal("exploration"),
   v.literal("attentionGrouping"),
+  // Phase 3 feature 6 — the agent framework's off switch. Required on
+  // enrolment and re-checked on every run, so it can stop scheduled agents as
+  // well as start them.
+  v.literal("debug_agents_v1"),
 );
 
 /** Why a model snapshot was taken. */
@@ -460,7 +469,31 @@ const schema = defineSchema(
        * `ensurePersonalSpace` in src/convex/spaces.ts.
        */
       migratedAt: v.optional(v.number()),
-    }).index("by_createdBy", ["createdBy"]),
+    /**
+     * When this space is next due for a scheduled agent run (phase 3,
+     * feature 6).
+     *
+     * **This column is the entire scheduler.** A scheduled run has no idea who
+     * it is running for — Convex cron delivers one invocation and no context —
+     * so the set of spaces to process has to be found by an **index range**,
+     * not by collecting every space in the deployment and filtering in
+     * JavaScript. That is the D37/D39/D41/D42/D43 lesson applied to the one
+     * path in the product that would otherwise be an unbounded table scan.
+     *
+     * **Absent means "never scheduled".** Convex omits a document from an index
+     * when the indexed field is absent, so a space nobody has opted in is not
+     * in the range and cannot be picked up — opt-out is structural rather than
+     * a flag someone has to remember to honour. That is also the safest
+     * posture for a process that runs with nobody watching.
+     *
+     * The runner only advances the rows it actually processed, so a backlog
+     * drains at a fixed rate without starving the spaces at the back: they
+     * simply stay in the past, at the head of the range, until there is room.
+     */
+    nextAgentRunAt: v.optional(v.number()),
+  })
+    .index("by_createdBy", ["createdBy"])
+    .index("by_nextAgentRunAt", ["nextAgentRunAt"]),
 
     /** Which spaces a user belongs to, and their baseline role in each. */
     spaceMembers: defineTable({
@@ -1393,6 +1426,106 @@ const schema = defineSchema(
       // query: D41 again, in a new hat.
       .index("by_owner_document", ["ownerUserId", "documentId"])
       .index("by_owner_account", ["ownerUserId", "accountId"]),
+
+    /**
+     * One row per scheduled agent execution (phase 3, feature 6, ADR-030).
+     *
+     * **Non-sensitive by construction, which is why it always persists.** §6.1
+     * gated `agentRuns` behind `debug_agents_v1` because a trace could contain
+     * whatever an agent happened to look at. This table contains only counts,
+     * a duration, and a boolean — no labels, no amounts, no titles, no ids
+     * beyond the space the run belongs to. There is nothing in it to leak, so
+     * gating it would have made the audit trail optional, and an optional
+     * audit trail is not one.
+     *
+     * The `overflow` column is the reason §6.1 says "never silently
+     * truncated": a cap that discards work invisibly is indistinguishable from
+     * an agent with nothing to do, and the difference matters when someone is
+     * asking why their review did not appear.
+     */
+    agentRuns: defineTable({
+      /** Which space the run was for. The tenant boundary (ADR-009). */
+      spaceId: v.id("spaces"),
+
+      /** Which agent. A closed vocabulary — see `REGISTERED_AGENTS`. */
+      agent: v.optional(v.string()),
+
+      /** The deterministic key this run is accounted under. */
+      key: v.optional(v.string()),
+
+      /** Epoch ms. The daily cap is a window over this column. */
+      at: v.number(),
+
+      /** Wall-clock duration in ms. A number, not a profile. */
+      durationMs: v.optional(v.number()),
+
+      /** `ok` | `skipped` | `capped` | `failed`. Never "succeeded" on a crash. */
+      result: v.string(),
+
+      /** How many agent executions ran. What the caps actually bound. */
+      executions: v.optional(v.number()),
+
+      proposals: v.optional(v.number()),
+      skipped: v.optional(v.number()),
+
+      /**
+       * How many were held back by a cap. Zero in the ordinary case; the whole
+       * point of the column is that it is not *assumed* to be zero.
+       */
+      overflow: v.optional(v.number()),
+
+      /**
+       * A failure message, when there was one. Bounded and sanitised by the
+       * runner — never a stack, never an argument value.
+       */
+      error: v.optional(v.string()),
+    })
+      .index("by_space_at", ["spaceId", "at"]),
+
+    /**
+     * A proposal an agent made, for the user to act on (phase 3, feature 6,
+     * ADR-011's `proposed` tier).
+     *
+     * **Proposals never execute.** A row here is a thing to read and a thing
+     * to accept or dismiss — nothing more, and there is no column that would
+     * let a proposal cause a write to a financial row.
+     *
+     * **`key` is the idempotency guarantee** (Do-Not-Touch #9). The runner
+     * looks the key up before writing, so the same finding on the same input
+     * does not produce a second row, a second activity row, or a second
+     * notification — a plain index lookup rather than a filter, because the
+     * alternative is a scan that grows with the user's history.
+     */
+    agentProposals: defineTable({
+      spaceId: v.id("spaces"),
+      ownerUserId: v.id("users"),
+
+      /** The deterministic key. Unique in practice, enforced by the runner. */
+      key: v.string(),
+
+      agent: v.string(),
+
+      title: v.string(),
+      detail: v.string(),
+
+      /**
+       * Bounded scalar evidence, capped at a handful of pairs by the runner.
+       * Deliberately **not** a JSON blob (ADR-008) and deliberately not a copy
+       * of the rows it summarises: a proposal is a pointer to something the
+       * user can already open, not a duplicate of it.
+       */
+      evidence: v.optional(v.array(v.object({ label: v.string(), value: v.string() }))),
+
+      at: v.number(),
+
+      /** `open` until the user acts on it. Never mutated by the agent. */
+      status: v.optional(v.string()),
+      resolvedAt: v.optional(v.number()),
+    })
+      // No by_owner index, and deliberately so: every read is already scoped by
+      // space, and the caller's space comes from an index scoped to them.
+      .index("by_space_at", ["spaceId", "at"])
+      .index("by_space_key", ["spaceId", "key"]),
 
     /**
      * A tool the user has connected. `credentials` holds the token supplied by

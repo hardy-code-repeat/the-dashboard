@@ -1873,6 +1873,141 @@ ADR-016, ADR-019, ADR-025, ADR-026, ADR-028, ADR-029
 Related defects: D43, D44, D45, D46
 Budget: 4 of 6 new files · 2 of 2 new tables · 0 deps · 1 abstraction
 
+## CHANGE-0018
+
+```
+Date:       2026-10-01
+Phase:      3, feature 6 — deterministic agents (scheduled runner + first
+            additive review agent)
+Type:       feature
+Severity:   ARCHITECTURE
+Summary:    Panel had intelligence and no *when*. Everything it knows is
+            computed at query time, so a user who does not open the app is
+            never told anything — and the specification's answer, six named
+            agents, would have produced five duplicate producers for events
+            that already fire. Delivered instead as ADR-030: **one Convex
+            cron function, one registered agent, and a tier that is a type
+            rather than a convention.** The agent proposes; it cannot touch
+            money, and that is enforced by the compiler rather than by care.
+```
+
+### What changed
+
+A **Things to check** block inside the existing Finance area, a **Check now**
+button, a **Daily review on/off** switch, and a line stating when Panel last
+looked and what it found. Two tables, one pure module, one cron declaration.
+
+The five things worth knowing before reading the code:
+
+1. **Cron answers *when*, never *what*.** `convex.config.ts` declares exactly
+   one scheduled function — `agents/daily`, `0 7 * * *` — calling
+   `internalRunDueSpaces`. It carries no user and no capability, so it cannot
+   widen what an agent may do.
+2. **The tier is a type.** `AgentAction` is a closed union of
+   `{kind:"flag"} | {kind:"log"}`. There is no variant that can insert an
+   expense, patch a tax profile or reach a document, so an agent that tried
+   would not compile. `financeReviewAgent` returns the narrow
+   `{tier: "proposed"}`, so "could this agent escalate?" stopped being a
+   decision a later edit could make by accident.
+3. **One agent, not six.** Five of the six §6.1 names already had producers.
+   Building them would have been a violation of feature 3's own *one renewal,
+   one item* criterion, committed in the name of following the specification.
+4. **Overflow is counted, observable and audited** — all three. Counted and
+   audited were free; **observable** needed a query, because a cap that
+   silently discards work is a cap nobody can debug.
+5. **The swing is computed by calling `estimateTax` twice**, not by applying a
+   rate of its own. The number goes on screen next to the estimate it
+   qualifies, and a second tax arithmetic path is a second thing that can
+   disagree with the first.
+
+### The gap the agent list was hiding
+
+Reading §6.1 alone, six agents is the work. The audit found the opposite: five
+of the six would each have been a **second producer** for an event something
+already reports, and feature 3's acceptance criteria forbid exactly that in one
+sentence. The real gap was not six agents. It was that Panel had no *when* at
+all — a scheduler was needed, and only then was a genuinely additive agent
+worth writing.
+
+So the feature is two things that happen to be one: **a scheduler**, which is
+one cron expression and one bounded index range, and **one agent**, chosen as
+the only thing in the product that looks at an existing row and says *this
+number depends on something nobody checked*.
+
+### The proposal never claims to know
+
+It sums what rests on unconfirmed categories and states the swing if none of
+them qualified — and it says, in as many words, that it is not saying they are
+wrong. The wording is a constraint rather than a style choice, and it is
+asserted in the live harness against the deployed string: strip the disclaimer
+and no `wrong`, `incorrect`, `mistake` or `error` may survive. A scheduled
+process guessing wrong about a tax return is worse than one that said nothing,
+because nobody is watching when it guesses.
+
+**I have looked changes no money.** Accepting records an acknowledgement and
+stops. Confirming a category stays an act the user performs in the Expenses
+list, where they can see what they are confirming. An accept button that
+silently rewrote a tax return would be the exact failure this feature was
+scoped to avoid — and it would be invisible, which is worse.
+
+### Bounded underneath
+
+A scheduled job is uniquely able to get away with *collect every space and
+filter*, and uniquely wrong to. So: due spaces are an **index range** on
+`by_nextAgentRunAt` with `.take(200)`; a space that has not opted in is not in
+the range at all, and clearing `nextAgentRunAt` removes it from the index
+because Convex drops a document from an index when a field is absent — one
+patch, and no second source of truth to keep in step. Expenses come from the
+`by_owner_spentAt` **range** feature 5 added. The daily tally is a bounded read
+of one space's own runs.
+
+### Verification
+
+**26 unit fixtures** in `src/lib/agents.test.ts` — 448 pass, 0 fail across 16
+files — pinning the caps at their exact boundaries (10 allowed / 11 overflows;
+50 allowed / 51 overflows), trace purity, and the never-claims-wrong wording.
+
+**52 live invariants, 0 skips, 5 notes, 61 mutations.** The headline check is
+**A11**: the harness fills the space's own daily tally to exactly 50 and then
+fires the runner again, proving the 51st execution is refused, counted as
+overflow (`1`), reported `capped` rather than successful, and **readable by the
+owner** — with expenses, buckets, estimate and profile byte-identical
+afterwards. It was added because the cap was previously only asserted as a pure
+function, and *bounded* is a claim about a database, not about a function.
+
+**What is NOT claimed.** **Cron firing is unverified.** The deployment accepted
+`convex.config.ts` and the runner it targets is exercised live through the same
+`runSpace` that `runMyAgentsNow` calls — but a 07:00 delivery cannot be
+observed inside a test run, and neither `convex function-spec` (which lists 114
+functions and exposes no scheduled-function type) nor any other CLI surface can
+read the schedule back. So the harness verifies *the runner* and *the front
+door*, and says nothing it cannot see about the alarm. **A12's thrown-failure
+path is likewise not exercised**: the only honest way to make a real space
+throw is to break the code first, so that is recorded as a note and not as a
+pass. What *is* verified is the property either side of it — a run that did
+nothing is recorded `skipped`, never as a silent success.
+
+`assistant.ts` was **not touched** and the feature writes no assistant state,
+so ADR-022's OCC invariant is not re-armed; run I (1,936 mutations / 45 rounds
+/ 0 duplicates) stands. All twelve pre-existing conformance harnesses re-run
+and pass.
+
+**One defect was found in self-review, after the gates were green (D48).**
+`listProposals` read `by_owner` and filtered to the space in JavaScript — D42
+and D43's exact shape, in the newest module, written with both defect write-ups
+open. The harness passed either way, because a filter and a range return the
+same row when there is one proposal. It is now a `by_space_at` read in
+descending order, and the index it needed has been deleted rather than left
+behind for someone to read the wrong way later.
+
+Related ADR: ADR-002, ADR-003, ADR-006, ADR-009, ADR-011, ADR-012, ADR-013,
+ADR-014, ADR-016, ADR-019, ADR-025, ADR-026, ADR-029, ADR-030
+Related defects: D47 (partially resolved — one of three declared `agent.*`
+kinds now written, the other two deliberately reserved); D48 (a
+collect-then-filter in the new module, found in self-review and fixed by
+dropping the filter and the index it needed)
+Budget: 5 of 6 new files · 2 of 2 new tables · 0 deps · 1 abstraction
+
 ---
 
 ## Open Questions / Decisions Required
@@ -3232,6 +3367,91 @@ money cannot go on `documents` and the composition has to point rather than merg
 insurance, a loan, a licence — composes this way too, which is what makes the
 decision cheap rather than merely correct.
 
+### ADR-030 — Convex cron is the only scheduler, and an agent with a producer is not reimplemented
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 6 (CHANGE-0018).
+Implements ADR-011; extends ADR-009, ADR-012, ADR-016.
+
+**Decision.** Two things, both of them refusals as much as constructions.
+
+**1. The scheduling mechanism is Convex's own cron, declared in one place.**
+`convex.config.ts` holds exactly one scheduled function — `agents/daily`,
+`0 7 * * *`, calling `internal.agents.internalRunDueSpaces`. There is no
+external scheduler, no queue, no Redis, no worker, no second backend and no
+plugin registry. A space is enrolled by an explicit user action **and** gated on
+the `debug_agents_v1` feature flag, which is re-checked on every run; a space is
+found due through the `by_nextAgentRunAt` index range, so a space that has not
+opted in is not merely skipped — it is not in the range at all. Clearing
+`nextAgentRunAt` removes the document from the index, which is Convex's own
+documented behaviour for an absent indexed field, so switching agents off is a
+single patch with no second source of truth to keep in step.
+
+**2. The registry holds one agent.** Five of the six §6.1 agents are **not**
+implemented, because each already has a producer:
+
+| §6.1 agent | Existing producer |
+|---|---|
+| `recurringRespawn` | `assistant.spawnNextOccurrence` (0A) |
+| `documentExpiry` | the `document.expiring` hard rule (CHANGE-0015) |
+| `commitmentOverdue` | `commitment.overdue` / `.waiting` (CHANGE-0016) |
+| `applySync` | `integrations.internalApplyBatch` (ADR-012) |
+| `recurringPayment` | needs accounts and transactions — unapproved Finance work, and §2.3 forbids the ledger |
+| `relationshipReminder` | needs a relationship model Panel does not have |
+
+The one implemented agent is **low-confidence finance review**, and it is a
+proposal-only agent: it reads, it adds up, and it reports. It cannot mark
+anything deductible, change a tax profile, create a transaction or take any
+external action.
+
+**Context.** The specification had a gap that was not visible from the agent
+list. §6 described the agent model and §6.1 named six agents, so reading the
+spec alone, six agents is the work. The audit found that five of the six would
+have been **second producers** for events something already reports — and
+feature 3's own acceptance criteria forbid exactly that outcome in one sentence:
+*one renewal, one item*. Building them would have been a violation of a
+criterion committed in the name of satisfying a specification.
+
+The real gap was the absence of a **when**. Panel's intelligence is entirely
+computed at query time (ADR-003): nothing ever looks at anything on the user's
+behalf, so a user who does not open the app is never told anything. That is a
+product gap, and no amount of agent code closes it without a scheduler.
+
+**Consequences.**
+- **Cron cannot widen authority.** A cron invocation carries no user and no
+  capability. The tier is a return type in `src/lib/agents.ts`, and the
+  `automatic` variant's action union is `{kind:"flag"} | {kind:"log"}` — there is
+  no variant that can write a financial row, so an agent that tried would not
+  compile. That is a stronger statement than any comment in the runner.
+- **A scheduled process in this product cannot act on money at all.** Not
+  *does not*, *cannot* — the type has no such operation. "I have looked" on a
+  proposal records an acknowledgement and stops; confirming a category stays an
+  act the user performs in the Expenses list.
+- **Exactly one producer per event is preserved**, so the anti-duplication guards
+  from features 3 and 4 are structural rather than re-argued per feature.
+- **Overflow is observable, not merely stored.** The caps are §6.1's 10 per run
+  and 50 per space per day, and excess is returned as a **count** by
+  `applyCaps` rather than truncated. `getLastRun` surfaces that count to the
+  owner, because a cap that silently discards work is a cap nobody can debug.
+- **A failure is recorded and retried once, not in a storm.** One `catch` in the
+  batch loop, a 200-character message with no stack and no arguments, the batch
+  continues, and `nextAgentRunAt` advances after the attempt so the space is
+  retried tomorrow exactly once. There is no backoff queue, because there is one
+  attempt per space per day by construction.
+- **The daily cadence is the smallest practical one.** Hourly polling for a
+  review whose input changes when the user does something would buy nothing and
+  cost a wake-up.
+- **The five absent agents are documented, not forgotten.** They are listed in
+  the module header beside their real producers, so the next person to read
+  `REGISTERED_AGENTS` learns why it is short.
+
+**Conditions for revisiting.** Revisit the *cadence* if a future agent needs to
+be timely within the hour — the mechanism is a cron expression and nothing else
+depends on it. Revisit the *scheduler itself* only if the work outgrows a single
+bounded mutation, which would mean an agent doing something Panel has not
+approved. Revisit an individual absent agent only when its event has **no**
+producer, not when it has a weak one: the bar is one producer per event, not one
+agent per name in a list.
+
 ---
 
 ## Rejected Decisions
@@ -3318,6 +3538,8 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D44** | **`addExpense` accepted `NaN` and `Infinity`.** The guard was `if (args.amount <= 0)`, and `NaN <= 0` is `false`. `saveTaxProfile` had the mirror-image hole: `grossIncome < 0` is also false for NaN. A NaN amount poisons every bucket sum and then the whole `estimateTax` result — and NaN does not surface as an error, it surfaces as a **number**. A tax estimate rendered from a NaN input is plausible, confident and entirely invented, which is the single worst outcome in the most trusted calculation Panel makes. | **RESOLVED (CHANGE-0017)** — one guard, `Number.isFinite`, in `src/lib/subscriptions.ts`, used by all four money write paths, plus a `MAX_AMOUNT` magnitude ceiling. Two predicates rather than one because `grossIncome` is legitimately `0` and a subscription's amount is not. Found by the feature-5 audit, in the one place where it matters most, and **deliberately not "fixed" by migrating to integer minor units** — that would rewrite the input to a verified tax estimate, which is precisely the silent change to financial semantics that must not happen without asking. |
 | **D45** | **`daysUntilRenewal` returned `-0`.** `Math.round` of a small negative fraction is `-0`, not `0`, and `-0` formats as "-0" and fails `Object.is(x, 0)`. A subscription one millisecond before its renewal date would have reported "negative zero days". | **RESOLVED (CHANGE-0017)** — normalised at the derivation. Found by a **unit fixture**, at the ±1 ms boundary, and by nothing else: no integration test would have surfaced a value that is arithmetically equal to the right answer. The boundary fixtures for `commitments` were written for exactly this reason and paid for themselves again. |
 | **D46** | **`updateSubscription` wrote no activity row for a date-only edit.** The function returned early when the subscription's own patch was empty — which is *always* the case for a renewal date, because the date lives on the `documents` row the subscription points at (ADR-029). So `subscription.updated` was declared in the taxonomy and, for the single most common edit in the feature, never written. | **RESOLVED (CHANGE-0017)** — the early return now accounts for the document write. Found by the **live conformance harness, not the unit suite**, which is the second time in three features that the harness has caught something the fixtures could not: the unit tests exercise the pure machine, and this defect lives entirely in a mutation's control flow. It is D38's shape arriving one feature late — a declared kind that nothing writes — and the audit trail is only worth anything if the row is actually written. |
+| **D47** | **Three `agent.*` activity kinds had been declared since phase 0B and written by nothing: `agent.proposed`, `agent.executed` and `agent.skipped`.** Feature 6 is the feature that finally had a producer, and it wrote **only one of the three.** | **PARTIALLY RESOLVED (CHANGE-0018) — and the remaining two are recorded as deliberate, not as an oversight.** `agent.proposed` is now written, once per new proposal, on the same path that inserts it. `agent.executed` and `agent.skipped` are **still unwritten by design**: the only registered agent is proposal-only and has no `automatic` actions to execute, and a run that skipped has no proposal to attach an activity row to — the `agentRuns` row already records `result: "skipped"` with the reason, which is the *right* place for the answer because a run is not an object and has no id. Writing `agent.skipped` against nothing, or inventing an object kind for a run, would be the D34 defect in a new costume. **Left in the taxonomy deliberately** rather than deleted: they are the vocabulary a future `automatic`-tier agent will need, the union is closed and validated, and an unused member of a closed vocabulary is not the same defect as an unused *claim* that something is being recorded when it is not. The honest statement is the split: one of three is now true, and the other two are reserved rather than pending. |
+| **D48** | **`listProposals` collected every proposal the owner had and filtered to their space in JavaScript** — `by_owner` then `.filter(r => r.spaceId === spaceId)`. D42 and D43's exact shape, in the **newest module in the codebase**, written while both of those defect write-ups were open on the same screen. The filter added no safety: the space had already come from `by_createdBy` scoped to the caller, so it was not narrowing anything the index had not already narrowed. | **RESOLVED (CHANGE-0018)** — read through `by_space_at` in descending order, which is what the query wanted anyway, and the now-unused `by_owner` index **removed** rather than left behind (feature 3's rule: an index nothing reads is not a safety net, it is an invitation to read the wrong way next). Found in **self-review, not by a test** — the fifth time that has been the only thing standing between this project and a regression it already knew about. The harness passed either way, because with one proposal a filter and a range return the same row; the defect only appears at the scale the caps exist to prevent. **The pattern is now the general rule for this project: an index whose prefix already encodes the scope must not be followed by a filter on the same field.** |
 | **D42** | **`getAttention` collected every commitment the user had ever made and filtered to the open, past-dated ones in JavaScript.** Not a table-wide scan — owner-scoped, so not the D37/D39 shape — but still a collect-then-filter, and on the *hottest* read in the product: the one that runs on every dashboard load and every attention feed tick. It also grows without limit as the user accumulates settled commitments, which is the one direction a personal history always grows. The §11.2 scope block had already asserted the shape the code should have (`by_owner_open` range, explicit `.take`), so the specification was right and the first implementation was not. | **RESOLVED (CHANGE-0016)** — a `commitments.by_owner_open` index on `(ownerUserId, completed, expectedAt)`, read as a range, so the database excludes settled and undated rows before anything is transferred. The lesson is now the general one rather than an instance of it: **for a derived-state query, assert the read is an index range in the acceptance criteria, not just a bounded collect** — a `.take(200)` cap hides an unbounded query from a reviewer exactly as effectively as no cap at all. The same fix removed the last `by_owner` collect from the attention path. Found by the feature's own criterion AC-3F-314, not by self-review — the first time in this project a criterion caught a performance defect rather than confirming one, which is the outcome the phase review asked for. |
 
 ### Intentionally accepted
@@ -3346,7 +3568,7 @@ approval**, not a note.
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
-| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) · **F5 (Subscriptions): 4 of 6** (`src/lib/subscriptions.ts`, `src/lib/subscriptions.test.ts`, `src/convex/subscriptions.ts`, `scripts/conformance-5f.ts` — the UI went into the existing `FinanceArea.tsx`) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) · **F5: 2** (`accounts`, `subscriptions`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) · **F5: 1** (the derived subscription state machine, `src/lib/subscriptions.ts`, which also holds the single money guard) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug. F5 additionally: any balance, transaction or ledger (§2.3 forbids it) · account numbers, sort codes, IBANs, card or merchant credentials · exchange rates or multi-currency conversion · bank connectivity · CSV or OFX import · loans, assets, liabilities, investments, net worth, cash flow, financial goals · a finance-specific attention section or prioritiser · a second expiry or renewal model · a `status` column · capture inferring a subscription · **migrating the existing float money representation to minor units** |
+| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) · **F5 (Subscriptions): 4 of 6** (`src/lib/subscriptions.ts`, `src/lib/subscriptions.test.ts`, `src/convex/subscriptions.ts`, `scripts/conformance-5f.ts` — the UI went into the existing `FinanceArea.tsx`) · **F6 (Agents): 5 of 6** (`src/lib/agents.ts`, `src/lib/agents.test.ts`, `src/convex/agents.ts`, `convex.config.ts`, `scripts/conformance-6f.ts` — the UI went into the existing `FinanceArea.tsx` again) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) · **F5: 2** (`accounts`, `subscriptions`) · **F6: 2** (`agentRuns`, `agentProposals`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) · **F5: 1** (the derived subscription state machine, `src/lib/subscriptions.ts`, which also holds the single money guard) · **F6: 1** (the agent framework and its one agent, `src/lib/agents.ts`; `convex.config.ts` is a one-line schedule declaration, not an abstraction) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug. F5 additionally: any balance, transaction or ledger (§2.3 forbids it) · account numbers, sort codes, IBANs, card or merchant credentials · exchange rates or multi-currency conversion · bank connectivity · CSV or OFX import · loans, assets, liabilities, investments, net worth, cash flow, financial goals · a finance-specific attention section or prioritiser · a second expiry or renewal model · a `status` column · capture inferring a subscription · **migrating the existing float money representation to minor units**. F6 additionally: the other five §6.1 agents, each of which has a producer already (ADR-030) · a second producer for any existing hard rule · a sixth Attention kind · any write to financial data · automatic confirmation or categorisation · any external action or provider write · an external scheduler, queue, Redis, worker, second backend or plugin registry · an LLM or any non-determinism · high-frequency polling · notifications · multi-agent orchestration, a workflow engine, a marketplace or a plugin framework |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -3361,27 +3583,36 @@ screen · no push notifications · no sixth spec file · no modification of
 Current phase:        3 — feature work (each feature needs its own spec + ADR +
                       budget before it starts). Features 1 (People), 2
                       (Multi-object Capture), 3 (Life Admin), 4 (Commitments +
-                      Waiting On) and 5 (Subscriptions + Account Labels) are done.
+                      Waiting On), 5 (Subscriptions + Account Labels) and 6
+                      (Deterministic Agents) are done.
 Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED, and so
-                      are phase 3 features 1 through 5. Phase 0A remains BLOCKED
+                      are phase 3 features 1 through 6. Phase 0A remains BLOCKED
                       on Q-001, which blocks only TASK-0A-003. Q-006 and Q-007
                       are open and non-blocking.
-Last completed:       CHANGE-0017 — Finance expansion. Subscriptions and account
-                      labels. A subscription is a number until its renewal is an
-                      action, and Panel previously held only the number. The
-                      renewal reaches Attention through the expiry chain feature
-                      3 already shipped: **no new attention kind, section, rule
-                      or query** (ADR-029), and "one renewal, one item" stays
-                      structurally true. An account is a label and never a
-                      balance, so there is nothing to reconcile and nothing that
-                      can be wrong (ADR-028). Annual cost is derived, never
-                      stored. Bundled D43 (an unbounded expense read), D44 (NaN
-                      amounts), D45 (-0 days) and D46 (a missing audit row).
-Next phase:           3 — Deterministic agents, which is APPROVED and specified
-                      (ADR-011, §6.1, §9.3) but NOT BUILT. See the open
-                      question: five of the six named agents already duplicate
-                      machinery that exists, and the sixth needs unapproved
-                      Finance work.
+Last completed:       CHANGE-0018 — Deterministic agents. Panel had intelligence
+                      and no *when*: everything it knows is computed at query
+                      time, so a user who does not open the app is never told
+                      anything. Delivered as ADR-030 — **one Convex cron
+                      function and one registered agent**, because five of the
+                      six §6.1 names already had producers and building them
+                      would have violated feature 3's *one renewal, one item*
+                      criterion in the name of following the spec. The tier is a
+                      **type**, not a convention: `AgentAction` is a closed union
+                      of `{flag}` and `{log}`, so an agent that tried to touch
+                      money would not compile. The one agent sums what rests on
+                      unconfirmed deduction categories and states the swing by
+                      calling `estimateTax` twice, never with a rate of its own,
+                      and never claims a category is wrong. Overflow is counted,
+                      observable and audited; the live harness drives the daily
+                      cap to its exact boundary and proves the 51st execution is
+                      refused, counted and reported capped. **Cron firing itself
+                      is recorded as unverified**, because a 07:00 delivery
+                      cannot be observed from inside a test run.
+Next phase:           3 — the phase is complete as specified. Nothing further in
+                      phase 3 is approved. The remaining known gaps are all
+                      product decisions or environment, not work in progress:
+                      Q-001 (guest data), Q-006, Q-007, and the phase-2 live
+                      handshake (credentials + D32).
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
                       Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified nine
@@ -3394,12 +3625,18 @@ Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 on
                       neither of them code: GOOGLE_CLIENT_ID /
                       GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
                       D32, this deployment serving no application HTTP routes.
+                      Feature 6 also deliberately did NOT re-run OCC:
+                      `assistant.ts` untouched and the feature writes no
+                      assistant state, so the precondition for re-arming is
+                      absent.
 
-Failing tests:        None. 422 fixtures pass across 15 files; 0B, 0C,
-                      attention, 1.1, 1.5, 2, 3, 3f, 4, 4f and 5f conformance all
-                      pass live. The phase-2 harness reports one section as SKIP
-                      (D32) rather than as a pass. The phase-3 harnesses have no
-                      skips.
+Failing tests:        None. 448 fixtures pass across 16 files; 0B, 0C,
+                      attention, 1.1, 1.5, 2, 3, 3f, 4, 4f, 5f and 6f
+                      conformance all pass live. The phase-2 harness reports one
+                      section as SKIP (D32) rather than as a pass. The phase-3
+                      harnesses have no skips; the 6f harness carries five
+                      explicit [NOTE]s for what it cannot observe — chiefly
+                      that cron firing is unverified.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -3434,10 +3671,15 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          (Multi-object Capture, CHANGE-0014), 3
                                          (Life Admin, CHANGE-0015), 4
                                          (Commitments + Waiting On,
-                                         CHANGE-0016) and 5 (Subscriptions +
-                                         Account Labels, CHANGE-0017) VERIFIED.
-                                         The remaining feature (agents) is
-                                         APPROVED and specified but NOT BUILT.
+                                         CHANGE-0016), 5 (Subscriptions +
+                                         Account Labels, CHANGE-0017) and 6
+                                         (Deterministic Agents, CHANGE-0018)
+                                         VERIFIED. Every feature the phase
+                                         specified is now built. The phase is
+                                         not marked VERIFIED because that is the
+                                         user's call, and the remaining gaps are
+                                         Q-001, Q-006, Q-007 and the phase-2
+                                         handshake.
 ```
 
 ### Phase lifecycle status table
@@ -3451,13 +3693,13 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
-| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. Remaining features — Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
+| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. **Feature 5 (Subscriptions + Account Labels) VERIFIED** — CHANGE-0017. A subscription is a number until its renewal is an action, so a subscription carries a `documentId` pointing at a real `documents` row **created in the same mutation** (ADR-029): the cost of a subscription in the feed is **zero new attention code**, and "one renewal, one item" stays structurally true rather than re-argued. An account is a label and a closed kind with **no balance column anywhere in the schema** (ADR-028) — an account with a balance is a ledger with extra steps, and §2.3 names the ledger as the thing Panel must not become. Annual cost is derived, never stored. Money stays `v.number()`; the floats were **not** migrated to minor units, because that would rewrite the input to a verified tax estimate, and the consequence is accepted and guarded instead (D44). 4 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 27 unit fixtures, a **74-check live conformance run with 0 skips**, and a proof that a subscription moves no weight while the whole feature runs. The harness found **D46** (`subscription.updated` was never written for a date-only edit, because the date lives on the document). **Feature 6 (Deterministic Agents) VERIFIED** — CHANGE-0018. Panel had intelligence and **no *when***: everything it knows is computed at query time, so a user who does not open the app is never told anything. Delivered as ADR-030 — **one Convex cron function** (`agents/daily`, `0 7 * * *`) and **one registered agent**, because five of the six §6.1 names already had producers and building them would have violated feature 3's *one renewal, one item* criterion in the name of following the specification. The scheduler answers *when* and never *what*: the tier is a **return type**, and the `automatic` variant's action union is `{flag} | {log}` — there is no variant that can write a financial row, so an agent that tried would not compile. The one agent (`finreview`) sums what rests on unconfirmed deduction categories and states the swing by calling `estimateTax` **twice** rather than applying a rate of its own, and its wording is constrained never to claim a category is wrong. **Overflow is counted, observable and audited** — all three, which needed a query (`getLastRun`) rather than a column, because a cap that silently discards work is a cap nobody can debug. 5 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 26 unit fixtures (**448 pass, 0 fail across 16 files**) and a **52-check live conformance run with 0 skips over 61 mutations**, whose headline check drives the per-space daily cap to its exact boundary and proves the 51st execution is refused, counted as overflow, reported `capped` rather than successful, and observable by the owner — with every financial figure byte-identical afterwards. **Cron firing itself is recorded as UNVERIFIED** rather than as a pass, because a 07:00 delivery cannot be observed inside a test run and the CLI cannot read the schedule back; likewise the thrown-failure path is a `[NOTE]`, not a pass. Remaining gaps in phase 3 are all product decisions or environment: Q-001, Q-006, Q-007 and the phase-2 handshake. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
 (People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting
-On) and 5 (Subscriptions + Account Labels). Everything here is done to the limit
-of what the agent may decide. Nothing is SHIPPED — shipment is the user's
-decision alone (MAIN_AGENT §11.1).**
+On), 5 (Subscriptions + Account Labels) and 6 (Deterministic Agents).
+Everything here is done to the limit of what the agent may decide. Nothing is
+SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

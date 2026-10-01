@@ -7,6 +7,7 @@ import {
   FileText,
   Info,
   Landmark,
+  Sparkles,
   Plus,
   Repeat,
   Scale,
@@ -73,6 +74,21 @@ export function FinanceArea() {
   const reactivateSubscription = useMutation(api.subscriptions.reactivateSubscription);
   const deleteSubscription = useMutation(api.subscriptions.deleteSubscription);
   const updateSubscription = useMutation(api.subscriptions.updateSubscription);
+
+  // Phase 3, feature 6. Proposals never execute — they are things to read and
+  // a decision the user makes. `accept` here means "I have looked at this",
+  // and deliberately changes nothing about any expense: confirming a category
+  // is an act the user performs in the Expenses list, where they can see what
+  // they are confirming.
+  const proposals = useQuery(api.agents.listProposals);
+  const agentStatus = useQuery(api.agents.getAgentStatus);
+  const lastRun = useQuery(api.agents.getLastRun);
+  const enableAgents = useMutation(api.agents.enableAgents);
+  const disableAgents = useMutation(api.agents.disableAgents);
+  const runAgentsNow = useMutation(api.agents.runMyAgentsNow);
+  const acceptProposal = useMutation(api.agents.acceptProposal);
+  const dismissProposal = useMutation(api.agents.dismissProposal);
+  const [agentsBusy, setAgentsBusy] = useState(false);
 
   const [income, setIncome] = useState<string | null>(null);
   const [expenseLabel, setExpenseLabel] = useState("");
@@ -215,6 +231,35 @@ export function FinanceArea() {
       await updateSubscription({ id, renewsAt: endOfLocalDay(value) ?? undefined });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not set the renewal date");
+    }
+  };
+
+  const handleToggleAgents = async () => {
+    setAgentsBusy(true);
+    try {
+      if (agentStatus?.enrolled) {
+        await disableAgents({});
+        toast.success("Scheduled review off");
+      } else {
+        await enableAgents({});
+        toast.success("Scheduled review on — it runs once a day");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not change that");
+    } finally {
+      setAgentsBusy(false);
+    }
+  };
+
+  const handleRunNow = async () => {
+    setAgentsBusy(true);
+    try {
+      await runAgentsNow({});
+      toast.success("Checked");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not run the review");
+    } finally {
+      setAgentsBusy(false);
     }
   };
 
@@ -396,6 +441,132 @@ export function FinanceArea() {
           </details>
         </section>
       </div>
+
+      {/* ---------- PROPOSALS (phase 3, feature 6) ---------- */}
+      <section className="brutal-flat bg-card p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-sm uppercase tracking-wide">
+            Things to check
+          </h2>
+          {agentStatus?.enabledByFlag ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                disabled={agentsBusy}
+                onClick={() => void handleRunNow()}
+                className="brutal h-8 gap-1 px-2 text-[10px] uppercase"
+              >
+                <Sparkles className="size-3" />
+                Check now
+              </Button>
+              <Button
+                variant={agentStatus.enrolled ? "ghost" : "default"}
+                disabled={agentsBusy}
+                onClick={() => void handleToggleAgents()}
+                className="brutal h-8 px-2 text-[10px] uppercase"
+              >
+                {agentStatus.enrolled ? "Daily review on" : "Daily review off"}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
+        <p className="mb-4 flex items-start gap-2 border-2 border-dashed border-border bg-background p-2.5 text-[10px] leading-relaxed uppercase text-muted-foreground">
+          <Info className="mt-px size-3 shrink-0" />
+          Panel can notice something and add it to this list. It cannot act on
+          your money — every suggestion waits for you, and confirming a category
+          happens where you can see it.
+        </p>
+
+        {agentStatus?.enabledByFlag === false && (
+          <p className="border-2 border-dashed border-border px-3 py-4 text-center text-[10px] uppercase text-muted-foreground">
+            Scheduled review is switched off for this account
+          </p>
+        )}
+
+        {proposals && proposals.filter((p) => p.status === "open").length > 0 && (
+          <ul className="flex flex-col gap-2">
+            {proposals
+              .filter((p) => p.status === "open")
+              .map((p) => (
+                <li
+                  key={p.id}
+                  className="border-2 border-border bg-background px-3 py-3"
+                >
+                  <p className="flex items-start gap-2 text-[12px] font-bold uppercase">
+                    <Sparkles className="mt-px size-3 shrink-0 text-muted-foreground" />
+                    {p.title}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-relaxed">{p.detail}</p>
+                  {p.evidence.length > 0 && (
+                    <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+                      {p.evidence.map((e) => (
+                        <div key={e.label} className="text-[10px] uppercase">
+                          <dt className="text-muted-foreground">{e.label}</dt>
+                          <dd className="font-display text-[12px]">{e.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      disabled={agentsBusy}
+                      onClick={() => void acceptProposal({ id: p.id })}
+                      className="brutal h-8 gap-1 bg-primary px-3 text-[10px] font-bold uppercase"
+                    >
+                      <Check className="size-3" />
+                      I have looked
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={agentsBusy}
+                      onClick={() => void dismissProposal({ id: p.id })}
+                      className="brutal h-8 px-3 text-[10px] uppercase"
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                </li>
+              ))}
+          </ul>
+        )}
+
+        {proposals &&
+          proposals.filter((p) => p.status === "open").length === 0 &&
+          agentStatus?.enabledByFlag && (
+            <p className="border-2 border-dashed border-border px-3 py-6 text-center text-[11px] uppercase text-muted-foreground">
+              Nothing waiting on you
+            </p>
+          )}
+
+        {/* The last check, in the open. A process that looks at your money
+            without you asking has to be able to say when it last looked, what
+            it found, and — when a limit stopped it — how much it held back. */}
+        {lastRun && agentStatus?.enabledByFlag && (
+          <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t-2 border-dashed border-border pt-2.5 text-[10px] uppercase text-muted-foreground">
+            <span>
+              Last check:{" "}
+              {lastRun.result === "failed"
+                ? "could not finish"
+                : lastRun.at
+                  ? new Date(lastRun.at).toLocaleString()
+                  : "not yet"}
+            </span>
+            {lastRun.result === "failed" && lastRun.error && (
+              <span className="font-bold text-foreground">{lastRun.error}</span>
+            )}
+            {lastRun.result === "capped" && (
+              <span className="font-bold text-foreground">
+                {lastRun.overflow} held back by today&apos;s limit
+              </span>
+            )}
+            {lastRun.result === "skipped" && <span>Nothing to review</span>}
+            <span>
+              {lastRun.usedToday}/{lastRun.maxPerDay} checks used today
+            </span>
+          </p>
+        )}
+      </section>
 
       {/* ---------- SUBSCRIPTIONS (phase 3, feature 5) ---------- */}
       <section className="brutal-flat bg-card p-5">

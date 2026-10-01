@@ -598,13 +598,13 @@ confirm and `RequireAuth` would loop to `/auth` forever.
 
 ### 9.3 Add an agent
 
-1. Write it as a **pure function** in `src/lib/agents/` — no DB, no Convex imports.
+1. Write it as a **pure function** in `src/lib/agents.ts` — no DB, no Convex imports. (CHANGE-0018: §9.3 originally said `src/lib/agents/`; it is a file while the registry holds one agent, and a directory becomes correct the day a second agent with no existing producer arrives.)
 2. Give it a deterministic idempotency key.
 3. Return a typed tier (`automatic` / `proposed` / `confirm`). Risky actions can
    only be `confirm`.
 4. Add fixtures covering: the fire case, the non-fire case, and a double-run
    (idempotency).
-5. Add `traceAgent()` expectations so the trace is asserted.
+5. Assert `traceAgent()` as a **purity fixture** — same input, same trace, no effect — rather than as a golden trace, which would only re-state the implementation. (CHANGE-0018 correction: a golden trace is not a property.)
 6. Register it in the runner `internalMutation`. Add to the run caps.
 
 ### 9.4 Add an integration
@@ -1258,6 +1258,12 @@ it, and how do we know it works?"**
 | REQ-056 | No money write accepts a non-finite amount or an unbounded magnitude | — | 3 |
 | REQ-057 | A renewal-shaped object reaches Attention only through the existing chain | ADR-029 | 3 |
 | REQ-058 | Deleting an account or subscription detaches, and reports the count | ADR-028 | 3 |
+| REQ-059 | A scheduled run is an explicit opt-in behind a feature flag, and the flag is re-checked on every run | ADR-030 | 3 |
+| REQ-060 | The scheduler answers only *when*; what an agent may do comes from the tier in its return type | ADR-030, ADR-011 | 3 |
+| REQ-061 | A proposal is a claim about evidence: the agent never asserts a category is wrong and never changes a financial value | ADR-030, ADR-011 | 3 |
+| REQ-062 | Agent executions are capped per run and per space per day, and overflow is counted, observable and audited | ADR-030 | 3 |
+| REQ-063 | A run record states what happened, and a run that did nothing says why | ADR-030 | 3 |
+| REQ-064 | An agent that already has a producer is not reimplemented | ADR-030 | 3 |
 
 ### 12.2 Full chains
 
@@ -1373,6 +1379,21 @@ it, and how do we know it works?"**
 | REQ-052 | — | 3F | TASK-3F-049 | AC-3F-413 | TEST-3F-011 "A12" — capture creates zero subscriptions and zero accounts (Q-007 interim) | CHANGE-0017 |
 | REQ-031 | ADR-021 | 3F | TASK-3F-050 | AC-3F-414 | TEST-3F-011 "A13" — 34 `tax.test.ts` fixtures, the tax checklist, the six-area catalogue | CHANGE-0017 |
 | REQ-016 | ADR-016 | 3F | TASK-3F-051 | AC-3F-415 | TEST-3F-012 (budget audit of the feature's own file set) | CHANGE-0017 — 4 of 6 files, 2 of 2 tables, 0 deps, 1 abstraction |
+| REQ-059 | ADR-030 | 3F | TASK-3F-052 | AC-3F-501 | TEST-3F-014 (`scripts/conformance-6f.ts`) "A1" — enrolment and run both refused while the flag is off | CHANGE-0018 |
+| REQ-064 | ADR-030 | 3F | TASK-3F-053 | AC-3F-502 | TEST-3F-013 (`src/lib/agents.test.ts`); TEST-3F-014 "A9" — the registry is exactly one entry | CHANGE-0018 |
+| REQ-060 | ADR-011, ADR-030 | 3F | TASK-3F-054 | AC-3F-503, AC-3F-506 | TEST-3F-014 "A2", "A3" | CHANGE-0018 |
+| REQ-013 | ADR-011 | 3F | TASK-3F-055 | AC-3F-504 | TEST-3F-013 (double-run fixtures); TEST-3F-014 "A4" | CHANGE-0018 |
+| REQ-061 | ADR-030 | 3F | TASK-3F-056 | AC-3F-505 | TEST-3F-013 (wording and arithmetic fixtures); TEST-3F-014 "A3" — asserted against the deployed string | CHANGE-0018 |
+| REQ-062 | ADR-030 | 3F | TASK-3F-057 | AC-3F-507 | TEST-3F-013 — the boundary in each direction: exactly 10 passes, 11 overflows; exactly 50 passes, 51 overflows | CHANGE-0018 |
+| REQ-062 | ADR-030 | 3F | TASK-3F-058 | AC-3F-508 | TEST-3F-014 "A11" — **the cap driven to its boundary live**, 61 mutations | CHANGE-0018 |
+| REQ-061 | ADR-030 | 3F | TASK-3F-059 | AC-3F-509 | TEST-3F-014 "A5", "A10" — expenses, buckets, estimate and profile byte-identical across a run and an acceptance | CHANGE-0018 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-060 | AC-3F-510 | TEST-3F-014 "A6", "A7" — foreign id refused on both write paths; a second account sees and gets nothing | CHANGE-0018 |
+| REQ-063 | ADR-030 | 3F | TASK-3F-061 | AC-3F-511 | TEST-3F-014 "A12" — the no-profile run is `skipped`, not success; the thrown-failure path is a note, not a pass | CHANGE-0018 |
+| REQ-057 | ADR-029 | 3F | TASK-3F-062 | AC-3F-512 | TEST-3F-014 "A9" — no new kind, section, rule or read; a proposal is not an attention item | CHANGE-0018 |
+| REQ-013 | ADR-013, ADR-014 | 3F | TASK-3F-063 | AC-3F-513 | TEST-3F-013 (the module imports no client and holds no credential); TEST-3F-014 "A5" | CHANGE-0018 |
+| REQ-015 | ADR-010 | 3F | TASK-3F-064 | AC-3F-514 | TEST-3F-014 "learning" — measured in isolation | CHANGE-0018 |
+| REQ-016 | ADR-016 | 3F | TASK-3F-065 | AC-3F-515 | TEST-3F-015 (budget audit of the feature's own file set) | CHANGE-0018 — 5 of 6 files, 2 of 2 tables, 0 deps, 1 abstraction |
+| REQ-032 | ADR-019 | 3F | TASK-3F-066 | AC-3F-516 | TEST-3F-014 — `convex.config.ts` accepted by the deployment; **firing recorded as unverified** | CHANGE-0018 |
 
 **Phase 3 feature 4 acceptance criteria → test mapping**
 
@@ -1470,6 +1491,115 @@ An account here is a *label the user chose*, so Panel can say "£412/yr across J
 | New tables | 2 | 2 |
 | New deps | 0 | 0 |
 | New abstractions | 1 | 1 |
+
+**Phase 3 feature 6 acceptance criteria → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-501 | A space is not scheduled until a person opts in, and the flag is required at enrolment **and** re-checked on every run | `conformance-6f.ts` "A1" | PASS, live — both `enableAgents` and `runMyAgentsNow` refused while the flag is off; a space with no `nextAgentRunAt` is not in the due range at all |
+| AC-3F-502 | The registry is exactly one agent, and no agent duplicates a producer that already exists | `agents.test.ts`; `conformance-6f.ts` "A9" | PASS, live — `["finreview"]`; the five absent §6.1 agents are named in the module header with their real producer |
+| AC-3F-503 | A run executes the approved agent and produces a proposal with falsifiable evidence | `conformance-6f.ts` "A2", "A3" | PASS, live — 1 proposal, 4 evidence pairs, every number traceable to a row |
+| AC-3F-504 | Re-running against unchanged input creates no second proposal, activity row or state change | `agents.test.ts` double-run fixtures; `conformance-6f.ts` "A4", and "A11" after 51 further runs | PASS, live — still exactly one proposal, never re-opened after acceptance |
+| AC-3F-505 | The swing comes from `estimateTax` run twice, never a hand-rolled rate, and the wording never claims a category is wrong | `agents.test.ts`; `conformance-6f.ts` "A3" | PASS, live — the disclaimed phrase is present and no `wrong`/`incorrect`/`mistake`/`error` survives it |
+| AC-3F-506 | The `automatic` tier's action union contains no operation that can write a financial row | `agents.test.ts`; `src/lib/agents.ts` | PASS — `AgentAction` is `{kind:"flag"} \| {kind:"log"}`, so the compiler is the guarantee |
+| AC-3F-507 | Per-run cap is exactly 10 and per-space daily cap exactly 50, each pinned at its boundary | `agents.test.ts` | PASS — 10 allowed / 11 overflows by `per_run`; 50 allowed / 51 overflows by `per_day` |
+| AC-3F-508 | The 51st execution in a day is refused, counted as overflow, observable, and reported `capped` | `conformance-6f.ts` "A11" | PASS, live — the tally filled to exactly 50, then `executions 0`, `overflow 1`, `result "capped"`, readable by the owner |
+| AC-3F-509 | A run, a proposal and an acceptance change **no** financial data | `conformance-6f.ts` "A5", "A10", "A11" | PASS, live — expenses, buckets, estimate and profile byte-identical across 61 mutations |
+| AC-3F-510 | Every read and write is owner-scoped; a foreign id is refused; a second account sees and gets nothing | `conformance-6f.ts` "A6", "A7" | PASS, live — a space-less account is answered with `[]`, not a stack trace |
+| AC-3F-511 | A run that did nothing is recorded as `skipped`, never as a success; a thrown failure is recorded with a bounded message; a failing space neither aborts the batch nor storms | `conformance-6f.ts` "A12" | PASS, live for the skip property. **The thrown-failure path is NOT exercised** — recorded as a `[NOTE]`, because the only honest way to make a real space throw is to break the code first. Retry behaviour is verified by inspection of one loop, and stated as such |
+| AC-3F-512 | Panel adds no new Attention kind, section, rule or query, and a proposal is not an attention item | `conformance-6f.ts` "A9" | PASS, live — kinds present are unchanged, and no item carries the proposal's id |
+| AC-3F-513 | No external action occurs; the agent holds no credential and reaches no network | `agents.test.ts` (no client import); `conformance-6f.ts` "A5" | PASS — `src/lib/agents.ts` imports `estimateTax` and nothing else |
+| AC-3F-514 | `FEATURE_COUNT` is 12, `weightsVersion` is 1, and a run records no training sample and moves no weight | `conformance-6f.ts` "learning" | PASS, live — zero samples |
+| AC-3F-515 | Budget: 6 files / 2 tables / 0 deps / 1 abstraction | CHANGE-0018 | PASS — 5 / 2 / 0 / 1 |
+| AC-3F-516 | A daily scheduled function is declared and accepted by the deployment, and **its firing is recorded as unverified rather than as a pass** | `convex.config.ts`; `conformance-6f.ts` "the scheduler" | **DECLARED, FIRING UNVERIFIED** — the deployment accepted the config and the runner it targets is exercised live through the same `runSpace`, but a 07:00 delivery cannot be observed inside a test run and the CLI exposes no way to read the schedule back |
+
+##### 12.0 Scope block — Deterministic agents (the scheduled runner and one review agent)
+
+| Field | Value |
+|---|---|
+| **Feature** | A bounded deterministic agent framework with scheduled execution, and the first genuinely additive review agent |
+| **Approval** | **APPROVED by Hardik, 2026-10-01**, in a directive that named the architecture (option c, Convex cron), the caps, the idempotency rule, the run record's fields, the failure and performance constraints, and fifteen verification criteria — and named one of them **not** to be met by claiming a pass that did not happen |
+| **Problem it solves** | Panel's intelligence is entirely query-time. Nothing ever looks at anything on the user's behalf, so a user who does not open the app learns nothing and is never told anything. §6 specified agents and §6.1 named six, but five of the six already had producers — so the specification's real gap was not six agents. It was that **there is no *when* at all** |
+| **User outcome** | Open the app and find one honest, already-computed question — *3 categories holding 1630 of your deduction are unconfirmed; if none qualified, your estimate would fall by about 480* — with the evidence beside it and nothing changed until the user does it |
+| **IN SCOPE** | `src/lib/agents.ts` — the pure framework and the one agent, no Convex import. `src/convex/agents.ts` — one `runSpace` behind two front doors, the cron internal mutation and a user-scoped `runMyAgentsNow`. `convex.config.ts` — one daily scheduled function, the only scheduling mechanism. Two tables, `agentRuns` and `agentProposals`. A *Things to check* block and a last-run line inside the **existing** Finance area. A manual *Check now* front door onto the same runner |
+| **OUT OF SCOPE** | The other five §6.1 agents, each of which has a producer already (ADR-030) · a second producer for any existing hard rule · a sixth Attention kind — proposals use the existing mechanism · any write to financial data · automatic confirmation, categorisation or correction · any external action, provider write or network call · an external scheduler, queue, Redis, worker, second backend or plugin registry · an LLM, a model call, or any non-determinism · high-frequency polling · notifications · multi-agent orchestration or a workflow engine |
+| **DO NOT TOUCH** | The scorer maths (#6) · `nlp.ts`'s token loop (#7) · `recordOutcome` as the single weight-mutation point (#8) · the deterministic-idempotency-key requirement (#9) · the confirmation requirement (#10) · ADR-011's tiers · `estimateTax` (Do-Not-Touch #1 — the agent **calls** it twice rather than reimplementing the arithmetic) · the §5.7 section budgets · features 3, 4 and 5 wholesale (ADR-025/026/027/028/029) |
+
+**The scheduler answers *when*, never *what***
+
+`convex.config.ts` declares exactly one function: `agents/daily`, `0 7 * * *`, calling `internal.agents.internalRunDueSpaces`. That is the whole of the scheduling architecture — no queue, no worker, no second backend, because the work is a bounded read and a handful of writes, and anything larger would be infrastructure Panel has not earned (R13).
+
+The property the directive asked for is that **cron cannot widen agent authority**, and the strongest form of that guarantee is not in the runner at all. It is that `AgentAction` is a closed union of `{kind: "flag"} | {kind: "log"}`. There is no variant that can insert an expense, patch a tax profile or reach a document, so an agent that tried would not compile. The tier is a **return type**, not a convention (ADR-011), and `financeReviewAgent` declares the narrow `{tier: "proposed"}` — so *could this agent escalate?* stopped being a decision a later edit could make by accident. Two dead branches came out of the runner for the same reason: a branch that cannot be true is a branch nobody tests.
+
+**Why one agent, and not the six §6.1 names**
+
+| §6.1 agent | The producer that already exists |
+|---|---|
+| `recurringRespawn` | `assistant.spawnNextOccurrence` (0A) |
+| `documentExpiry` | the `document.expiring` hard rule (CHANGE-0015) |
+| `commitmentOverdue` | `commitment.overdue` / `.waiting` (CHANGE-0016) |
+| `applySync` | `integrations.internalApplyBatch` (ADR-012) |
+| `recurringPayment` | needs accounts and transactions — unapproved Finance work, and §2.3 forbids the ledger |
+| `relationshipReminder` | needs a relationship model Panel does not have |
+
+A second producer for *this is expiring* is precisely the violation feature 3's acceptance criteria named — **one renewal, one item** — and it would have been a violation committed in the name of following a specification. So the registry is one entry, and the five absences are written down beside their real producers rather than left as a silent gap.
+
+**The one agent: low-confidence finance review**
+
+It is additive because it is the only thing in the product that looks at an existing row and says *this number depends on something nobody checked*. It reads the tax profile and the year's deductible expenses, sums what rests on unconfirmed categories, and states the swing by running `estimateTax` **twice** — once as it stands, once with the unconfirmed rows removed — and subtracting. **Never** by applying a rate of its own: this figure goes on screen next to the estimate it qualifies, and a second tax arithmetic path is a second thing that can disagree with the first.
+
+Its wording obeys one rule: **it never says a category is wrong.** It says what is unconfirmed and what the figure would be if the unconfirmed part turned out not to count, and then says so in as many words — *Panel is not saying they are wrong — only that nobody has checked.* A scheduled process guessing wrong about a tax return is worse than one that said nothing.
+
+**I have looked changes no money, on purpose.** Accepting a proposal records an acknowledgement and stops. It does not mark an expense deductible, because the review is the agent noticing and **confirming each category stays an act the user performs in the Expenses list, where they can see what they are confirming.** An accept button that silently rewrote a tax return would be the exact failure this feature was scoped to avoid — and it would be invisible, which is worse.
+
+**Bounded underneath — the D37/D39/D41/D42/D43 lesson applied to a scheduler**
+
+A scheduled job is uniquely able to get away with *collect every space and filter*, and uniquely wrong to do it. So: due spaces are an **index range** on `by_nextAgentRunAt` (`lte`, `.take(200)`); a space is in that range **only if a person opted in**, and clearing the column drops it out immediately, because Convex omits a document from an index when a field is absent; expenses come from the `by_owner_spentAt` **range** feature 5 added, `.take(2000)`; the daily tally is a bounded read of one space's own runs.
+
+**Overflow is counted, observable and audited — all three**
+
+Counted and audited were free: `overflow` is a column on `agentRuns`. **Observable** was not, and without it a capped agent would hold work back in silence forever, which is the exact failure a cap exists to prevent. So `getLastRun` surfaces the last result, the counts, the overflow and the day's tally against both caps, and the Finance area says so in the open. The live harness drives the tally to exactly 50 and then proves the 51st run is refused, counted, observable and reported `capped`.
+
+**Failure, without a retry storm**
+
+There is one `catch` in the batch loop. A failure is recorded against that space with a 200-character message — no stack, no arguments, no path, because the arguments could contain a label or an amount — and the rest of the batch continues, since a run that aborts on the first error starves everyone behind it. `nextAgentRunAt` advances **after** the attempt, so a failing space stays due and is retried tomorrow exactly once. There is no backoff queue, no exponential loop and no second attempt within a run, which is the whole mechanism: **one attempt per space per day, always.**
+
+**ACCEPTANCE CRITERIA**
+
+1. A space is not scheduled until the user opts in, and `debug_agents_v1` is required at enrolment and re-checked on every run.
+2. The registry is exactly one agent; no agent duplicates a producer that already exists.
+3. A run executes the approved agent and produces a proposal whose every number is traceable to a row.
+4. Re-running against unchanged input creates no second proposal, activity row or state change — including after the proposal has been answered.
+5. The swing is computed by `estimateTax` twice, and the wording never claims a category is wrong.
+6. The tier is a return type, and the action union cannot express a financial write.
+7. Per-run cap is exactly 10 and per-space daily cap exactly 50, each pinned at its boundary.
+8. The 51st execution in a day is refused, counted as overflow, **observable**, and reported as capped — never silently truncated.
+9. A run, a proposal and an acceptance change no financial data at all.
+10. Every read and write is owner-scoped; a foreign id is refused on both write paths; a second account sees and gets nothing.
+11. A run with nothing to do is recorded `skipped`, never as a success; a thrown failure is recorded; one failing space neither aborts the batch nor causes a retry storm.
+12. Panel adds no new Attention kind, section, rule or query, and a proposal is not an attention item.
+13. No external action occurs; the pure module holds no credential and imports no client.
+14. `FEATURE_COUNT` is 12, `weightsVersion` is 1, and a run records no training sample and moves no weight.
+15. Budget: 6 files / 2 tables / 0 deps / 1 abstraction.
+16. A daily scheduled function is declared and accepted by the deployment, and **its firing is recorded as unverified** rather than as a pass.
+
+**BUDGET** — 6 new files · 2 new tables (`agentRuns`, `agentProposals`) · 0 deps · 1 abstraction (`src/lib/agents.ts`)
+
+| Budget item | Max | Used |
+|---|---|---|
+| New files | 6 | 5 — `src/lib/agents.ts`, `src/lib/agents.test.ts`, `src/convex/agents.ts`, `convex.config.ts`, `scripts/conformance-6f.ts` (the UI went into the **existing** `FinanceArea.tsx`, modified not new) |
+| New tables | 2 | 2 |
+| New deps | 0 | 0 |
+| New abstractions | 1 | 1 |
+
+> **Spec correction, CHANGE-0018.** §9.3 step 1 says an agent is a pure function in
+> `src/lib/agents/`. It is `src/lib/agents.ts` — a file, not a directory — because
+> the registry holds exactly one agent, and a directory containing one file is an
+> abstraction the budget does not have. §9.3 also asks for `traceAgent()`
+> expectations; the trace is asserted as a **purity fixture** instead, since a
+> golden trace would only re-state the implementation. The drift script does not
+> enforce the path, so this is a note rather than a failure — but a spec sentence
+> naming a path the code does not use is a defect in the spec.
 
 **Phase 0A (next)**
 
