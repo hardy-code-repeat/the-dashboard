@@ -701,17 +701,17 @@ phases are `NOT STARTED`.
 
 ### Phase 0A — Foundation and defect fixes
 
-- **Status:** `BLOCKED` (approved, 5 of 7 tasks implemented — see CHANGE-0005) · **Budget:** 4 files · 0 tables · 0 required deps · 1 abstraction
+- **Status:** `BLOCKED` (approved, 6 of 7 tasks resolved — see CHANGE-0005, CHANGE-0006) · **Budget:** 4 files · 0 tables · 0 required deps · 1 abstraction (the deterministic-id upsert abstraction was **not** spent — ADR-022 removed the need for it)
 - **IN SCOPE:** regression fixtures (nlp/tax/scorer); N1 deterministic-id upsert; N2 guest claim path *or* removal; N5 `Infinity` verification; recurrence respawn; atomic `addTask`; resolve N3/N6/N8/D13.
 - **OUT OF SCOPE:** attention engine; spaces/links/activity; schema changes; model version fields; new object kinds; index migrations; any UI redesign; fixing the lint baseline.
 - **DO NOT TOUCH:** `src/lib/scorer.ts` maths · `src/lib/tax.ts` figures and sources · auth config · `vite.config.ts` · theme tokens (see §13)
 - **DEPENDENCIES:** none
-- **BLOCKERS:** `Q-005` blocks TASK-0A-002 (ADR-017's deterministic-id upsert does not exist in Convex); `Q-001` blocks TASK-0A-003
-- **APPROVAL REQUIRED:** phase approval (granted 2026-10-01); Q-005 and Q-001 resolution
+- **BLOCKERS:** `Q-001` blocks TASK-0A-003. `Q-005` was resolved 2026-10-01 by ADR-022.
+- **APPROVAL REQUIRED:** phase approval (granted 2026-10-01); Q-001 resolution
 - **ACCEPTANCE CRITERIA:**
   1. 20 NLP + 34 tax fixtures committed and passing
   2. No `Infinity`/`NaN` in any dashboard payload
-  3. Two concurrent completions leave exactly one `assistantState` row
+  3. Two concurrent completions leave exactly one `assistantState` row — **VERIFIED** by `scripts/conformance-occ.ts` against a live deployment (1,744 concurrent mutations, 0 duplicates; see ADR-022)
   4. Guest can claim data, **or** anonymous sign-in is removed from the UI
   5. Completing a recurring task yields the next occurrence exactly once
   6. `addTask` is a single call; no orphaned `area`-less tasks
@@ -791,7 +791,7 @@ it, and how do we know it works?"**
 | REQ | ADR | Phase | Task | Acceptance | Test | Change |
 |---|---|---|---|---|---|---|
 | REQ-021 | ADR-019 | 0A | TASK-0A-001 | AC-0A-001 | TEST-0A-001 | CHANGE-0005 |
-| REQ-020 | ADR-017 | 0A | TASK-0A-002 | AC-0A-003 | TEST-0A-002 | **NOT DONE — BLOCKED by Q-005** |
+| REQ-020 | ADR-022 | 0A | TASK-0A-002 | AC-0A-003 | TEST-0A-002 | CHANGE-0006 — superseded ADR-017; verified |
 | REQ-019 | ADR-018 | 0A | TASK-0A-003 | AC-0A-004 | TEST-0A-003 | **NOT DONE — BLOCKED by Q-001** |
 | REQ-030 | ADR-016 | 0A | TASK-0A-004 | AC-0A-002 | TEST-0A-004 | CHANGE-0005 |
 | REQ-017 | — | 0A | TASK-0A-005 | AC-0A-005 | TEST-0A-005 | CHANGE-0005 |
@@ -803,7 +803,7 @@ it, and how do we know it works?"**
 | Task | Defect | Description | Status |
 |---|---|---|---|
 | TASK-0A-001 | — | Commit regression fixtures: 20 NLP cases, 34 tax cases, scorer golden trajectory + fixed-ranking fixture. | Done — 102 fixtures |
-| TASK-0A-002 | N1 | Replace read-then-insert with a deterministic-id upsert for `assistantState`. | **BLOCKED by Q-005** — ADR-017's mechanism does not exist in Convex |
+| TASK-0A-002 | N1 | Replace read-then-insert with a deterministic-id upsert for `assistantState`. | **Closed by ADR-022** — the task as written is obsolete; that mechanism does not exist in Convex. The read-then-insert path is correct as-is, verified against a live deployment. |
 | TASK-0A-003 | N2 | Guest claim path, **or** remove anonymous sign-in. | **BLOCKED by Q-001** |
 | TASK-0A-004 | N5 | Verify whether Convex round-trips `-Infinity`; adopt a finite sentinel regardless. | Done — finite sentinel adopted |
 | TASK-0A-005 | D5 | Wire `nextOccurrence` into completion; idempotent. | Done — guarded by a transition check |

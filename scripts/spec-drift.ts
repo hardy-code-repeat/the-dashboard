@@ -13,6 +13,7 @@
  *   6. Does the HTML control centre agree with the changelog it renders?
  *   7. Do file paths referenced by the specs still exist? (warning only —
  *      planned files are legitimate)
+ *   8. Is every superseded ADR still retained, and does its successor exist?
  *
  * Usage:  bun scripts/spec-drift.ts
  * Exit:   0 = no drift, 1 = drift detected, 2 = could not run checks
@@ -513,6 +514,53 @@ function checkProtectedAreas(fundamentals: string) {
   );
 }
 
+// ------------------------------------------- 13. superseded ADR integrity
+// ADR-017 is retained and banner-marked rather than deleted, so the history of
+// the decision survives. That is only useful if the banner stays honest: the
+// superseded entry must keep existing, its named successor must exist, and it
+// must not simultaneously claim to be active.
+function checkSupersededAdrs(changelog: string) {
+  const blocks = [
+    ...changelog.matchAll(/^### (ADR-\d+)([\s\S]*?)(?=^### |^## |$)/gm),
+  ];
+  const present = new Set(blocks.map((b) => b[1]));
+
+  const problems: string[] = [];
+  let checked = 0;
+
+  for (const [, id, body] of blocks) {
+    const sup = body.match(/\*\*SUPERSEDED BY (ADR-\d+)\*\*/);
+    if (!sup) continue;
+    checked++;
+
+    const successor = sup[1];
+    if (!present.has(id)) {
+      problems.push(`${id} is marked superseded but its entry is missing`);
+    }
+    if (!present.has(successor)) {
+      problems.push(`${id} names ${successor} as its successor, which does not exist`);
+    }
+    if (/^\*\*Status:\*\*\s*Active/m.test(body)) {
+      problems.push(`${id} is marked superseded yet also declares Status: Active`);
+    }
+  }
+
+  if (checked === 0) {
+    record("superseded ADRs", "pass", "no superseded ADRs to check");
+  } else if (problems.length > 0) {
+    record("superseded ADRs", "fail", problems.join("; "));
+  } else {
+    const ids = blocks
+      .filter((b) => b[2].includes("**SUPERSEDED BY"))
+      .map((b) => `${b[1]}->${b[2].match(/\*\*SUPERSEDED BY (ADR-\d+)\*\*/)![1]}`);
+    record(
+      "superseded ADRs",
+      "pass",
+      `${checked} superseded ADR(s) retained with a valid successor: ${ids.join(", ")}`,
+    );
+  }
+}
+
 // ------------------------------------------------------------------- main
 function main() {
   if (!checkSpecFiles()) {
@@ -546,6 +594,7 @@ function main() {
   }
 
   checkHtmlSync(specs["05_PANEL_CONTROL_CENTER.html"], adrIds, changeIds.length);
+  checkSupersededAdrs(changelog);
   checkPaths(specs);
 
   report();

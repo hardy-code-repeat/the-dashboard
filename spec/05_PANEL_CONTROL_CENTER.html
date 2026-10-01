@@ -158,8 +158,8 @@
       </div>
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
-        <span class="tag t-b"><span id="spec-adr-count">21</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">5</span> changes</span>
+        <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
+        <span class="tag t-y"><span id="spec-change-count">6</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -1002,7 +1002,7 @@
     </div>
     <div class="stat ok">
       <div class="lbl">Decisions recorded</div>
-      <div class="val"><span id="spec-adr-count-2">21</span></div>
+      <div class="val"><span id="spec-adr-count-2">22</span></div>
       <div class="note">ADRs, plus 11 rejected decisions. Not re-litigated without new evidence.</div>
     </div>
     <div class="stat bad">
@@ -1109,7 +1109,7 @@
      against 02_CHANGELOG.md and fails if they diverge.                        */
 
   var PHASES = [
-    { id:"0A", status:"BLOCKED — Q-005, Q-001",
+    { id:"0A", status:"BLOCKED — Q-001",
       obj:"Regression fixtures, then two blocking defects, then recurrence and atomic task creation.",
       deps:"none — first phase",
       budget:{files:"4",tables:"0",deps:"1 (optional test script)",abstractions:"1"},
@@ -1193,7 +1193,8 @@
     {id:"ADR-016",t:"Complexity budget is mandatory",c:"Product",s:"Every phase declares max files, tables, deps, abstractions and must-nots. Exceeding it is a stop condition.",c2:"A budget that is not enforced is not a budget. Some legitimate work will pause for approval — intended."},
     {id:"ADR-017",t:"State rows use deterministic ids",c:"Database",s:"Single-row-per-user state is upserted with a deterministic document id, not read-then-insert. Fixes N1.",c2:"Makes the invariant structural rather than timing-dependent."},
     {id:"ADR-018",t:"Guest accounts need a claim path or removal",c:"Security",s:"Fixes N2. Anonymous sign-in currently orphans all data on account upgrade — silent data loss is prohibited.",c2:"Must be resolved before any sharing work."},
-    {id:"ADR-019",t:"Spec-driven development; Markdown is authoritative",c:"Product",s:"Five persistent control artefacts. The HTML control centre is a read-only view. Drift is detected mechanically.",c2:"Five files is enough to be authoritative and few enough to stay accurate."}
+    {id:"ADR-019",t:"Spec-driven development; Markdown is authoritative",c:"Product",s:"Five persistent control artefacts. The HTML control centre is a read-only view. Drift is detected mechanically.",c2:"Five files is enough to be authoritative and few enough to stay accurate."},
+    {id:"ADR-022",t:"Assistant state relies on transactional OCC",c:"Database",s:"Supersedes ADR-017. assistantState is created by read-then-insert; Convex's serializable mutations make concurrent initialisation safe. Verified: 1,104 concurrent mutations, 0 duplicates.",c2:"Depends on a platform guarantee Panel does not own — documented, with a failure path that escalates to a schema constraint."}
   ];
 
   /* ------------------------------------------------------------- rendering */

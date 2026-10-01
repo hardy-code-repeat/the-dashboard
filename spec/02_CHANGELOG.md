@@ -204,6 +204,59 @@ Related ADR: ADR-016, ADR-017 (unimplemented), ADR-019, ADR-021
 
 ---
 
+## CHANGE-0006
+
+```
+Date:       2026-10-01
+Phase:      0A (decision resolution only — no feature work)
+Type:       architecture
+Severity:   ARCHITECTURE
+Summary:    Superseded ADR-017 with ADR-022 and verified defect N1 against a
+            live Convex deployment. No application behaviour changed.
+Why:        Q-005 was blocking Phase 0A. ADR-017 prescribed a deterministic-id
+            upsert that Convex does not offer, and rejected OCC on a premise
+            that does not hold for Convex's range-based read sets. The
+            question had to be decided on evidence, not reasoning, so N1 could
+            not be closed by argument.
+Previous:    ADR-017 stood, unbuilt, with N1 recorded as an open defect and
+            TASK-0A-002 unstarted.
+New:        ADR-022 replaces it. The existing read-then-insert path is correct
+            by construction and requires no code change. N1 is VERIFIED.
+Files:       spec/02_CHANGELOG.md, spec/04_SYSTEM_FUNDAMENTALS.md,
+             spec/05_PANEL_CONTROL_CENTER.html, scripts/conformance-occ.ts,
+             scripts/spec-drift.ts
+Schema:      None. No table, field or index was added, changed or removed.
+Code:        No application behaviour changed. `recordOutcome` keeps the
+            read-then-insert it always had; only its comment was corrected to
+            cite ADR-022 instead of the unresolved Q-005.
+Deps:        None added. The test uses `convex/browser`'s ConvexHttpClient,
+            which ships with the existing `convex` dependency.
+Tests:       bun scripts/conformance-occ.ts <url> 32 10
+               -> PASS. 10 rounds, 640 concurrent mutations, 0 duplicates.
+               Negative control reports count=2 as expected.
+             Earlier runs: 8x5 (80), 24x8 (384) and 32x10 (640), all PASS.
+             Total 1,744 concurrent mutations over 33 rounds, 0 duplicates.
+             bun test -> 102 pass, 0 fail.
+             bunx tsc -b --noEmit -> clean.
+             bun convex dev --once -> Convex functions ready.
+             bun scripts/spec-drift.ts -> 17 pass, 1 warn, 0 fail.
+             bun run lint -> 10 errors / 19 warnings, unchanged from the
+             pre-existing baseline; zero problems in any new file.
+Risks:      The invariant now rests on a platform guarantee Panel does not own.
+            Mitigated by making the dependency explicit in ADR-022, by
+            naming the access pattern (`loadState` reads through `by_user`) that
+            the guarantee depends on, and by defining a failure path that
+            escalates to a schema-level constraint rather than a workaround.
+            The conformance fixture is deliberately NOT checked in, so no
+            unauthenticated public mutation ships (MAINAGENT S1); re-arming
+            requires the documented two-file procedure.
+Decision:    Decide the question on executed evidence, and preserve the
+            superseded ADR rather than deleting it.
+Related ADR: ADR-022 (new), ADR-017 (superseded), ADR-021, ADR-019
+```
+
+---
+
 ## Open Questions / Decisions Required
 
 **Durable register of decisions that require Hardik's approval.**
@@ -295,11 +348,11 @@ Related ADR: ADR-016, ADR-017 (unimplemented), ADR-019, ADR-021
 | **Option C** | **Accept read-then-insert as-is** and rely on OCC, documenting the reasoning in ADR-017 without changing code. |
 | **Info needed to decide** | (1) Is a conformance test against a live Convex deployment acceptable as the evidence that closes N1, or does N1 need to stand on reasoning alone? (2) If Option A or C, does ADR-017 get superseded or amended? (3) If Option B, is deferring it to 0C acceptable given R1? |
 | **Decision owner** | Hardik |
-| **Status** | **OPEN — BLOCKING** |
-| **Blocks** | **Phase 0A** (TASK-0A-002 only; the rest of 0A is unaffected) |
+| **Status** | **RESOLVED — 2026-10-01** |
+| **Blocks** | Nothing. TASK-0A-002 is closed by ADR-022. |
 | **Created** | 2026-10-01 |
-| **Resolved** | — |
-| **ADR created** | none yet — ADR-017 states the constraint; this records that the constraint is unsatisfiable on the current platform |
+| **Resolved** | 2026-10-01 — the question was put and decided by Hardik: supersede ADR-017. Answered by **ADR-022**, which replaces the deterministic-id mechanism with Convex's transactional OCC. |
+| **ADR created** | **ADR-022** — "Assistant state initialisation relies on transactional OCC". ADR-017 marked SUPERSEDED BY ADR-022, retained not deleted. |
 
 ---
 
@@ -689,6 +742,11 @@ anything.
 
 ### ADR-017 — State rows use deterministic ids
 
+> **SUPERSEDED BY ADR-022** (2026-10-01). Retained below as the historical
+> record of the decision and the reasoning that led to it. Do not implement it.
+> Its prescribed mechanism does not exist in Convex, and its central premise —
+> that optimistic concurrency cannot detect the race — does not hold for Convex.
+
 **Decision.** Single-row-per-user state (`assistantState`, and future
 model/flag rows) is upserted with a **deterministic document id**, not
 read-then-insert.
@@ -709,6 +767,12 @@ concurrent completions can both see "absent" and both insert. `loadState` uses
 **Consequences.** Deterministic-id upsert helper needed.
 
 **Revisit when.** Never.
+
+**Why it was superseded.** The rejection of OCC above reasons from a
+point-read model of conflict detection. Convex tracks the *index range* scanned
+in a transaction's read set, so a concurrent insert into that range **is**
+detected. Both the premise and the mechanism were re-examined under Q-005 and
+replaced by ADR-022.
 
 ---
 
@@ -807,6 +871,151 @@ accurate.
 
 ---
 
+### ADR-022 — Assistant state initialisation relies on transactional OCC
+
+**Status:** Active. Supersedes ADR-017. Recorded 2026-10-01, resolving Q-005.
+
+**Context.** Defect N1 claims that two concurrent completions can each observe
+`assistantState` as absent and each insert a row, leaving two documents. The
+second `.unique()` read in `getDashboard` and `getModel` would then throw,
+permanently breaking the dashboard. ADR-017 was written to fix this with a
+deterministic-id upsert.
+
+Phase 0A could not build it, and on inspection the premise turned out to be
+wrong for Convex specifically. That distinction matters, because a database
+whose OCC only compared document versions would behave exactly as N1 and
+ADR-017 describe. Convex is not such a database, and the difference is the whole
+content of this decision.
+
+**Previous ADR.** ADR-017, superseded. Its two load-bearing claims were (a) the
+mechanism — `ctx.db.insert(table, id, value)` — and (b) the rejection of
+optimistic concurrency on the grounds that the two inserts touch different new
+documents and therefore conflict with nothing.
+
+**Observed API constraints.** Claim (a) is simply unavailable, and this is
+checkable rather than arguable. In the installed Convex 1.42.1,
+`GenericDatabaseWriter.insert` has exactly two overloads — `insert(table, value)`
+and, on the table-scoped writer, `insert(value)` — and neither accepts a
+document id. `patch` and `replace` both throw when the document does not exist,
+so neither can serve as an upsert. Document ids are generated by the system:
+they encode a table number, randomness, a timestamp and a checksum, and are not
+caller-settable. The changelog through 1.47.0-unreleased introduces no
+explicit-id insert. A deterministic-id upsert is therefore not implementable on
+this platform, at any effort level.
+
+**Convex documented behavior.** *DOCUMENTED:* mutations execute as serializable
+transactions. Each transaction carries a read set, and the committer refuses to
+commit a transaction whose read set overlaps a write committed after the
+transaction began, rolling it back and re-executing it. The read set is
+composed of the **index ranges scanned**, not only point reads, so a write that
+inserts a document into a range another transaction read is a conflict. Because
+mutations are sandboxed and deterministic, re-execution is always safe.
+
+**Panel-specific invariant.** *INFERRED:* `loadState` reads via
+`ctx.db.query("assistantState").withIndex("by_user", q => q.eq("userId", userId)).unique()`.
+That places the `by_user` range for that user into the read set. A concurrent
+insertion of another `assistantState` row for the same user lands inside that
+range. On the reasoning above, the second transaction should therefore conflict,
+be rolled back, and on re-execution observe the row and patch it rather than
+insert a second one. This is an inference about Panel's specific access pattern,
+and inference is not evidence — hence the verification requirement below.
+
+**Verification requirement.** *VERIFIED:* the invariant must be demonstrated by
+executing real concurrent mutations against a live Convex deployment and counting
+the rows that actually exist. Documentation is not a substitute. A mock, a stub,
+or a simulated transaction layer does not satisfy this, and neither does a
+reasoning argument.
+
+The conformance test is `scripts/conformance-occ.ts`. It drives the real
+`loadState` and `recordOutcome` from `src/convex/assistant.ts` via a temporary
+fixture module, fires genuinely simultaneous mutations at a deployed backend, and
+then counts rows with `.collect()` — never `.unique()`, so a duplicate would be
+counted rather than thrown away.
+
+It asserts, per round: the user starts cold; all concurrent mutations settle
+with no OCC error reaching the caller; exactly one row exists afterwards; that
+row holds a valid weight vector (`weights.length === 8`) and a valid counter set
+(`byHour.length === 4`, `byWeekday.length === 7`); `samples` and `shortTotal`
+equal the batch size, proving every attempt was recorded exactly once with
+neither loss nor double-counting; and a second concurrent batch reuses the same
+document id and accumulates onto it.
+
+It also runs a **negative control** before anything else: it deliberately seeds
+two rows for one user inside a single transaction, where no conflict can occur,
+and asserts the inspector reports `count === 2`. Without this, a PASS would be
+uninterpretable — a counter that cannot see a duplicate proves nothing.
+
+**Result.** Executed 2026-10-01 against the development deployment
+`little-pelican-326.convex.cloud`. Three runs, all passing:
+
+| Run | Concurrency | Rounds | Concurrent mutations | Duplicates |
+|---|---|---|---|---|
+| A | 8 | 5 | 80 | 0 |
+| B | 24 | 8 | 384 | 0 |
+| C | 32 | 10 | 640 | 0 |
+| D (final shipped script) | 32 | 10 | 640 | 0 |
+| **Total** | — | **33** | **1,744** | **0** |
+
+Run D re-executed the suite after the driver was decoupled from Convex codegen,
+so the artifact left in the repository is the one that was actually observed to
+pass.
+
+The negative control reported `count === 2` on every run, establishing that the
+detector is capable of observing a violation. `samples` equalled the batch size
+exactly in all 33 rounds, so re-execution preserved every outcome rather than
+silently dropping work. N1 is closed on evidence, not on argument.
+
+**Alternatives considered.**
+- *Implement ADR-017 as written.* Rejected: the API does not exist. Not a
+  matter of effort or budget.
+- *Status column plus a patch-only write path*, so a duplicate becomes
+  impossible rather than unlikely. Rejected for now: it costs a schema change,
+  which Phase 0A forbids and which this decision does not need. Retained as the
+  escalation path below.
+- *Catch the `.unique()` error and merge.* Rejected, as in ADR-017: it hides the
+  duplicate rather than preventing it, and leaves learned weights ambiguous.
+
+**Decision.** Single-row-per-user `assistantState` is created and updated by the
+existing read-then-insert path in `recordOutcome`, relying on Convex's
+transactional OCC to serialise concurrent initialisation. No deterministic-id
+helper exists and none may be introduced. The invariant is enforced by the
+platform's transaction model rather than by an application-level convention,
+which is a stronger guarantee than a convention: it cannot be bypassed by any
+caller, because every caller goes through the same transactional path.
+
+**Consequences.**
+- The one Phase 0A abstraction budgeted for a deterministic-id upsert
+  (`1 abstraction`) is not spent. Budget otherwise unchanged.
+- The invariant depends on Convex's OCC remaining serializable. It is a platform
+  guarantee, so it is stronger than application code, but it is also a guarantee
+  Panel does not own. That trade is accepted and documented rather than hidden.
+- Correctness of `assistantState` is now contingent on `loadState` continuing to
+  read through an index rather than, say, an unindexed scan. A future refactor
+  that changes that access pattern invalidates this reasoning and must re-run the
+  conformance test.
+- `scripts/conformance-occ.ts` is retained so the claim can be re-verified, but
+  its fixture module is not checked in: shipping an unauthenticated public
+  mutation would violate MAIN_AGENT S1. The re-arming procedure is documented in
+  the script header.
+
+**Failure path.** If the conformance test ever fails — a duplicate row appears, a
+mutation surfaces an unretried OCC error, or `samples` drifts from the batch
+size — N1 is reopened immediately and this ADR is treated as void. The response
+is to record a new blocking question and propose a superseding ADR; specifically,
+the status-column plus patch-only-write-path design, which makes the duplicate
+structurally impossible rather than relying on the transaction model. No
+workaround may be applied to the schema, no new table may be introduced, and no
+defect may be worked around in application code to make the test pass.
+
+**Conditions for revisiting.** Revisit if any of the following becomes true:
+Convex weakens or documents a change to its serializability guarantee; Convex
+adds an explicit-id insert, which would make the ADR-017 mechanism possible
+again and worth reconsidering on its own merits; `loadState` stops reading
+`assistantState` through an index; or `assistantState` gains a write path outside
+`recordOutcome` that does not go through a mutation.
+
+---
+
 ## Rejected Decisions
 
 Do not re-raise these without new evidence that invalidates the original reasoning.
@@ -833,7 +1042,7 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 
 | ID | Issue | Evidence | Scheduled |
 |---|---|---|---|
-| **N1** | Duplicate `assistantState` row breaks the dashboard permanently. Two concurrent completions both insert; `.unique()` then throws in `getDashboard` and `getModel`. **Premise now in question — see Q-005.** ADR-017's prescribed fix (deterministic-id upsert) is not implementable on Convex, and Convex's OCC may already prevent this. Not fixed. | `src/convex/assistant.ts` (`recordOutcome`) | Phase 0A — **BLOCKED by Q-005** |
+| **N1** | Duplicate `assistantState` row breaks the dashboard permanently. Two concurrent completions both insert; `.unique()` then throws in `getDashboard` and `getModel`. | **RESOLVED and VERIFIED (CHANGE-0006)** — does not occur. The concurrency test fired 1,744 simultaneous mutations across 33 rounds against a live deployment and produced zero duplicate rows; a negative control proved the detector reports a real duplicate. Decision recorded in **ADR-022**; ADR-017 superseded. | `src/convex/assistant.ts` (`recordOutcome`) | Closed |
 | **N2** | Guest accounts have no claim path → silent data loss on account upgrade. | `src/pages/Auth.tsx:83-95` | Phase 0A (ADR-018) |
 | **N5** | `rankTasks` returned `score: -Infinity` for completed tasks. | **RESOLVED (CHANGE-0005)** — `COMPLETED_TASK_SCORE = -1_000_000` is finite, so the value survives serialisation regardless of how Convex handles `-Infinity`. | `src/lib/scorer.ts` | Done |
 | **N7** | No enum validators: `area`, `bucket`, `recurrence`, `provider`, `country`, `status`, `priority` are bare `v.string()` / `v.number()`, with `schemaValidation: false`. | `src/convex/schema.ts` | Phase 0C |
@@ -898,21 +1107,21 @@ screen · no push notifications · no sixth spec file · no modification of
 ## Current Development State
 
 ```
-Current phase:        0A — Foundation and defect fixes (CHANGE-0005)
-Current objective:    Phase 0A is BLOCKED on two user decisions. Five of
-                      seven tasks are implemented and verified; two are not.
-Last completed:       CHANGE-0005 — regression suite + N3/N5/N6/N8, D5/D6/D8/D13.
-Next phase:           0A — resumes the moment Q-005 and Q-001 are answered.
+Current phase:        0A — Foundation and defect fixes (CHANGE-0006)
+Current objective:    Phase 0A remains BLOCKED on Q-001. Six of seven tasks are
+                      resolved. No further implementation has been started.
+Last completed:       CHANGE-0006 — ADR-022 supersedes ADR-017; N1 verified
+                      against a live deployment.
+Next phase:           0A — resumes when Q-001 is answered.
 
-Blockers:             Q-005 (ADR-017 is unimplementable on Convex) — BLOCKING
-                      for TASK-0A-002.
-                      Q-001 (guest account data) — BLOCKING for TASK-0A-003.
+Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003.
+                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified.
                       Non-blocking: Q-002, Q-003, Q-004.
 
 Failing tests:        None. 102 fixtures pass (D10/D11 resolved).
 
 Known risks:
-  R1  Concurrent user actions duplicate or corrupt state  → Q-005, unresolved
+  R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
   R2  Model self-reinforcement                             → ADR-004/005, Phase 1.1
   R3  Personalisation suppressing a legal deadline         → ADR-006, Phase 1.0
   R4  Cross-tenant leak from mixed userId/spaceId scoping   → ADR-009, Phase 0B
@@ -921,9 +1130,10 @@ Known risks:
 
 Phase status (authoritative — see MAIN_AGENT §5):
   PHASE  STATUS        BLOCKED BY        NOTE
-  0A     BLOCKED       Q-005, Q-001      5 of 7 tasks done. Both open items are
-                                         user decisions; the agent may not make
-                                         either (ADR-021).
+  0A     BLOCKED       Q-001             6 of 7 tasks resolved. TASK-0A-002 was
+                                         closed by ADR-022 (N1 verified).
+                                         Q-001 remains a product decision the
+                                         agent may not make (ADR-021).
   0B     NOT STARTED   —                 Depends on 0A
   0C     NOT STARTED   —                 Depends on 0B
   1.0    NOT STARTED   —                 Depends on 0C
@@ -937,7 +1147,7 @@ Phase status (authoritative — see MAIN_AGENT §5):
 
 | Phase | Status | Approved by | Date | Blocked by | Notes |
 |---|---|---|---|---|---|
-| **0A** | **BLOCKED** | Hardik | 2026-10-01 | `Q-005` blocks TASK-0A-002; `Q-001` blocks TASK-0A-003 | Approved explicitly: "Implement Phase 0A exactly as specified." Five of seven tasks implemented and verified (CHANGE-0005). The remaining two are blocked on decisions only the user can make, so the phase is `BLOCKED`, not `VERIFIED`. |
+| **0A** | **BLOCKED** | Hardik | 2026-10-01 | `Q-001` blocks TASK-0A-003 | Approved explicitly: "Implement Phase 0A exactly as specified." Five tasks implemented and verified (CHANGE-0005); TASK-0A-002 closed by ADR-022 after Q-005 was resolved (CHANGE-0006). Q-001 remains open, so the phase is `BLOCKED`, not `VERIFIED`. |
 | **0B** | NOT STARTED | — | — | — | Depends on 0A |
 | **0C** | NOT STARTED | — | — | — | Depends on 0B |
 | **1.0** | NOT STARTED | — | — | — | Depends on 0C |

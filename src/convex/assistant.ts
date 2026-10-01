@@ -50,9 +50,7 @@ type AssistantDoc = {
   longTotal: number;
   samples: number;
   updatedAt: number;
-};
-
-async function loadState(
+};async function loadState(
   ctx: GenericQueryCtx<DataModel>,
   userId: any,
 ): Promise<AssistantDoc | null> {
@@ -437,12 +435,13 @@ async function recordOutcome(
 
   // No row yet, so create it.
   //
-  // TASK-0A-002 (defect N1, ADR-017) is UNRESOLVED and this is the pre-existing
-  // behaviour, restored deliberately. ADR-017 prescribes a deterministic-id
-  // upsert, but `ctx.db.insert` has no explicit-id overload in any released
-  // Convex version (verified against the 1.42.1 type definitions and the
-  // changelog through 1.47.0-unreleased), and `patch`/`replace` cannot create.
-  // See the Q-005 entry in spec/02_CHANGELOG.md before changing this.
+  // This read-then-insert is safe by construction under Convex's transactional
+  // OCC: the read above scans the `by_user` index range, so a concurrent
+  // insert into that range conflicts, the loser is rolled back and re-executed,
+  // and on retry it observes this row and patches instead of inserting.
+  // Verified against a live deployment — see ADR-022 and the N1 entry in
+  // spec/02_CHANGELOG.md. Do not reintroduce a deterministic-id upsert:
+  // `ctx.db.insert` has no explicit-id overload in any released Convex version.
   await ctx.db.insert("assistantState", { userId, ...base });
 }
 
