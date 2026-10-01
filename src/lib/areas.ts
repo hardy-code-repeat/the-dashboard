@@ -80,6 +80,16 @@ export function areaBySlug(slug: string): AreaDef | undefined {
   return AREAS.find((a) => a.slug === slug);
 }
 
+/**
+ * Slug of the area that always exists for every user, whether or not they
+ * enabled anything. Cannot be removed.
+ *
+ * Declared here rather than in a Convex module because both `assistant.ts` and
+ * `life.ts` need it, and importing one Convex module from the other to share a
+ * string literal would be worse coupling than owning it with the catalogue.
+ */
+export const DEFAULT_AREA_SLUG = "general";
+
 /** Maps a Tailwind token name to its theme classes. */
 export function accentClasses(accent: AreaDef["accent"]): string {
   switch (accent) {

@@ -43,7 +43,6 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
   const addTask = useMutation(api.assistant.addTask);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
   const removeTask = useMutation(api.assistant.removeTask);
-  const setArea = useMutation(api.life.setTaskArea);
 
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -59,9 +58,8 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
     if (!value || busy) return;
     setBusy(true);
     try {
-      const id = await addTask({ input: value });
-      // The shared addTask mutation has no area arg, so tag after insert.
-      await setArea({ id, area });
+      // The area is part of the insert, so this is one atomic mutation (D6).
+      await addTask({ input: value, area });
       setInput("");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add task");
@@ -170,7 +168,6 @@ export function PeopleArea() {
   const [cadence, setCadence] = useState("every week");
   const [busy, setBusy] = useState(false);
   const addTask = useMutation(api.assistant.addTask);
-  const setArea = useMutation(api.life.setTaskArea);
 
   const handleAdd = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -178,8 +175,7 @@ export function PeopleArea() {
     if (!who || busy) return;
     setBusy(true);
     try {
-      const id = await addTask({ input: `catch up with ${who} ${cadence}` });
-      await setArea({ id, area: "relationships" });
+      await addTask({ input: `catch up with ${who} ${cadence}`, area: "relationships" });
       setName("");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add");

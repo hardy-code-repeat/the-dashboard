@@ -27,6 +27,7 @@ import { AreaPicker, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIc
 import { FinanceArea } from "@/components/FinanceArea";
 import { useAuth } from "@/hooks/use-auth";
 import { describeDue, parseTaskInput } from "@/lib/nlp";
+import { FEATURE_NAMES } from "@/lib/scorer";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | "open" | "done";
@@ -680,17 +681,6 @@ export default function Dashboard() {
     </div>
   );
 }
-
-const FEATURE_NAMES = [
-  "baseline",
-  "priority",
-  "deadline",
-  "age",
-  "time-of-day",
-  "weekday",
-  "tags",
-  "task size",
-];
 
 function StatTile({
   label,

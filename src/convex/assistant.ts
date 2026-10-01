@@ -2,7 +2,8 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
-import { parseTaskInput } from "../lib/nlp";
+import { DEFAULT_AREA_SLUG } from "../lib/areas";
+import { nextOccurrence, parseTaskInput } from "../lib/nlp";
 import {
   emptyBehaviour,
   extractFeatures,
@@ -12,16 +13,28 @@ import {
   type BehaviourStats,
 } from "../lib/scorer";
 
-import type { DataModel } from "./_generated/dataModel";
+import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 
 const DAY_MS = 86_400_000;
 
-async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
+export async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
   const userId = await getAuthUserId(ctx);
   if (!userId) throw new Error("Not authenticated");
   return userId;
 }
+
+/** The persisted task shape `spawnNextOccurrence` needs, kept narrow on purpose. */
+type TaskRow = {
+  _id: Id<"tasks">;
+  userId: Id<"users">;
+  title: string;
+  priority: number;
+  dueAt?: number | null;
+  tags?: string[];
+  recurrence?: string | null;
+  area?: string;
+};
 
 /** Shape of a persisted assistant row. */
 type AssistantDoc = {
@@ -67,34 +80,6 @@ function toBehaviour(state: AssistantDoc | null): BehaviourStats {
 function currentWeights(state: AssistantDoc | null): number[] {
   return state?.weights ?? initialWeights();
 }
-
-/**
- * Parses raw natural-language input without persisting anything.
- *
- * Powers the live preview in the composer, so the user sees the parsed title,
- * due date and priority before committing. Runs entirely client-side too; this
- * server copy keeps the contract single-sourced.
- */
-export const previewCapture = query({
-  args: { input: v.string() },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) return null;
-
-    const state = await loadState(ctx, userId);
-    const parsed = parseTaskInput(args.input);
-
-    return {
-      title: parsed.title,
-      dueAt: parsed.dueAt,
-      priority: parsed.priority,
-      recurrence: parsed.recurrence,
-      tags: parsed.tags,
-      learnedWeights: currentWeights(state).map((w) => Number(w.toFixed(3))),
-      samples: state?.samples ?? 0,
-    };
-  },
-});
 
 /**
  * The whole dashboard: tasks ordered by the learned model, plus a short
@@ -205,13 +190,36 @@ export const getDashboard = query({
 });
 
 /**
- * Creates a task from natural language.
+ * Resolves the area a new task belongs to.
+ *
+ * TASK-0A-006. The area is accepted as part of the insert so task creation is a
+ * single atomic mutation. Previously the UI had to insert and then patch, and a
+ * failure between the two left an unassigned task behind.
+ *
+ * An unknown or disabled area falls back to General rather than throwing: the
+ * composer should never fail because a tab was disabled in another session.
+ */
+async function resolveArea(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+  requested?: string,
+): Promise<string> {
+  if (!requested || requested === DEFAULT_AREA_SLUG) return DEFAULT_AREA_SLUG;
+  const rows = await ctx.db
+    .query("areas")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  return rows.some((a) => a.slug === requested) ? requested : DEFAULT_AREA_SLUG;
+}
+
+/**
+ * Creates a task from natural language, optionally straight into a life area.
  *
  * Parsing happens server-side so behaviour is identical whether the composer
  * preview was skipped (quick add) or not.
  */
 export const addTask = mutation({
-  args: { input: v.string() },
+  args: { input: v.string(), area: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const parsed = parseTaskInput(args.input);
@@ -228,9 +236,43 @@ export const addTask = mutation({
       completedAt: null,
       tags: parsed.tags,
       recurrence: parsed.recurrence,
+      area: await resolveArea(ctx, userId, args.area),
     });
   },
 });
+
+/**
+ * Creates the next occurrence of a recurring task (TASK-0A-005 / D5).
+ *
+ * Recurrence was parsed, displayed and tested but never acted on, so a
+ * recurring task completed and silently never returned. The parser and
+ * `nextOccurrence` already existed; only the wiring was missing.
+ *
+ * Exactly-once is enforced by the caller, not here: `setTaskCompleted` only
+ * calls this on a real not-completed -> completed transition. Convex's OCC
+ * re-runs the whole mutation after a conflict, so a concurrent second
+ * completion of the same task conflicts on the task patch and retries, at which
+ * point the transition guard is false and nothing is spawned.
+ */
+async function spawnNextOccurrence(ctx: GenericMutationCtx<DataModel>, task: TaskRow) {
+  if (!task.recurrence || task.dueAt == null) return;
+
+  const nextDue = nextOccurrence(task.dueAt, task.recurrence);
+  if (!Number.isFinite(nextDue) || nextDue <= task.dueAt) return;
+
+  await ctx.db.insert("tasks", {
+    userId: task.userId,
+    title: task.title,
+    completed: false,
+    priority: task.priority,
+    dueAt: nextDue,
+    createdAt: Date.now(),
+    completedAt: null,
+    tags: task.tags ?? [],
+    recurrence: task.recurrence,
+    area: task.area,
+  });
+}
 
 export const setTaskCompleted = mutation({
   args: { id: v.id("tasks"), completed: v.boolean() },
@@ -240,12 +282,17 @@ export const setTaskCompleted = mutation({
     if (!task || task.userId !== userId) throw new Error("Task not found");
 
     const now = Date.now();
+    // Only a real transition trains the model or respawns the recurrence. This
+    // is what makes completing an already-completed task a no-op, whether it
+    // arrives as a duplicate click or as an OCC retry.
+    const completing = args.completed && !task.completed;
+
     await ctx.db.patch(args.id, {
       completed: args.completed,
       completedAt: args.completed ? now : null,
     });
 
-    if (args.completed) {
+    if (completing) {
       // Capture the features the task had *at resolution time* — training on
       // today's features for a task resolved today is the honest signal.
       const state = await loadState(ctx, userId);
@@ -264,6 +311,10 @@ export const setTaskCompleted = mutation({
 
       await ctx.db.patch(args.id, { featuresAtCompletion: x });
       await recordOutcome(ctx, userId, state, x, task, 1, new Date());
+
+      // Respawn before returning so the next occurrence exists by the time the
+      // client sees the completion. Idempotent — see spawnNextOccurrence.
+      await spawnNextOccurrence(ctx, task as TaskRow);
     }
   },
 });
@@ -330,7 +381,7 @@ export const removeTask = mutation({
  */
 async function recordOutcome(
   ctx: GenericMutationCtx<DataModel>,
-  userId: any,
+  userId: Id<"users">,
   state: AssistantDoc | null,
   x: number[],
   task: { priority: number; dueAt?: number | null; tags?: string[] },
@@ -381,9 +432,18 @@ async function recordOutcome(
 
   if (state) {
     await ctx.db.patch(state._id, base);
-  } else {
-    await ctx.db.insert("assistantState", { userId, ...base });
+    return;
   }
+
+  // No row yet, so create it.
+  //
+  // TASK-0A-002 (defect N1, ADR-017) is UNRESOLVED and this is the pre-existing
+  // behaviour, restored deliberately. ADR-017 prescribes a deterministic-id
+  // upsert, but `ctx.db.insert` has no explicit-id overload in any released
+  // Convex version (verified against the 1.42.1 type definitions and the
+  // changelog through 1.47.0-unreleased), and `patch`/`replace` cannot create.
+  // See the Q-005 entry in spec/02_CHANGELOG.md before changing this.
+  await ctx.db.insert("assistantState", { userId, ...base });
 }
 
 export const clearCompleted = mutation({

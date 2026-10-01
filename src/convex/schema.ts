@@ -37,7 +37,7 @@ const schema = defineSchema(
       userId: v.id("users"),
       title: v.string(),
       completed: v.boolean(),
-      /** 0 = now (default), 1..3 = pinned to the top of the active list. */
+      /** 0 = NOW (default), 1 = SOON, 2 = LATER. Matches `Priority` in src/lib/nlp.ts. */
       priority: v.number(),
       /** Epoch ms this task is scheduled for; null means "someday". */
       dueAt: v.optional(v.union(v.null(), v.number())),

@@ -26,6 +26,26 @@ import type { Priority } from "./nlp";
 
 /** Number of features. Index constants keep the maths readable. */
 export const FEATURE_COUNT = 8;
+
+/**
+ * Human-readable name per feature index.
+ *
+ * Single source of truth: `explain()` renders these, and the dashboard model
+ * inspector imports them. Previously both the label map here and a
+ * `FEATURE_NAMES` array in `Dashboard.tsx` named the same eight features with
+ * no link between them (defect N6), so they could silently disagree.
+ */
+export const FEATURE_NAMES: readonly string[] = [
+  "baseline",
+  "priority",
+  "deadline",
+  "age",
+  "time-of-day",
+  "weekday",
+  "tags",
+  "task size",
+];
+
 export const F = {
   BIAS: 0,
   PRIORITY: 1,
@@ -196,7 +216,8 @@ export function explain(
   x: number[],
   w: number[],
 ): { label: string; contribution: number }[] {
-  const labels: Record<number, string> = {
+  // Readable phrasing for the UI; the canonical name stays in FEATURE_NAMES.
+  const phrasing: Record<number, string> = {
     [F.BIAS]: "baseline",
     [F.PRIORITY]: "you marked it urgent",
     [F.TIME_PRESSURE]: "deadline is close",
@@ -207,7 +228,10 @@ export function explain(
     [F.ESTIMATE_FIT]: "your history with big tasks",
   };
   return x
-    .map((value, i) => ({ label: labels[i] ?? `feature ${i}`, contribution: value * (w[i] ?? 0) }))
+    .map((value, i) => ({
+      label: phrasing[i] ?? FEATURE_NAMES[i] ?? `feature ${i}`,
+      contribution: value * (w[i] ?? 0),
+    }))
     .filter((r) => Math.abs(r.contribution) > 0.01)
     .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
     .slice(0, 3);
@@ -218,6 +242,18 @@ export interface RankedTask<T> {
   score: number;
   reasons: { label: string; contribution: number }[];
 }
+
+/**
+ * Score assigned to a completed task so it sinks below every open task.
+ *
+ * A large finite negative number rather than `-Infinity`. `-Infinity` was
+ * returned to the client as part of every completed task's payload, and it is
+ * not JSON-representable (`JSON.stringify(-Infinity)` is `null`) — defect N5.
+ * It also poisons `.sort()` comparators that combine it with `NaN`. This
+ * sentinel is comfortably below any attainable real score (see WEIGHT_CLAMP in
+ * SYSTEM_FUNDAMENTALS §5.4) while staying finite and safe to serialise.
+ */
+export const COMPLETED_TASK_SCORE = -1_000_000;
 
 /**
  * Ranks tasks by learned score. Completed tasks always sink to the bottom
@@ -233,7 +269,7 @@ export function rankTasks<T extends { completed: boolean }>(
       const x = featureFor(task);
       return {
         task,
-        score: task.completed ? -Infinity : score(x, weights),
+        score: task.completed ? COMPLETED_TASK_SCORE : score(x, weights),
         reasons: task.completed ? [] : explain(x, weights),
       };
     })

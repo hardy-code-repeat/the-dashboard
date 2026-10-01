@@ -2,22 +2,29 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
-import { AREAS, areaBySlug, PROVIDERS, type ProviderWithState } from "../lib/areas";
-import { categoriseExpense, COUNTRIES, estimateTax, readinessScore } from "../lib/tax";
+import {
+  AREAS,
+  areaBySlug,
+  DEFAULT_AREA_SLUG,
+  PROVIDERS,
+  type ProviderWithState,
+} from "../lib/areas";
+import {
+  categoriseExpense,
+  COUNTRIES,
+  estimateTax,
+  filingYearFor,
+  readinessScore,
+} from "../lib/tax";
 
 import type { DataModel } from "./_generated/dataModel";
+import { requireUserId } from "./assistant";
 import { mutation, query } from "./_generated/server";
 
 const DAY_MS = 86_400_000;
 
 /** Slug that always exists for every user, whether or not they added anything. */
-const DEFAULT_AREA = "general";
-
-async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) throw new Error("Not authenticated");
-  return userId;
-}
+const DEFAULT_AREA = DEFAULT_AREA_SLUG;
 
 /**
  * Ensures the default area row exists so ordering and filtering always have a
@@ -167,9 +174,9 @@ export const getFinance = query({
     if (!userId) return null;
 
     const now = new Date();
-    const currentYear = now.getFullYear();
-    // January through April is filing the previous year.
-    const filingYear = now.getMonth() < 4 ? currentYear - 1 : currentYear;
+    // January through April is filing the previous year. Shared with
+    // `saveTaxProfile` so the two can never diverge (defect N8).
+    const filingYear = filingYearFor(now);
 
     const [profile, expenses, gathered] = await Promise.all([
       ctx.db
@@ -271,7 +278,7 @@ export const saveTaxProfile = mutation({
     if (args.grossIncome < 0) throw new Error("Income cannot be negative");
 
     const now = new Date();
-    const taxYear = now.getMonth() < 4 ? now.getFullYear() - 1 : now.getFullYear();
+    const taxYear = filingYearFor(now);
 
     const existing = await ctx.db
       .query("taxProfile")

@@ -69,11 +69,6 @@ function tokenize(input: string): Token[] {
     .map((raw) => ({ raw, lower: raw.toLowerCase().replace(/[^\w:/.+#-]/g, ""), used: false }));
 }
 
-/** Monday-start day index (0 = Monday) for a JS day (0 = Sunday). */
-function toMondayIndex(jsDay: number): number {
-  return (jsDay + 6) % 7;
-}
-
 function atHour(base: Date, hour: number, minute = 0): number {
   const d = new Date(base);
   d.setHours(hour, minute, 0, 0);
@@ -116,7 +111,13 @@ export function parseTaskInput(input: string, now: Date = new Date()): ParsedTas
   let dateOnly = false;
 
   const consume = (i: number, len = 1) => {
-    for (let k = 0; k < len; k++) tokens[i + k].used = true;
+    // Bounds-safe: some cues ask to consume more tokens than remain
+    // (e.g. "every morning" asks for 3 and only 2 are left), which would
+    // otherwise throw on an undefined token.
+    for (let k = 0; k < len; k++) {
+      const t = tokens[i + k];
+      if (t) t.used = true;
+    }
   };
   const peek = (i: number, len = 1) =>
     tokens.slice(i, i + len).map((t) => t.lower);

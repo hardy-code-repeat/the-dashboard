@@ -311,6 +311,18 @@ export const COUNTRIES: Record<CountryCode, Country> = {
   },
 };
 
+/**
+ * The tax year a filing run targets.
+ *
+ * January through April you are filing the previous year; from May you are on
+ * the current one. This was previously written out twice — once in `getFinance`
+ * and once in `saveTaxProfile` — with no shared definition (defect N8). Both
+ * call sites now use this.
+ */
+export function filingYearFor(now: Date): number {
+  return now.getMonth() < 4 ? now.getFullYear() - 1 : now.getFullYear();
+}
+
 /** US standard mileage rates. The 2026 rate changed mid-year — this is why
  *  a hardcoded single value would have been quietly wrong. */
 export const US_MILEAGE: { year: number; from: string; to: string; business: number; charity: number; medical: number; source: string }[] = [
@@ -513,7 +525,12 @@ export function readinessScore(
   const optionalScore = optional.length === 0 ? 15 : ((optional.length - missingOptional.length) / optional.length) * 15;
 
   return {
-    score: Math.round(requiredScore + optionalScore),
+    // Clamped to 0–100. The two weighted components can sum to 115 when a
+    // country has neither required nor optional documents, which would render a
+    // "115 / 100" score. Unreachable with the current catalogue — every country
+    // declares required documents — but the clamp keeps the function honest if
+    // one ever does not.
+    score: Math.max(0, Math.min(100, Math.round(requiredScore + optionalScore))),
     missingRequired,
     missingOptional,
   };
