@@ -50,7 +50,26 @@ src/pages|components   UI — Convex reactive queries, no duplicated server stat
 - `previewCapture` is exported but referenced nowhere (N3).
 - `schemaValidation: false`, and every enum-ish field is a bare `v.string()` (N7).
 
-### 1.2 Target architecture
+#### CURRENT REALITY snapshot — verified against the repository 2026-10-01
+
+**This section describes the repository as it exists now. It contains no target
+architecture.** Target state is §1.2. The difference is §1.3.
+
+| Question | Answer |
+|---|---|
+| **What exists today?** | 9 Convex tables (`users`, `tasks`, `notes`, `assistantState`, `areas`, `taxProfile`, `expenses`, `taxDocuments`, `connections`). 3 routes (`/`, `/auth`, `/dashboard`). 4 pure `src/lib` modules. Convex Auth wired (email OTP + anonymous). Brutalist design system. Landing, Auth and Dashboard pages. |
+| **What works?** | NL task capture end to end. Deterministic parser. Learned ranking with visible reasons and a live model inspector. Notes. Life areas with enable/disable and starter seeding. Tax rules engine for 5 countries with per-line sourcing, readiness scoring and an expense categoriser. Finance area UI. Integration catalogue that renders honestly. |
+| **What is broken?** | **N1** — two concurrent completions can create a duplicate `assistantState` row, after which `.unique()` throws and `getDashboard`/`getModel` fail permanently. **N2** — a guest who signs up by email silently loses all data (no claim path). Both are real today. |
+| **What is partially implemented?** | **Recurrence** — parsed, displayed, `nextOccurrence` exported and tested, but no mutation calls it, so a recurring task completes and never returns. **Health** — component-local `useState`, resets on reload, nothing persisted. **Integrations** — 9 providers, all `pending-credentials`, none can complete a handshake. **Queries** — 6 call sites collect a whole table and filter in JS. |
+| **What is specified but not implemented?** | Everything in phases 0A–3. Attention, spaces, links, activity, people, commitments, documents, agents, calendar sync, sharing. All specified, **none approved, none started.** |
+| **What is planned?** | The phase sequence 0A → 0B → 0C → 1.0 → 1.1 → 1.5 → 2 → 3. |
+| **What is unknown?** | Whether Convex round-trips `-Infinity` in a query return (N5, unverified). Whether `bun test` infrastructure is wanted in a specific shape. Whether `.env` contents satisfy any provider (the agent cannot read `.env`). Every product and business assumption — see PRODUCT_CONTEXT §3.3. |
+
+> **Nothing in this section is VERIFIED by a test.** No test suite exists.
+> "Works" here means *read in the code and observed to be wired*, which is
+> evidence level 1 and 2 — not level 3. See MAIN_AGENT §11.
+
+### 1.2 TARGET STATE — approved future architecture
 
 ```text
 External Tools
@@ -98,6 +117,42 @@ before Phase 3.**
 | **Sharing** | Nothing | Schema in 0B; UI deferred (needs users) | Deferred | P2 |
 
 ---
+
+### 1.4 Implementation status of major capabilities
+
+**Status vocabulary — applied strictly:**
+
+| Term | Meaning |
+|---|---|
+| **NOT BUILT** | No code exists. |
+| **PARTIALLY BUILT** | Some code exists; a material part of the capability is missing. |
+| **BUILT** | Code exists and is wired. **Says nothing about correctness.** |
+| **VERIFIED** | Required tests exist **and** all acceptance criteria and gates pass. |
+| **SHIPPED** | The user explicitly considers it complete. |
+
+> **Code existing is not verification.** Nothing in Panel is currently `VERIFIED`,
+> because no test suite exists.
+
+| Capability | Status | Evidence | Phase |
+|---|---|---|---|
+| Natural-language capture | **BUILT** | `src/lib/nlp.ts`; live in Dashboard. Parser harness passed once, then was deleted — no test remains | 0A |
+| Recurring tasks | **PARTIALLY BUILT** | Parsed + displayed. `nextOccurrence` exported, never called. Does not respawn | 0A |
+| Attention engine | **NOT BUILT** | Only a 3-line "brief" string exists | 1.0 |
+| Learning / ranking | **PARTIALLY BUILT** | Logistic regression trained on task completion only. No clamp, version, rollback or feedback semantics | 0C / 1.1 |
+| People | **NOT BUILT** | Faked as `tasks.title` strings in `PeopleArea` | 3 |
+| Calendar | **NOT BUILT** | Provider entry exists with `pending-credentials` | 2 |
+| Finance | **PARTIALLY BUILT** | Expenses + tax engine work. No accounts, transactions, assets, liabilities, investments, subscriptions or goals | 3 |
+| Life Admin | **NOT BUILT** | `home` area renders a generic task list | 3 |
+| Agents | **NOT BUILT** | No `internalMutation`, no cron, no agent modules | 3 |
+| Sharing / permissions | **NOT BUILT** | Everything scoped by `userId` only | 0B (schema) / P2 (UI) |
+| Export | **NOT BUILT** | No manifest, no action | P2 |
+| Deletion | **NOT BUILT** | No account deletion | P2 |
+| Integrations (framework) | **NOT BUILT** | Catalogue + honest connect stub only | 1.5 |
+| Spaces / ownership | **NOT BUILT** | `userId` only | 0B |
+| Activity / timeline | **NOT BUILT** | Only `completedAt` | 0B |
+| Auth | **PARTIALLY BUILT** | Works. Guest path is defective (N2 / Q-001) | 0A |
+| Tax engine | **BUILT** | 5 countries. 34 cases passed once, harness deleted. US deep, others deadlines-only | 0C (validation) |
+| Design system | **BUILT** | `src/index.css`, 162 lines, complete | — |
 
 ## 2. Repository structure
 
@@ -619,3 +674,241 @@ confirm and `RequireAuth` would loop to `/auth` forever.
     never silently overrides the spec.
 20. **Testing is a gate.** A phase is not complete because a feature works
     manually.
+21. **Phases have explicit lifecycle status.** A specification is not an approval.
+22. **The agent executes decisions; it does not own them.** Product decisions,
+    ADRs, security invariants and phase approval state change only by user action.
+
+---
+
+## 11. Phase lifecycle and scope
+
+### 11.1 Status vocabulary
+
+| Status | Meaning | Who sets it |
+|---|---|---|
+| `NOT STARTED` | Specified, not approved. **The agent must not implement.** | default |
+| `APPROVED` | Explicitly approved. Implementation may begin. | **user only** |
+| `IN PROGRESS` | Implementation underway. Requires prior recorded approval. | agent (given approval) |
+| `IMPLEMENTED` | Code changes exist; **acceptance verification is incomplete**. | agent |
+| `VERIFIED` | All required gates and acceptance criteria pass. | agent (given evidence) |
+| `SHIPPED` | The user explicitly considers the phase complete. | **user only** |
+| `BLOCKED` | Names the blocking decision, dependency or failure. | agent |
+
+**Live status: see `02_CHANGELOG.md` → Phase lifecycle status table.** All eight
+phases are `NOT STARTED`.
+
+### 11.2 Scope definition — required for every phase
+
+### Phase 0A — Foundation and defect fixes
+
+- **Status:** `NOT STARTED` · **Budget:** 4 files · 0 tables · 0 required deps · 1 abstraction
+- **IN SCOPE:** regression fixtures (nlp/tax/scorer); N1 deterministic-id upsert; N2 guest claim path *or* removal; N5 `Infinity` verification; recurrence respawn; atomic `addTask`; resolve N3/N6/N8/D13.
+- **OUT OF SCOPE:** attention engine; spaces/links/activity; schema changes; model version fields; new object kinds; index migrations; any UI redesign; fixing the lint baseline.
+- **DO NOT TOUCH:** `src/lib/scorer.ts` maths · `src/lib/tax.ts` figures and sources · auth config · `vite.config.ts` · theme tokens (see §13)
+- **DEPENDENCIES:** none
+- **BLOCKERS:** `Q-001` blocks TASK-0A-003 only
+- **APPROVAL REQUIRED:** phase approval (not yet given); Q-001 resolution
+- **ACCEPTANCE CRITERIA:**
+  1. 20 NLP + 34 tax fixtures committed and passing
+  2. No `Infinity`/`NaN` in any dashboard payload
+  3. Two concurrent completions leave exactly one `assistantState` row
+  4. Guest can claim data, **or** anonymous sign-in is removed from the UI
+  5. Completing a recurring task yields the next occurrence exactly once
+  6. `addTask` is a single call; no orphaned `area`-less tasks
+  7. Feature names derive from one definition; `FEATURE_NAMES.length === FEATURE_COUNT`
+  8. `bun scripts/spec-drift.ts` exits 0; `bunx tsc -b --noEmit` clean; no new lint problems
+
+### Phases 0B – 3 (summary; full acceptance criteria at the start of each)
+
+| Phase | IN SCOPE | OUT OF SCOPE | DO NOT TOUCH | Blockers |
+|---|---|---|---|---|
+| **0B** | spaces, spaceMembers, grants, accessLog, links, activity; fix 6 collect-all query sites | attention UI; model changes; agents | auth tables; `users.role`; tax figures | none |
+| **0C** | weightsVersion, modelVersion, clamp, decaying lr, snapshots, reset, pause; enum validators; then `schemaValidation: true` | new features; migration framework | indices 0–7 meanings | none |
+| **1.0** | hard rules, sections, budget, decay, dedupe, grouping, `attentionState`, Dashboard split | the scorer in the hard-rule path; notifications; plugin framework | scorer maths; `index.css` | none |
+| **1.1** | generalised features, learned ranking, 5-signal feedback, exploration | negative category features; changes to 0–7 | indices 0–7 | none |
+| **1.5** | registry, adapter contract, `applyBatch`, OAuth, tokens, cursors, lifecycle | per-provider UI; mutating scopes; provider writes | `connectionTokens` containment | credentials |
+| **2** | Google Calendar adapter, OAuth, sync, minimisation | writing to Google; private titles; attendees | ADR-013 | `GOOGLE_CLIENT_ID`/`SECRET` |
+| **3** | People, capture, Life Admin, commitments, Finance expansion, agents | anything without its own spec + ADR + budget | identity resolution guarantees (ADR-021) | none |
+
+### 11.3 Scope rules
+
+- Work outside `IN SCOPE` is **not done**, however trivial. It becomes an Open
+  Question or an explicit follow-up task.
+- `DO NOT TOUCH` is not negotiable within a phase.
+- Exceeding the complexity budget triggers **MAIN_AGENT §7.1** — stop, explain,
+  ask. Never silently widen a budget.
+- Deleting or replacing working functionality is an **architectural change**,
+  not cleanup. It requires an ADR and approval.
+
+---
+
+## 12. Traceability
+
+The chain: `REQ → ADR → PHASE → TASK → ACCEPTANCE → TEST → CHANGE`.
+
+The question this answers: **"Why does this code exist, which decision authorised
+it, and how do we know it works?"**
+
+### 12.1 Requirement register
+
+| REQ | Requirement | ADR | Primary phase |
+|---|---|---|---|
+| REQ-001 | No external AI/LLM API | ADR-001 | — (standing) |
+| REQ-002 | Attention computed, not stored | ADR-003 | 1.0 |
+| REQ-003 | No learning from absence | ADR-004 | 1.1 |
+| REQ-004 | Snooze is not negative feedback | ADR-005 | 1.1 |
+| REQ-005 | Hard rules bypass learned ranking | ADR-006 | 1.0 |
+| REQ-006 | Typed entity tables; no generic object table | ADR-007 | 0B |
+| REQ-007 | `links` holds relationships only | ADR-008 | 0B |
+| REQ-008 | Ownership separate from access; many-to-many spaces | ADR-009 | 0B |
+| REQ-009 | Deny by default | ADR-009 | 0B |
+| REQ-010 | Credentials server-only by construction | ADR-014 | 1.5 |
+| REQ-011 | Minimum OAuth scope | ADR-013 | 1.5 |
+| REQ-012 | Private data is not stored at all | ADR-013 | 2 |
+| REQ-013 | Agent idempotency with deterministic keys | ADR-011 | 3 |
+| REQ-014 | Risky actions require explicit confirmation | ADR-011 | 3 |
+| REQ-015 | Feature indices 0–7 frozen; weights versioned | ADR-010 | 0C |
+| REQ-016 | Attention budget enforced with hard caps | ADR-003 | 1.0 |
+| REQ-017 | Recurring tasks actually respawn | — | 0A |
+| REQ-018 | Task creation is atomic (one call) | — | 0A |
+| REQ-019 | No silent data loss on account upgrade | ADR-018 | 0A |
+| REQ-020 | No duplicate single-row state (deterministic ids) | ADR-017 | 0A |
+| REQ-021 | Regression fixtures exist for all pure logic | ADR-019 | 0A |
+| REQ-022 | Enum validation; `schemaValidation: true` | — | 0C |
+| REQ-023 | Indexed queries; no collect-all-and-filter | — | 0B |
+| REQ-024 | Complexity budget enforced; violation stops work | ADR-016 | all |
+| REQ-025 | Markdown is authoritative; HTML is a view | ADR-019 | — (standing) |
+| REQ-026 | Spec health reports UNKNOWN, never a false PASS | ADR-019 | — (standing) |
+| REQ-027 | Explicit phase lifecycle status | ADR-020 | — (standing) |
+| REQ-028 | Approval gates for product decisions | ADR-021 | — (standing) |
+| REQ-029 | Export and deletion manifests are complete and enforced | ADR-009 | P2 |
+| REQ-030 | Testing is a gate, not a formality | ADR-016 | 0A |
+| REQ-031 | Preserve working functionality | ADR-021 | all |
+| REQ-032 | No fabricated integrations or completion | — | all |
+
+### 12.2 Full chains — Phase 0A (next)
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-021 | ADR-019 | 0A | TASK-0A-001 | AC-0A-001 | TEST-0A-001 | CHANGE-0005 *(pending)* |
+| REQ-020 | ADR-017 | 0A | TASK-0A-002 | AC-0A-003 | TEST-0A-002 | CHANGE-0005 |
+| REQ-019 | ADR-018 | 0A | TASK-0A-003 | AC-0A-004 | TEST-0A-003 | CHANGE-0005 — **BLOCKED by Q-001** |
+| REQ-030 | ADR-016 | 0A | TASK-0A-004 | AC-0A-002 | TEST-0A-004 | CHANGE-0005 |
+| REQ-017 | — | 0A | TASK-0A-005 | AC-0A-005 | TEST-0A-005 | CHANGE-0005 |
+| REQ-018 | — | 0A | TASK-0A-006 | AC-0A-006 | TEST-0A-006 | CHANGE-0005 |
+| REQ-032 | ADR-019 | 0A | TASK-0A-007 | AC-0A-007 | TEST-0A-007 | CHANGE-0005 |
+
+**Phase 0A task detail**
+
+| Task | Defect | Description |
+|---|---|---|
+| TASK-0A-001 | — | Commit regression fixtures: 20 NLP cases, 34 tax cases, scorer golden trajectory + fixed-ranking fixture. |
+| TASK-0A-002 | N1 | Replace read-then-insert with a deterministic-id upsert for `assistantState`. |
+| TASK-0A-003 | N2 | Guest claim path, **or** remove anonymous sign-in. **Blocked by Q-001.** |
+| TASK-0A-004 | N5 | Verify whether Convex round-trips `-Infinity`; adopt a finite sentinel regardless. |
+| TASK-0A-005 | D5 | Wire `nextOccurrence` into completion; idempotent. |
+| TASK-0A-006 | D6 | Single-call `addTask({ input, area })`. |
+| TASK-0A-007 | N3, N6, N8, D13 | Resolve dead `previewCapture`; unify feature-name and priority definitions; de-duplicate `filingYear` and `requireUserId`; remove dead `toMondayIndex`. |
+
+### 12.3 Target chains — later phases (not yet implemented)
+
+`—` means the artifact does not exist yet. **A `—` is honest; a guessed id is not.**
+
+| REQ | ADR | Phase | Acceptance | Test | Change |
+|---|---|---|---|---|---|
+| REQ-006/007/008/009/023 | ADR-007/008/009 | 0B | AC-0B-* | — | — |
+| REQ-015/022 | ADR-010 | 0C | AC-0C-* | — | — |
+| REQ-002/005/016 | ADR-003/006 | 1.0 | AC-10-* | — | — |
+| REQ-003/004 | ADR-004/005 | 1.1 | AC-11-* | — | — |
+| REQ-010/011 | ADR-014/013 | 1.5 | AC-15-* | — | — |
+| REQ-012 | ADR-013 | 2 | AC-2-* | — | — |
+| REQ-013/014 | ADR-011 | 3 | AC-3-* | — | — |
+| REQ-029 | ADR-009 | P2 | — | — | — |
+
+---
+
+## 13. Do Not Touch register
+
+**Binding.** Deleting or replacing anything here is a deliberate architectural
+change requiring an ADR and approval — **never cleanup** (MAIN_AGENT E4, REQ-031).
+
+### 13.1 Working functionality
+
+| # | Protected | Why |
+|---|---|---|
+| 1 | `src/lib/tax.ts` figures, `asOf` dates and `source` strings | Verified against the issuing authority at source. The provenance string is the only reason a stale figure would be *detectable*. Rewriting it destroys auditability. |
+| 2 | Finance disclaimer rendered as the **first** element of the area | MAIN_AGENT P10. Moving it to a footer would be a regression, not a cleanup. |
+| 3 | Blended tax rate + explicit "SE tax not modelled" warning | Honesty about what the model can and cannot do. Removing the caveat makes a guess look like advice. |
+| 4 | Expense categoriser's deliberate `low` confidence for Meals / home office / education | MAIN_AGENT P10. Raising confidence would hide genuine uncertainty. |
+| 5 | `pending-credentials` status and disabled "not built yet" buttons | MAIN_AGENT E9. An integration that fakes success is worse than one that admits it is not wired. |
+| 6 | `src/lib/scorer.ts` maths — `score`, `sigmoid`, `trainOne`, `explain` | Tested once and working. Any change needs regression fixtures **first** (TASK-0A-001). |
+| 7 | `src/lib/nlp.ts` token-consumption loop (`used` flag) | The mechanism multi-object capture will reuse. Rewriting it would discard the bug fixes already made (`#42`, `every 3 days`, stray `at`). |
+| 8 | `recordOutcome` as the single weight-mutation point | Deliberate architectural seam. Any second writer is a defect. |
+| 9 | `disableArea` re-homing tasks to `general` rather than deleting | MAIN_AGENT E8. Never delete user data as a side effect of configuration. |
+
+### 13.2 Configuration intentionally preserved
+
+| # | Protected | Why |
+|---|---|---|
+| 10 | `src/convex/auth.config.ts` standard provider entry | The deployment self-issues JWTs **without a `kid` header**. Converting that entry to `type: "customJwt"` makes sign-in silently never confirm, and `RequireAuth` loops to `/auth` forever. |
+| 11 | `...authTables` spread in `schema.ts` | Explicitly marked do-not-remove by the Convex Auth template. |
+| 12 | `vite.config.ts` in full | Platform constraint. Also `server.hmr: { overlay: false }` is pre-existing template config — leave it. |
+| 13 | `src/index.css` Tailwind directives, theme variables, `brutal*` classes | Removing any breaks all styling app-wide. |
+| 14 | `index.html` Archivo Black + Space Mono links | The design system depends on these fonts loading. |
+| 15 | `convex.json` `"aiFiles": {"enabled": false}` | Enforces ADR-001 at the platform level. Do not enable. |
+| 16 | `src/main.tsx` providers, error boundaries and `import "./index.css"` | Removing the stylesheet import produces a blank, unstyled preview. |
+
+### 13.3 Intentionally accepted technical debt
+
+| # | Item | Why accepted |
+|---|---|---|
+| 17 | `schemaValidation: false` | Enabling before enum validators would surface junk we are about to create. Scheduled for 0C. |
+| 18 | `users.role` (template `admin`/`user`/`member`) | **Quarantined** so it is never mistaken for the grants model (ADR-009). Not removed, because the auth template expects it. |
+| 19 | Lint baseline of 12 errors / 19 warnings | Pre-existing. The gate is "no new problems" until cleaned. See CHANGE-0003. |
+| 20 | `AssistantDoc` uses `any` for `_id`/`userId` | Documented workaround for a `DataModel["table"]` wrapper-type issue. Revisit when types change in 0B. |
+| 21 | `getDashboard` loads all tasks unbounded | Fine at personal scale; fixed with the query-idiom work in 0B. |
+
+### 13.4 Requires an ADR before modification
+
+| # | Area |
+|---|---|
+| 22 | Anything in `src/lib/scorer.ts` maths or the feature layout |
+| 23 | The Convex schema shape (any table or field) |
+| 24 | The auth configuration |
+| 25 | The security/privacy model (SYSTEM_FUNDAMENTALS §4) |
+| 26 | Any change to ADR-001 through ADR-021 — supersede with a new ADR, never edit in place |
+
+### 13.5 Product decisions intentionally not being revisited
+
+All of **RJD-001 … RJD-011** (CHANGELOG → Rejected Decisions) plus `Q-002`,
+`Q-003`, `Q-004` as recorded open questions. Reopening any of them requires new
+evidence that invalidates the original reasoning — not a change of taste.
+
+---
+
+## 14. Completion contract
+
+A phase is `VERIFIED` **only** when every condition below holds. If any fails,
+the result is `NOT VERIFIED`.
+
+| # | Condition |
+|---|---|
+| 1 | Required files exist |
+| 2 | Required code exists |
+| 3 | **Required tests exist** (Phase 0A creates the first) |
+| 4 | Required gates pass (`bun scripts/spec-drift.ts`, typecheck, codegen if applicable) |
+| 5 | No **new** lint problems vs. the 12/19 baseline |
+| 6 | No type errors |
+| 7 | No specification drift |
+| 8 | Every acceptance criterion passes |
+| 9 | Security requirements pass (SYSTEM_FUNDAMENTALS §4) |
+| 10 | Complexity budget respected — no silent increase |
+| 11 | CHANGELOG updated with a `CHANGE-XXXX` entry including severity |
+| 12 | Relevant specifications updated |
+| 13 | **No unauthorised scope changes** |
+
+**Reporting rule.** If any condition fails, report `NOT VERIFIED` with the
+failing condition named. Never report `VERIFIED` with a caveat. Never let
+`IMPLEMENTED` be presented as `VERIFIED`.
+
+**Only the user may set `SHIPPED`.**

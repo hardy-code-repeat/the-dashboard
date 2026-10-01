@@ -126,7 +126,8 @@
   .stat .val{font-family:var(--display);font-size:28px;margin:6px 0 3px;word-break:break-word}
   .stat .note{font-size:10px;line-height:1.4}
   .ok{background:var(--yellow)} .warn{background:var(--wash)} .bad{background:var(--red);color:#fff}
-  .unk{background:var(--card)}
+  .unk{background:var(--card)} .drift{background:var(--ink);color:#fff}
+  .pending{color:var(--muted);font-style:italic}
 
   table{width:100%;border-collapse:collapse;font-size:11px}
   th,td{text-align:left;padding:7px 9px;border:2px solid var(--line);vertical-align:top}
@@ -157,8 +158,8 @@
       </div>
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
-        <span class="tag t-b"><span id="spec-adr-count">19</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">3</span> changes</span>
+        <span class="tag t-b"><span id="spec-adr-count">21</span> ADRs</span>
+        <span class="tag t-y"><span id="spec-change-count">4</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -177,12 +178,15 @@
 
 <nav>
   <div class="wrap">
+    <button data-goto="decide">Needs Your Decision</button>
     <button data-goto="overview">Overview</button>
     <button data-goto="product">Product</button>
     <button data-goto="architecture">Architecture</button>
     <button data-goto="roadmap">Roadmap</button>
     <button data-goto="phase">Current Phase</button>
     <button data-goto="decisions">Decisions</button>
+    <button data-goto="traceability">Traceability</button>
+    <button data-goto="authority">Authority</button>
     <button data-goto="changelog">Changelog</button>
     <button data-goto="risks">Risks</button>
     <button data-goto="system">System</button>
@@ -192,6 +196,101 @@
 </nav>
 
 <div class="wrap">
+
+<!-- ============ NEEDS YOUR DECISION ============ -->
+<section id="decide">
+  <div class="sechead"><h2>Needs Your Decision</h2><span class="src">Source: 02_CHANGELOG.md → Open Questions / Decisions Required</span></div>
+  <p style="margin-bottom:16px;font-size:12px">This is the only page that answers
+    <i>"is the project waiting on me?"</i> The agent will not choose between these
+    options to unblock its own work.</p>
+
+  <div class="card bad" style="margin-bottom:18px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <span class="tag t-ink">Q-001</span>
+      <span class="tag t-y">BLOCKING</span>
+      <span class="tag t-ink">Blocks: TASK-0A-003</span>
+    </div>
+    <h3 style="margin-bottom:8px">Guest account data on upgrade</h3>
+    <p style="font-size:12px;margin-bottom:12px"><b>Question.</b> What should happen
+      to anonymous guest data when the user later signs into an email account?</p>
+    <p style="font-size:11.5px;margin-bottom:12px"><b>Why it matters.</b>
+      <code>Auth.tsx</code> offers <code>signIn("anonymous")</code> with no claim
+      path. A guest who later signs in by email receives a <b>different user id</b>,
+      so every task, expense and note is silently orphaned. This is defect
+      <b>N2</b> and it violates the "no silent data loss" principle. It is an
+      account-model decision, not a UI bug.</p>
+    <table style="margin-bottom:12px">
+      <thead><tr><th>Option</th><th>What it means</th><th>Consequence</th></tr></thead>
+      <tbody>
+        <tr><td><b>A — Migrate</b></td><td>Move anonymous data into the authenticated account on first sign-in.</td><td>Best for users. Needs a marker column on <code>users</code> or an auth hook; a data-window policy must be chosen.</td></tr>
+        <tr><td><b>B — Remove</b></td><td>Drop anonymous sign-in entirely.</td><td>Simplest and safest. Loses a conversion/demo affordance.</td></tr>
+        <tr><td><b>C — Other</b></td><td>Another explicitly approved approach.</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:11px"><b>Info needed to decide:</b> (1) Is guest sign-in a
+      conversion tool or a demo affordance? (2) Is there an acceptable migration
+      window — drop data older than N days? (3) Does Convex Auth expose a hook to
+      claim an anonymous identity, or does Panel need its own marker column?</p>
+    <p style="font-size:11px;margin-top:8px"><b>Owner:</b> Hardik ·
+      <b>Created:</b> 2026-10-01 · <b>Resolved:</b> — · <b>ADR:</b> none yet</p>
+  </div>
+
+  <div class="grid g3" style="margin-bottom:20px">
+    <div class="card warn">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span class="tag t-ink">Q-002</span><span class="tag t-w">open · non-blocking</span>
+      </div>
+      <h3>Tax country depth</h3>
+      <p style="font-size:11.5px">Keep five countries (US deep, others
+        deadlines-only), promote UK/IN to deep, or narrow the UI?</p>
+      <p style="font-size:11px;margin-top:8px"><b>Blocks:</b> nothing · Relevant to Phase 3</p>
+    </div>
+    <div class="card warn">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span class="tag t-ink">Q-003</span><span class="tag t-w">open · non-blocking</span>
+      </div>
+      <h3>Model inspector visibility</h3>
+      <p style="font-size:11.5px">Keep live weights on the dashboard as a trust
+        feature, move to a <code>/model</code> route, or remove from the product surface?</p>
+      <p style="font-size:11px;margin-top:8px"><b>Blocks:</b> nothing · Touches TASK-0A-007 (N6)</p>
+    </div>
+    <div class="card warn">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span class="tag t-ink">Q-004</span><span class="tag t-w">open · non-blocking</span>
+      </div>
+      <h3>Monetisation validation</h3>
+      <p style="font-size:11.5px">The 1-free-connection boundary is entirely
+        unvalidated. Test it now, or defer until users exist?</p>
+      <p style="font-size:11px;margin-top:8px"><b>Blocks:</b> nothing · Relevant to Phase 3 scope</p>
+    </div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card ok">
+      <h3>Agent Can Proceed</h3>
+      <ul class="tick">
+        <li><b>Spec system work</b> — maintaining <code>spec/</code> and <code>scripts/spec-drift.ts</code>.</li>
+        <li><b>Inspection, analysis, planning</b> — reading, running gates, producing implementation plans.</li>
+        <li><b>Nothing on any phase.</b> No phase is <code>APPROVED</code>.</li>
+      </ul>
+      <p class="sub" style="margin-top:10px">No phase may be implemented until it is
+        explicitly marked <code>APPROVED</code>. A written plan is not an approval.</p>
+    </div>
+    <div class="card bad">
+      <h3>Agent Must Stop</h3>
+      <ul class="tick no">
+        <li><b>Q-001 unresolved</b> — the agent will not pick Option A or B.</li>
+        <li><b>Any phase still <code>NOT STARTED</code></b> — including 0A.</li>
+        <li><b>Specification drift detected</b> — report, never self-resolve.</li>
+        <li><b>Any failed gate</b> — typecheck, drift, tests.</li>
+        <li><b>Complexity budget would be exceeded</b> — stop and ask; never widen a budget to fit the task.</li>
+        <li><b>Security or privacy invariant</b> — requires approval, always.</li>
+        <li><b>Anything outside <code>IN SCOPE</code></b> — becomes an Open Question, not work.</li>
+        <li><b>Deleting working functionality</b> — that is architecture, not cleanup.</li>
+      </ul>
+    </div>
+  </div>
+</section>
 
 <!-- ============ OVERVIEW ============ -->
 <section id="overview">
@@ -372,6 +471,24 @@
     </div>
 
     <div>
+      <h3 style="margin-bottom:10px">CURRENT REALITY — verified against the repository</h3>
+      <div class="card" style="margin-bottom:16px;box-shadow:none">
+        <p style="font-size:11.5px;margin-bottom:8px"><b>This describes the repository as it
+          exists now. It contains no target architecture.</b> Target state is the pipeline
+          opposite; the difference is the gap table.</p>
+        <dl class="kv">
+          <dt>Exists</dt><dd>9 Convex tables, 3 routes, 4 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard.</dd>
+          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue.</dd>
+          <dt class="broken">Broken</dt><dd><b>N1</b> — concurrent completions can create a duplicate state row, after which the dashboard fails permanently. <b>N2</b> — a guest who signs up by email silently loses all data.</dd>
+          <dt>Partial</dt><dd>Recurrence (parsed, never respawns). Health (<code>useState</code>, resets on reload). Integrations (9 providers, none wired). Queries (6 collect-all sites).</dd>
+          <dt>Specified</dt><dd>Everything in phases 0A–3. None approved, none started.</dd>
+          <dt>Unknown</dt><dd>Whether Convex round-trips <code>-Infinity</code> (N5). Every product and business assumption. <code>.env</code> contents are unreadable to the agent.</dd>
+        </dl>
+        <p class="sub" style="margin-top:10px">Nothing here is VERIFIED by a test — no test
+          suite exists. "Works" means read in code and observed to be wired, which is
+          evidence level 1–2, not level 3.</p>
+      </div>
+
       <h3 style="margin-bottom:14px">Current → target gaps</h3>
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
@@ -497,6 +614,126 @@
   </table>
 </section>
 
+<!-- ============ TRACEABILITY ============ -->
+<section id="traceability">
+  <div class="sechead"><h2>Traceability</h2><span class="src">Source: 04_SYSTEM_FUNDAMENTALS.md §12</span></div>
+  <p style="margin-bottom:16px;font-size:12px">The chain
+    <b>REQ → ADR → PHASE → TASK → ACCEPTANCE → TEST → CHANGE</b> answers:
+    <i>"Why does this code exist, which decision authorised it, and how do we know
+    it works?"</i></p>
+
+  <div class="card" style="margin-bottom:18px">
+    <h3>Phase 0A — the next phase (fully traced)</h3>
+    <table>
+      <thead><tr><th>REQ</th><th>ADR</th><th>Task</th><th>Acceptance</th><th>Test</th><th>Change</th></tr></thead>
+      <tbody>
+        <tr><td>REQ-021</td><td>ADR-019</td><td>TASK-0A-001</td><td>AC-0A-001</td><td>TEST-0A-001</td><td>CHANGE-0005 <span class="unknown">pending</span></td></tr>
+        <tr><td>REQ-020</td><td>ADR-017</td><td>TASK-0A-002</td><td>AC-0A-003</td><td>TEST-0A-002</td><td>CHANGE-0005 <span class="pending">pending</span></td></tr>
+        <tr><td>REQ-019</td><td>ADR-018</td><td>TASK-0A-003</td><td>AC-0A-004</td><td>TEST-0A-003</td><td><span class="tag t-r">BLOCKED · Q-001</span></td></tr>
+        <tr><td>REQ-030</td><td>ADR-016</td><td>TASK-0A-004</td><td>AC-0A-002</td><td>TEST-0A-004</td><td>CHANGE-0005 <span class="pending">pending</span></td></tr>
+        <tr><td>REQ-017</td><td>—</td><td>TASK-0A-005</td><td>AC-0A-005</td><td>TEST-0A-005</td><td>CHANGE-0005 <span class="pending">pending</span></td></tr>
+        <tr><td>REQ-018</td><td>—</td><td>TASK-0A-006</td><td>AC-0A-006</td><td>TEST-0A-006</td><td>CHANGE-0005 <span class="pending">pending</span></td></tr>
+        <tr><td>REQ-032</td><td>ADR-019</td><td>TASK-0A-007</td><td>AC-0A-007</td><td>TEST-0A-007</td><td>CHANGE-0005 <span class="pending">pending</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3>Later phases — target chains</h3>
+      <table>
+        <thead><tr><th>REQ</th><th>ADR</th><th>Phase</th></tr></thead>
+        <tbody>
+          <tr><td>REQ-006/007/008/009/023</td><td>007/008/009</td><td><b>0B</b></td></tr>
+          <tr><td>REQ-015/022</td><td>ADR-010</td><td><b>0C</b></td></tr>
+          <tr><td>REQ-002/005/016</td><td>003/006</td><td><b>1.0</b></td></tr>
+          <tr><td>REQ-003/004</td><td>004/005</td><td><b>1.1</b></td></tr>
+          <tr><td>REQ-010/011</td><td>014/013</td><td><b>1.5</b></td></tr>
+          <tr><td>REQ-012</td><td>ADR-013</td><td><b>2</b></td></tr>
+          <tr><td>REQ-013/014</td><td>ADR-011</td><td><b>3</b></td></tr>
+          <tr><td>REQ-029</td><td>ADR-009</td><td>P2</td></tr>
+        </tbody>
+      </table>
+      <p class="sub" style="margin-top:10px">Test and Change ids are
+        <b>—</b> because those artifacts do not exist yet. A <code>—</code> is
+        honest; a guessed id is not.</p>
+    </div>
+    <div class="card">
+      <h3>Requirement register</h3>
+      <p style="font-size:11.5px"><b>32 requirements</b> (REQ-001 … REQ-032),
+        14 product hypotheses (PH-001 … PH-014), 21 ADRs, 11 rejected decisions,
+        4 open questions.</p>
+      <table style="margin-top:12px">
+        <thead><tr><th>ID range</th><th>Subject</th></tr></thead>
+        <tbody>
+          <tr><td>REQ-001 … 005</td><td>Intelligence invariants</td></tr>
+          <tr><td>REQ-006 … 009</td><td>Data model &amp; access</td></tr>
+          <tr><td>REQ-010 … 016</td><td>Security, agents, attention budget</td></tr>
+          <tr><td>REQ-017 … 023</td><td>0A/0B/0C engineering requirements</td></tr>
+          <tr><td>REQ-024 … 030</td><td>Governance &amp; process</td></tr>
+          <tr><td>REQ-031 / 032</td><td>Preserve working functionality; no fakes</td></tr>
+        </tbody>
+      </table>
+      <p class="sub" style="margin-top:10px">Full register in SYSTEM_FUNDAMENTALS §12.1.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ AGENT AUTHORITY ============ -->
+<section id="authority">
+  <div class="sechead"><h2>Agent Authority</h2><span class="src">Source: 01_MAIN_AGENT.md §9</span></div>
+
+  <div class="card bad" style="margin-bottom:16px">
+    <h3>The governing rule</h3>
+    <p style="font-size:12.5px">The development agent <b>may</b> modify implementation
+      artifacts. The development agent <b>may NOT</b> modify product decisions, ADR
+      decisions, security invariants, or phase approval state merely to make
+      implementation easier.</p>
+    <p style="font-size:11.5px;margin-top:8px">If a task cannot proceed without one
+      of those, that is an <b>Open Question</b> — not an obstacle to route around.</p>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h3>Development actions</h3>
+    <table>
+      <thead><tr><th>Action</th><th>Automatic</th><th>Proposed</th><th>Requires approval</th><th>Forbidden</th></tr></thead>
+      <tbody>
+        <tr><td>Inspect repo / read files</td><td class="ok">yes</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>Run tests, typecheck, lint, codegen, drift</td><td class="ok">yes</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>Analysis, plans</td><td class="ok">yes</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td>Update <code>spec/</code> within an approved phase</td><td class="ok">yes</td><td>—</td><td>—</td><td class="bad">rewriting ADRs to match code</td></tr>
+        <tr><td>Implement a phase</td><td class="bad">no</td><td>—</td><td class="warn">only if <code>APPROVED</code></td><td class="bad">any <code>NOT STARTED</code> phase</td></tr>
+        <tr><td><b>Install a dependency</b></td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td>—</td></tr>
+        <tr><td><b>Change the Convex schema</b></td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td>—</td></tr>
+        <tr><td><b>Delete an existing feature</b></td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td class="bad">as "cleanup"</td></tr>
+        <tr><td><b>Change architecture (ADR)</b></td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td>—</td></tr>
+        <tr><td><b>Change a product decision</b></td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td class="bad">silent choice between options</td></tr>
+        <tr><td><b>Increase a complexity budget</b></td><td class="bad">no</td><td>—</td><td class="warn">via the §7.1 protocol only</td><td class="bad">self-authorising</td></tr>
+        <tr><td><b>Set phase status</b></td><td class="bad">no</td><td>—</td><td class="warn">user sets <code>SHIPPED</code></td><td class="bad">marking APPROVED/VERIFIED itself</td></tr>
+        <tr><td>Change a security/privacy invariant</td><td class="bad">no</td><td>—</td><td class="warn"><b>always</b></td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Runtime product actions</h3>
+    <table>
+      <thead><tr><th>Action</th><th>Tier</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Create / modify an internal task</td><td class="ok">automatic</td><td>Within an approved phase's scope only.</td></tr>
+        <tr><td>Create a suggestion</td><td class="ok">proposed</td><td>Never auto-executes.</td></tr>
+        <tr><td>Change task priority defaults</td><td class="warn">approval</td><td>—</td></tr>
+        <tr><td>Change financial data</td><td class="warn">approval</td><td>Never fabricate or estimate silently.</td></tr>
+        <tr><td><b>Move money</b></td><td class="warn">confirm</td><td>Never agent-initiated without explicit confirmation.</td></tr>
+        <tr><td><b>Send external communication</b></td><td class="bad"><b>always forbidden</b></td><td>Never automatic, never merely proposed.</td></tr>
+        <tr><td>Share private data / change permissions</td><td class="warn">approval</td><td>Grants fail closed.</td></tr>
+        <tr><td>Delete user data</td><td class="warn">confirm</td><td>Never irreversible deletion without explicit confirmation.</td></tr>
+        <tr><td>Modify tax / legal information</td><td class="warn">approval</td><td>Never presented as professional advice.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <!-- ============ CHANGELOG ============ -->
 <section id="changelog">
   <div class="sechead"><h2>Changelog</h2><span class="src">Source: 02_CHANGELOG.md</span></div>
@@ -546,6 +783,27 @@
       gate is <i>"no NEW problems"</i>, not <i>"zero problems"</i>.</p>
     <p style="font-size:11.5px"><b>Schema affected:</b> none. The drift script also
       gained an exact CHANGE-id count check.</p>
+  </div>
+
+  <div class="card">
+    <div class="top" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <span class="tag t-y">CHANGE-0004</span><span class="tag t-b">ARCHITECTURE</span>
+      <span class="sub">2026-10-01 · governance hardening</span>
+    </div>
+    <h3>Hardened the spec system into an operating system</h3>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>Why:</b> the first pass
+      <i>documented</i> Panel. It did not yet <i>govern</i> it. An agent could satisfy
+      it literally and still invent a requirement, silently make a product decision,
+      expand scope, delete working functionality, or claim completion without evidence.
+      Each of those five failure modes now has a structural control.</p>
+    <p style="font-size:11.5px;margin-bottom:8px"><b>New behaviour:</b> explicit phase
+      lifecycle; an Open Questions register; end-to-end traceability ids; a Source of
+      Truth Matrix with tie-break rules; a Do Not Touch register; scope protection; an
+      agent authority matrix; an evidence hierarchy; change severity; and a formal
+      completion contract.</p>
+    <p style="font-size:11.5px"><b>Schema affected:</b> none. No application code,
+      dependency, test or behaviour was touched. Phase 0A remains unimplemented.
+      <b>Related:</b> ADR-019, ADR-020, ADR-021.</p>
   </div>
 </section>
 
@@ -706,6 +964,34 @@
 <section id="health">
   <div class="sechead"><h2>Spec Health</h2><span class="src">Computed from the four Markdown sources</span></div>
 
+  <div class="card" style="margin-bottom:18px">
+    <h3>Categories</h3>
+    <p style="font-size:11.5px;margin-bottom:10px">Five states. <b>UNKNOWN is never
+      converted into PASS.</b> Missing <i>future</i> files are not failures — they are
+      the expected state of an unbuilt phase.</p>
+    <div style="display:flex;gap:9px;flex-wrap:wrap">
+      <span class="tag ok">PASS — verified this session</span>
+      <span class="tag warn">WARNING — real, not blocking</span>
+      <span class="tag bad">BLOCKED — needs a decision</span>
+      <span class="tag t-ink">UNKNOWN — cannot be determined here</span>
+      <span class="tag t-ink">DRIFT — markdown and code disagree</span>
+    </div>
+    <p class="sub" style="margin-top:12px">This page is static. It reports what it
+      knows, says <b>Unknown</b> where it cannot verify, and never guesses.</p>
+  </div>
+
+  <div class="card bad" style="margin-bottom:18px">
+    <h3>BLOCKED</h3>
+    <table>
+      <thead><tr><th>ID</th><th>What is blocked</th><th>By</th></tr></thead>
+      <tbody>
+        <tr><td><b>Q-001</b></td><td>TASK-0A-003 — the guest account data decision</td><td>Hardik's approval</td></tr>
+        <tr><td><b>Phase 0A</b></td><td>The entire phase</td><td>Phase approval not yet granted</td></tr>
+        <tr><td>Phase 2</td><td>Google Calendar OAuth</td><td>Missing <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
   <div class="health">
     <div class="stat unk">
       <div class="lbl">Spec files present</div>
@@ -716,8 +1002,24 @@
     </div>
     <div class="stat ok">
       <div class="lbl">Decisions recorded</div>
-      <div class="val"><span id="spec-adr-count-2">19</span></div>
-      <div class="note">ADRs plus rejected decisions. Not re-litigated without new evidence.</div>
+      <div class="val"><span id="spec-adr-count-2">21</span></div>
+      <div class="note">ADRs, plus 11 rejected decisions. Not re-litigated without new evidence.</div>
+    </div>
+    <div class="stat bad">
+      <div class="lbl">Open decisions</div>
+      <div class="val">4</div>
+      <div class="note">Q-001 is <b>blocking</b>. Q-002, Q-003, Q-004 are non-blocking. See
+        <i>Needs Your Decision</i>.</div>
+    </div>
+    <div class="stat warn">
+      <div class="lbl">Product hypotheses</div>
+      <div class="val">14</div>
+      <div class="note"><b>0 validated.</b> 0 user interviews. No Panel-specific primary research exists.</div>
+    </div>
+    <div class="stat ok">
+      <div class="lbl">Requirements traced</div>
+      <div class="val">32</div>
+      <div class="note">REQ-001 … REQ-032, each linked to an ADR and a phase.</div>
     </div>
     <div class="stat warn">
       <div class="lbl">Open risks</div>
@@ -747,8 +1049,14 @@
     <div class="stat warn">
       <div class="lbl">Lint baseline</div>
       <div class="val">12 / 19</div>
-      <div class="note">12 errors, 19 warnings, all pre-existing. Zero in spec/ or
-        scripts/. Gate is "no NEW problems" until cleaned. <code>spec-drift.ts</code> passes.</div>
+      <div class="note">12 errors, 19 warnings, all pre-existing and unchanged.
+        Zero in spec/ or scripts/. Gate is "no NEW problems" until cleaned.</div>
+    </div>
+    <div class="stat ok">
+      <div class="lbl">Drift checks</div>
+      <div class="val">16</div>
+      <div class="note"><code>bun scripts/spec-drift.ts</code> — 16 passed, 1 warning
+        (planned future files), 0 failures.</div>
     </div>
     <div class="stat unk">
       <div class="lbl">Metrics measurable</div>
@@ -767,13 +1075,17 @@
     <p style="font-size:11.5px">This page is generated by hand and kept in sync by
       discipline, not automation. The check that matters is mechanical:</p>
     <p style="font-size:12px;margin-top:8px"><code>bun scripts/spec-drift.ts</code></p>
-    <p style="font-size:11.5px;margin-top:8px">It verifies the five files exist and
-      no sixth was added, that every Convex schema table is documented, that every
-      <code>bun run</code> command referenced actually exists in
-      <code>package.json</code>, that the runbook does not claim a test command
-      that isn't there, that ADR ids are unique, that every phase declares a
-      complexity budget, and that this page's counts agree with the changelog.
-      Exits non-zero on drift.</p>
+    <p style="font-size:11.5px;margin-top:8px"><b>16 checks, dependency-free.</b>
+      <b>Spec:</b> the five files exist and no sixth was added. <b>Code:</b> every
+      Convex schema table is documented; every <code>bun run</code> command
+      referenced actually exists; the runbook does not claim a test command that
+      isn't there. <b>Governance:</b> ADR ids unique; CHANGE ids unique; every
+      change declares a valid severity; every phase has a valid lifecycle status;
+      every phase declares a complexity budget; phase 0A declares all seven scope
+      fields and its acceptance criteria; REQ ids resolve to the register with no
+      dangling references; every traceability chain has TASK + AC + TEST; the
+      Do Not Touch register protects the known-critical artifacts. <b>Sync:</b>
+      this page's counts agree with the changelog. Exits non-zero on drift.</p>
   </div>
 </section>
 

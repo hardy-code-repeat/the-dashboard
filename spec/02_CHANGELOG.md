@@ -4,11 +4,29 @@
 
 Status: `ACTIVE` · Last updated: 2026-10-01
 
-This file has two jobs:
+This file has three jobs:
 
 1. Record every meaningful change, with its reason.
 2. Record every architectural decision **once**, permanently, so it is not
    re-litigated without new evidence.
+3. Hold the **Open Questions register** and the authoritative **phase status**.
+
+### Severity taxonomy
+
+Every CHANGE entry carries a `Severity` field:
+
+| Severity | Meaning |
+|---|---|
+| `PATCH` | Fixes a defect with no behavioural or architectural consequence. |
+| `MINOR` | Adds capability inside an existing structure. No new entity, dependency or abstraction. |
+| `MAJOR` | Adds a new entity, dependency, or architectural abstraction. |
+| `SECURITY` | Changes a security or privacy invariant. Always requires an ADR. |
+| `ARCHITECTURE` | Changes an existing architectural decision. Requires a new ADR superseding an old one. |
+| `PRODUCT` | Changes product scope, direction, or a product decision. Requires explicit user approval. |
+
+**Type** (feature / bug / architecture / security / product / refactor) and
+**Severity** are separate axes: a `refactor` can be `PATCH`; a `feature` can be
+`MAJOR`.
 
 ---
 
@@ -18,6 +36,7 @@ This file has two jobs:
 Date:       2026-10-01
 Phase:      Pre-Phase (baseline establishment)
 Type:       architecture
+Severity:   ARCHITECTURE
 Summary:    Established the spec-driven development system and recorded the
             baseline architecture as it actually exists in the repository.
 Why:        The project had a strong architecture review but no durable record
@@ -45,6 +64,7 @@ Related ADR: ADR-019
 Date:       2026-10-01
 Phase:      Pre-Phase (baseline establishment)
 Type:       refactor
+Severity:   PATCH
 Summary:    Recorded eight verified defects (N1–N9) found during the second
             architecture review. No fixes applied — they are scheduled.
 Why:        Two are production-breaking and neither is visible by using the app
@@ -67,6 +87,7 @@ Related ADR: ADR-017, ADR-018
 Date:       2026-10-01
 Phase:      Pre-Phase (baseline establishment)
 Type:       refactor
+Severity:   PATCH
 Summary:    Recorded the validation baseline and disclosed that `bun run lint`
             does not currently pass.
 Why:        MAIN_AGENT §8 lists lint as a post-coding gate. A gate that already
@@ -90,9 +111,129 @@ Related ADR: ADR-019
 
 ---
 
+## CHANGE-0004
+
+```
+Date:       2026-10-01
+Phase:      Pre-Phase (governance hardening)
+Type:       architecture
+Severity:   ARCHITECTURE
+Summary:    Hardened the spec system into an operating system: explicit phase
+            lifecycle, an Open Questions register, end-to-end traceability ids,
+            a Source of Truth Matrix, a Do Not Touch register, scope protection,
+            an agent authority matrix, an evidence hierarchy, change severity, a
+            formal completion contract, and a Current Reality / Target State
+            split.
+Why:        The first pass documented Panel. It did not yet *govern* it. An
+            agent could satisfy it literally and still invent a requirement,
+            silently make a product decision, expand scope, delete working
+            functionality, or claim completion without evidence. These are the
+            five failure modes that matter most, and each now has a structural
+            control rather than a good intention.
+Previous:    Architecture was documented; governance was implicit.
+New:         Every phase has a lifecycle status. Every approval-requiring
+             decision has a durable Q-xxx record. Every substantive requirement
+             is traceable REQ -> ADR -> PHASE -> TASK -> AC -> TEST -> CHANGE.
+             Ownership of each kind of truth is explicit with tie-break rules.
+             Protected code is listed with reasons. Agent authority is a matrix,
+             not a paragraph. Completion has a formal contract.
+Files:       spec/01-05, scripts/spec-drift.ts
+Schema:      None. No application code, Convex schema, dependency, test or
+             behaviour was touched. Phase 0A remains unimplemented.
+Tests:       bun scripts/spec-drift.ts (extended); bunx tsc -b --noEmit clean.
+Risks:      Governance can grow faster than product value — the same failure
+             mode the complexity budget guards against. Mitigated by keeping the
+             drift script dependency-free and the control centre a plain view.
+Decision:    The agent is the executor of approved decisions, not the owner of
+             those decisions.
+Related ADR: ADR-019, ADR-020, ADR-021
+```
+
+---
+
+## Open Questions / Decisions Required
+
+**Durable register of decisions that require Hardik's approval.**
+
+> **The agent must never silently choose between product options merely to
+> unblock implementation.** If work is blocked on one of these, it stops and
+> asks. An unresolved question that blocks a phase makes that phase `BLOCKED`.
+
+### Q-001 — Guest account data on upgrade
+
+| Field | Value |
+|---|---|
+| **ID** | Q-001 |
+| **Question** | What should happen to anonymous guest data when the user later signs into an email account? |
+| **Why it matters** | `Auth.tsx` offers `signIn("anonymous")` with no claim path. A guest who later signs in by email receives a **different user id**, so every task, expense and note is silently orphaned. This is defect **N2** and it violates MAIN_AGENT E8 (no silent data loss) and ADR-018. It is not a UI bug — it is an account-model decision. |
+| **Option A** | **Migrate** anonymous data into the authenticated account on first sign-in (requires linking the anonymous user id to the new one). |
+| **Option B** | **Remove guest sign-in** entirely. One account model, no migration path needed. |
+| **Option C** | Another explicitly approved approach. |
+| **Info needed to decide** | (1) Is guest sign-in a conversion tool or a demo affordance? (2) What is the acceptable migration window — does data older than N days get dropped? (3) Does Convex Auth expose a hook to claim an anonymous identity, or would Panel need its own marker column on `users`? |
+| **Decision owner** | Hardik |
+| **Status** | **OPEN — BLOCKING** |
+| **Blocks** | **Phase 0A** (task TASK-0A-003 / N2 only; the rest of 0A is unaffected) |
+| **Created** | 2026-10-01 |
+| **Resolved** | — |
+| **ADR created** | none yet — ADR-018 currently states the constraint, not the resolution |
+
+### Q-002 — Tax country depth
+
+| Field | Value |
+|---|---|
+| **ID** | Q-002 |
+| **Question** | Keep five tax countries (US deep, UK/IN/CA/AU deadlines-only), or narrow to fewer? |
+| **Why it matters** | The brief says prefer depth over breadth, but also do not remove working functionality. RJD-007 already chose *modularise + depth badge* over deletion. This question is whether that is sufficient, or whether non-US arithmetic should eventually be added. |
+| **Option A** | Keep as-is: US deep, others deadlines-only with a visible badge. |
+| **Option B** | Promote UK and IN to deep over time. |
+| **Option C** | Narrow the UI to one country. |
+| **Info needed to decide** | Whether any real user needs a non-US calculation. No evidence either way exists today. |
+| **Decision owner** | Hardik |
+| **Status** | OPEN — non-blocking |
+| **Blocks** | Nothing today. Relevant to Phase 3 Finance expansion. |
+| **Created** | 2026-10-01 |
+| **Resolved** | — |
+| **ADR created** | — |
+
+### Q-003 — Model inspector visibility
+
+| Field | Value |
+|---|---|
+| **ID** | Q-003 |
+| **Question** | Should the learned weights remain a visible dashboard feature (today: a `Brain` toggle showing live weights), or move behind a settings/debug surface? |
+| **Why it matters** | It is simultaneously the trust story ("here is exactly what Panel learned about you") and a distraction on a brutalist attention surface. It is currently wired into `Dashboard.tsx` and its feature names are defined in two places (defect N6). |
+| **Option A** | Keep on the dashboard as a trust feature. |
+| **Option B** | Move to a dedicated `/model` route. |
+| **Option C** | Remove from the product surface, keep only in dev. |
+| **Info needed to decide** | Whether users actually read it. No evidence either way. |
+| **Decision owner** | Hardik |
+| **Status** | OPEN — non-blocking |
+| **Blocks** | Nothing. Relevant to TASK-0A-007 (resolving N6 touches this surface). |
+| **Created** | 2026-10-01 |
+| **Resolved** | — |
+| **ADR created** | — |
+
+### Q-004 — Monetisation validation
+
+| Field | Value |
+|---|---|
+| **ID** | Q-004 |
+| **Question** | Is the proposed free/pro boundary (1 free connected tool) validated at all? |
+| **Why it matters** | Every business-model figure in PRODUCT_CONTEXT §4 is `HYPOTHESIS`. Nothing has been tested with a user. This is the largest unvalidated assumption in the project. |
+| **Option A** | Defer entirely until there are users. |
+| **Option B** | Run a pricing smoke test with a landing page before building more. |
+| **Info needed to decide** (1) Is there any realistic path to first users? (2) Does Panel need to be economically real before Phase 3 investment continues? |
+| **Decision owner** | Hardik |
+| **Status** | OPEN — non-blocking |
+| **Blocks** | Nothing. Relevant to Phase 3 scope. |
+| **Created** | 2026-10-01 |
+| **Resolved** | — |
+| **ADR created** | — |
+
 ## Architecture Decisions
 
-Permanent IDs. **Do not re-open a decision unless new evidence invalidates it.**
+Permanent IDs, stable forever. **They are not stored in numeric order.** Do not
+re-open a decision unless new evidence invalidates it.
 Revisiting is allowed only by adding a new ADR that explicitly supersedes an old
 one, with the invalidating evidence recorded.
 
@@ -520,6 +661,55 @@ sharing built on an account model that loses data is indefensible.
 
 ---
 
+### ADR-020 — Phase lifecycle and approval are explicit states
+
+**Decision.** Every phase carries exactly one status: `NOT STARTED`, `APPROVED`,
+`IN PROGRESS`, `IMPLEMENTED`, `VERIFIED`, `SHIPPED`, `BLOCKED`. `IMPLEMENTED`
+means code exists but verification is incomplete. Only the user sets `SHIPPED`.
+
+**Context.** Without explicit states, "the plan mentions it" drifts into "it's
+being worked on" drifts into "it's done".
+
+**Alternatives considered.**
+- Implicit status inferred from activity — rejected: unfalsifiable.
+- Boolean done/not-done — rejected: loses the implemented-but-unverified state,
+  which is where the most dangerous overclaiming happens.
+
+**Why chosen.** The dangerous moment is between "code written" and "verified". A
+status that names that moment makes overclaiming visible.
+
+**Consequences.** An agent must check status before implementing. A detailed
+specification is never an approval.
+
+**Revisit when.** Never. This is a governance invariant.
+
+---
+
+### ADR-021 — The agent executes decisions; it does not own them
+
+**Decision.** Product decisions, ADR decisions, security invariants, complexity
+budgets and phase approval state may be changed **only** by the user. The agent
+may modify implementation artifacts freely within an approved scope.
+
+**Context.** An agent optimising for "task complete" will rationalise its way
+past any soft governance. The only reliable control is a hard boundary.
+
+**Alternatives considered.**
+- Soft guidance ("use judgement") — rejected: unfalsifiable, and exactly the
+  failure mode being prevented.
+- Agent may self-authorise low-risk changes — rejected: there is no low-risk
+  category once precedent exists.
+
+**Why chosen.** Turnkey ownership of decisions is how an agent rewrites the
+specification to match its own implementation.
+
+**Consequences.** Blocked work produces an Open Question, not a workaround.
+Authority is a matrix (MAIN_AGENT §9), not a paragraph.
+
+**Revisit when.** Never without a superseding ADR and explicit user approval.
+
+---
+
 ### ADR-019 — Spec-driven development; Markdown is authoritative
 
 **Decision.** Five persistent control artefacts under `/spec`. The HTML control
@@ -640,8 +830,9 @@ Current objective:    Establish the development control system.
 Last completed:       CHANGE-0001 — /spec established, drift detector added.
 Next phase:           0A — awaiting explicit approval. NOT STARTED.
 
-Blockers:             None technical.
-                      One decision pending: Phase 0A approval.
+Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003.
+                      Phase 0A approval itself — not yet granted.
+                      Non-blocking: Q-002, Q-003, Q-004.
 
 Failing tests:        None. No test suite exists yet (D10/D11).
 
@@ -653,13 +844,33 @@ Known risks:
   R13 Infrastructure growing faster than product value     → ADR-016, every phase
   R15 Convex serialisation of -Infinity (unverified)       → N5, Phase 0A
 
-Phase status:
-  0A  Specified — awaiting approval
-  0B  Specified — depends on 0A
-  0C  Specified — depends on 0B
-  1.0 Specified — depends on 0C
-  1.1 Specified — depends on 1.0
-  1.5 Specified — depends on 1.1
-  2   Specified — depends on 1.5; needs Google OAuth credentials
-  3   Specified — depends on 2
+Phase status (authoritative — see MAIN_AGENT §5):
+  PHASE  STATUS        BLOCKED BY        NOTE
+  0A     NOT STARTED   Q-001 (partial)   Awaiting approval. Q-001 blocks TASK-0A-003 only.
+  0B     NOT STARTED   —                 Depends on 0A
+  0C     NOT STARTED   —                 Depends on 0B
+  1.0    NOT STARTED   —                 Depends on 0C
+  1.1    NOT STARTED   —                 Depends on 1.0
+  1.5    NOT STARTED   —                 Depends on 1.1
+  2      NOT STARTED   credentials       Depends on 1.5; needs GOOGLE_CLIENT_ID/SECRET
+  3      NOT STARTED   —                 Depends on 2
 ```
+
+### Phase lifecycle status table
+
+| Phase | Status | Approved by | Date | Blocked by | Notes |
+|---|---|---|---|---|---|
+| **0A** | **NOT STARTED** | — | — | `Q-001` (TASK-0A-003 only) | Specified in full. Not approved. |
+| **0B** | NOT STARTED | — | — | — | Depends on 0A |
+| **0C** | NOT STARTED | — | — | — | Depends on 0B |
+| **1.0** | NOT STARTED | — | — | — | Depends on 0C |
+| **1.1** | NOT STARTED | — | — | — | Depends on 1.0 |
+| **1.5** | NOT STARTED | — | — | — | Depends on 1.1 |
+| **2** | NOT STARTED | — | — | user credentials | Depends on 1.5 |
+| **3** | NOT STARTED | — | — | — | Depends on 2 |
+
+**No phase is APPROVED. Nothing is IN PROGRESS. Nothing is IMPLEMENTED,
+VERIFIED or SHIPPED.**
+
+> A written specification is never an approval (MAIN_AGENT §12). The existence of
+> a detailed plan for Phase 0A does not authorise beginning it.

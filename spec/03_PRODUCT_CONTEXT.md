@@ -96,6 +96,42 @@ Competitors own a *category*. Panel owns the *cross-category attention problem*.
 Purpose: **strategic decision-making**. Each entry states what Panel should learn
 and what Panel must **not** copy. Not a feature comparison.
 
+### Classification legend
+
+Every claim in this section carries one of these. **Competitive research must not
+quietly become product truth.**
+
+| Label | Meaning |
+|---|---|
+| `OBSERVED` | A fact about what a competitor's product actually does. Verifiable by looking at it. |
+| `USER REPORT` | Someone reported it. One report is one report. |
+| `INFERENCE` | Our reasoning from observation. Provisional. |
+| `HYPOTHESIS` | An unvalidated belief. See the register in §3.3. |
+| `DECISION` | A Panel product decision, already taken. Not evidence. |
+
+The `Panel must NOT copy` column is always a **`DECISION`**, never a finding.
+
+#### Classification of the entries below
+
+The prose that follows is unchanged from the original review. This table says
+what kind of claim each part is, so competitive research cannot silently
+harden into product truth.
+
+| Category | `OBSERVED` (what they do) | `INFERENCE` (our reading) | `DECISION` (our choice) |
+|---|---|---|---|
+| Productivity | Capture quality refined over years; large surface | Task lists are separate from life | Do not become a planning workspace |
+| Dashboards | Glance ships no task management | It is because tasks require entry | No configurable widget grid |
+| Finance | Bank connectivity solved; they are ledgers | They stop where an action is needed | No double-entry ledger; no financial advice |
+| Family | Shared chores/calendars/budgets | Narrow scope creates another tab to check | One object model, not a bolted-on family app |
+| Personal CRM | Reminders + interaction history | Value caps out because entry is manual | Never Salesforce |
+| Automation | Large trigger surface | You cannot automate what you have not noticed | No trigger builder, canvas or marketplace |
+| Health | Passive sensing, excellent dashboards | The model to follow is passive-by-default | Consume health context; never build sensors |
+| Knowledge | Extraordinary flexibility | Blank canvas transfers burden to the user | Build none of it |
+| Calendar AI | Auto-schedules tasks into free time | Calendar-only world model | Never auto-write to the user's calendar |
+
+**No entry in this section rests on `USER REPORT` or `HYPOTHESIS`.** Where user
+anecdote exists it lives in §3.1 (E7, E8), labelled as such.
+
 ### 2.1 Productivity / task managers — Todoist, Things, TickTick, Asana
 
 - **What they do:** Excellent capture and organisation of tasks and projects.
@@ -264,6 +300,40 @@ amount of real user contact, because by then the cost of being wrong compounds.
    comprehension — not preference.
 3. A diary study of one person's week, to test whether the attention budget
    surfaces things they would genuinely have missed.
+
+### 3.3 Product Hypothesis register
+
+**Durable register of every product belief that is not established fact.**
+
+> **Do not manufacture evidence.** If the evidence column says "none", the
+> confidence is `Low` and the status stays `IDEA` or `RESEARCHED`. A hypothesis
+> does not become a requirement because it is written down.
+
+**Confidence:** `Low` · `Medium` · `High` — *High means well-evidenced, not
+certain; no product hypothesis here is High.*
+
+| ID | Hypothesis | Evidence | Evidence type | Confidence | What would validate it | Status |
+|---|---|---|---|---|---|---|
+| **PH-001** | People want one place that says "what needs attention", not another inbox | E6 category inference | INFERENCE | Medium | 5–8 interviews; prototype comprehension test | RESEARCHED |
+| **PH-002** | Apps requiring a parallel copy of one's life are abandoned | E6 | INFERENCE | Medium | Cohort retention data for any comparable product | RESEARCHED |
+| **PH-003** | Glance omits task management *because* tasks require manual entry | E4 (Glance feature set) | OBSERVED | Medium | Interview the Glance maintainer or read the project's stated rationale | RESEARCHED |
+| **PH-004** | Personal-CRM tools plateau because value is proportional to typing | E5 (Dex/Clay/Monica) | INFERENCE | Low | Usage-curve data, or a passive-data counter-example | RESEARCHED |
+| **PH-005** | Privacy is a purchase criterion for whole-life aggregation | E7 | USER REPORT | Medium | Pricing test that varies a privacy claim | RESEARCHED |
+| **PH-006** | Users want AI-free / local-first personal tooling | E8 | USER REPORT | Medium | Same as PH-005 | RESEARCHED |
+| **PH-007** | An explainable ranking is trusted more than an opaque one | none — our reasoning from the explainability work | HYPOTHESIS | Low | A/B test of explainable vs. plain ranking in the Attention view | RESEARCHED |
+| **PH-008** | Users would share household dates/documents if sharing were simple and legible | E10 | HYPOTHESIS | Low | Usability test of the sharing flow with two real households | RESEARCHED |
+| **PH-009** | Retention is driven by number of active connections | none | HYPOTHESIS | Low | Correlate connection count with 4-week retention across real cohorts | RESEARCHED |
+| **PH-010** | The single strongest retention driver is believing you *would have missed something* | none | HYPOTHESIS | Low | Measure Weekly Useful Attention against churn | RESEARCHED |
+| **PH-011** | The 1-free-connection paywall boundary is viable | none — no pricing research | HYPOTHESIS | Low | Pricing smoke test; cost modelling for heavy users | RESEARCHED (see Q-004) |
+| **PH-012** | Self-hosted / privacy communities are the viable acquisition channel | E7, E8 | USER REPORT | Low | Post launch and measure signups by source | RESEARCHED |
+| **PH-013** | Deep tax support is a differentiator for the self-employed segment | none | HYPOTHESIS | Low | Interview self-employed users about tax admin specifically | RESEARCHED |
+| **PH-014** | Value lives in the *relationships between* life domains, not any single domain | E4, E5 | INFERENCE | Medium | Comparative analysis of tools that span vs. specialise | RESEARCHED |
+
+**Total: 0 hypotheses validated. 0 primary user interviews. 1 FACT-cited study
+cluster that has not been re-verified this session (E1–E3).**
+
+This is the honest state of product knowledge. Phase 3 should not begin before
+some of it is tested — see §3.2.
 
 ---
 

@@ -264,6 +264,255 @@ function checkPaths(specs: Record<string, string>) {
   }
 }
 
+// ------------------------------------------------ 8. phase lifecycle status
+const PHASE_STATUSES = [
+  "NOT STARTED",
+  "APPROVED",
+  "IN PROGRESS",
+  "IMPLEMENTED",
+  "VERIFIED",
+  "SHIPPED",
+  "BLOCKED",
+] as const;
+
+function checkPhaseStatus(changelog: string) {
+  const table = changelog.split("### Phase lifecycle status table")[1] ?? "";
+  if (table.trim().length === 0) {
+    record("phase lifecycle status", "fail", "no '### Phase lifecycle status table' section");
+    return;
+  }
+
+  const rowRe =
+    /^\|\s*\*\*(0A|0B|0C|1\.0|1\.1|1\.5|2|3)\*\*\s*\|\s*\**([A-Z ]+?)\**\s*\|/gm;
+  const found = new Map<string, string>();
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(table)) !== null) {
+    const status = m[2].replace(/\*/g, "").trim();
+    if (PHASE_STATUSES.includes(status as (typeof PHASE_STATUSES)[number])) {
+      found.set(m[1], status);
+    }
+  }
+
+  const missing = PHASES.filter((p) => !found.has(p));
+  const invalid = [...found.entries()].filter(
+    ([, s]) => !PHASE_STATUSES.includes(s as (typeof PHASE_STATUSES)[number]),
+  );
+
+  if (missing.length > 0) {
+    record("phase lifecycle status", "fail", `phase(s) with no status row: ${missing.join(", ")}`);
+    return;
+  }
+  if (invalid.length > 0) {
+    record(
+      "phase lifecycle status",
+      "fail",
+      `invalid status: ${invalid.map(([p, s]) => `${p}=${s}`).join(", ")}`,
+    );
+    return;
+  }
+
+  const summary = PHASES.map((p) => `${p}=${found.get(p)}`).join(" ");
+  const approved = PHASES.filter((p) => found.get(p) === "APPROVED");
+  record(
+    "phase lifecycle status",
+    "pass",
+    `all ${PHASES.length} phases have a valid status — ${summary}` +
+      (approved.length > 0 ? ` · APPROVED: ${approved.join(", ")}` : " · none approved"),
+  );
+}
+
+// -------------------------------------------------------- 9. change severity
+const SEVERITIES = ["PATCH", "MINOR", "MAJOR", "SECURITY", "ARCHITECTURE", "PRODUCT"];
+
+function checkSeverity(changelog: string) {
+  const ids = [...changelog.matchAll(/^## (CHANGE-\d+)/gm)].map((m) => m[1]);
+  if (ids.length === 0) {
+    record("change severity", "fail", "no CHANGE entries to check");
+    return;
+  }
+
+  const missing: string[] = [];
+  const bad: string[] = [];
+  for (const id of ids) {
+    const start = changelog.indexOf(`## ${id}`);
+    const next = changelog.indexOf("\n## ", start + 1);
+    const block = changelog.slice(start, next === -1 ? undefined : next);
+    const sev = block.match(/^Severity:\s*(\S+)/m);
+    if (!sev) missing.push(id);
+    else if (!SEVERITIES.includes(sev[1])) bad.push(`${id}=${sev[1]}`);
+  }
+
+  if (missing.length > 0) {
+    record("change severity", "fail", `CHANGE without Severity: ${missing.join(", ")}`);
+  } else if (bad.length > 0) {
+    record("change severity", "fail", `invalid severity: ${bad.join(", ")}`);
+  } else {
+    record("change severity", "pass", `all ${ids.length} changes declare a valid severity`);
+  }
+}
+
+// ------------------------------------------------------- 10. traceability ids
+function checkTraceability(specs: Record<string, string>) {
+  const fundamentals = specs["04_SYSTEM_FUNDAMENTALS.md"] ?? "";
+
+  // --- REQ ids used in chains must exist in the register (§12.1) ---
+  const registerBlock = fundamentals.split("### 12.1 Requirement register")[1]?.split("### 12.2")[0] ?? "";
+  const registered = new Set(
+    [...registerBlock.matchAll(/^\|\s*(REQ-\d+)\s*\|/gm)].map((m) => m[1]),
+  );
+  const referenced = new Set([...fundamentals.matchAll(/\b(REQ-\d+)\b/g)].map((m) => m[1]));
+  const dangling = [...referenced].filter((r) => !registered.has(r)).sort();
+
+  if (registered.size === 0) {
+    record("traceability REQ ids", "fail", "no requirement register found in §12.1");
+  } else if (dangling.length > 0) {
+    record(
+      "traceability REQ ids",
+      "fail",
+      `REQ referenced but not in the register: ${dangling.join(", ")}`,
+    );
+  } else {
+    record(
+      "traceability REQ ids",
+      "pass",
+      `${registered.size} requirements registered; ${referenced.size} referenced; none dangling`,
+    );
+  }
+
+  // --- Q ids unique ---
+  const changelog = specs["02_CHANGELOG.md"] ?? "";
+  const qIds = [...changelog.matchAll(/^### (Q-\d+)/gm)].map((m) => m[1]);
+  const qDupes = qIds.filter((id, i) => qIds.indexOf(id) !== i);
+  if (qIds.length === 0) {
+    record("open question ids", "fail", "no Q-xxx entries found");
+  } else if (qDupes.length > 0) {
+    record("open question ids", "fail", `duplicate: ${[...new Set(qDupes)].join(", ")}`);
+  } else {
+    const malformed = qIds.filter((id) => !/^Q-\d{3}$/.test(id));
+    if (malformed.length > 0) {
+      record("open question ids", "fail", `malformed id(s): ${malformed.join(", ")}`);
+    } else {
+      record("open question ids", "pass", `${qIds.length} questions: ${qIds.join(", ")}`);
+    }
+  }
+
+  // --- TASK chains: each row needs TASK, AC and TEST ---
+  const chainBlock = fundamentals.split("### 12.2")[1]?.split("### 12.3")[0] ?? "";
+  // Columns: REQ | ADR | PHASE | TASK | ACCEPTANCE | TEST | CHANGE
+  const chainRows = [
+    ...chainBlock.matchAll(
+      /^\|\s*(REQ-\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|/gm,
+    ),
+  ];
+  const incomplete = chainRows.filter(
+    (r) => !/TASK-\d+[A-Z]?-\d+/.test(r[4]) || !/AC-\d+[A-Z]?-\d+/.test(r[5]) || !/TEST-\d+[A-Z]?-\d+/.test(r[6]),
+  );
+  const taskIds = [
+    ...new Set(chainRows.map((r) => (r[4].match(/TASK-\d+[A-Z]?-\d+/) ?? [""])[0]).filter(Boolean)),
+  ];
+  const taskDupes = taskIds.filter((t, i) => taskIds.indexOf(t) !== i);
+
+  if (chainRows.length === 0) {
+    record("traceability chains", "fail", "no chain rows found in §12.2");
+  } else if (incomplete.length > 0) {
+    record(
+      "traceability chains",
+      "fail",
+      `${incomplete.length} chain row(s) missing TASK / AC / TEST ids`,
+    );
+  } else if (taskDupes.length > 0) {
+    record("traceability chains", "fail", `duplicate task id(s): ${[...new Set(taskDupes)].join(", ")}`);
+  } else {
+    record(
+      "traceability chains",
+      "pass",
+      `${chainRows.length} chains complete (${taskIds.length} tasks, each with AC + TEST)`,
+    );
+  }
+}
+
+// ------------------------------------------------- 11. acceptance criteria
+function checkAcceptance(fundamentals: string) {
+  const scopeBlock = fundamentals.split("### 11.2 Scope definition")[1]?.split("### 11.3")[0] ?? "";
+  if (scopeBlock.trim().length === 0) {
+    record("phase acceptance criteria", "fail", "no '### 11.2 Scope definition' section");
+    return;
+  }
+
+  const required = ["IN SCOPE", "OUT OF SCOPE", "DO NOT TOUCH", "DEPENDENCIES", "BLOCKERS", "APPROVAL REQUIRED", "ACCEPTANCE CRITERIA"];
+  const missing = required.filter((k) => !scopeBlock.includes(k));
+  if (missing.length > 0) {
+    record("phase acceptance criteria", "fail", `phase 0A is missing: ${missing.join(", ")}`);
+    return;
+  }
+
+  const numbered = (scopeBlock.match(/^\s*(\d)\. /gm) ?? []).length;
+  if (numbered < 5) {
+    record(
+      "phase acceptance criteria",
+      "fail",
+      `phase 0A lists only ${numbered} numbered acceptance criteria; expected at least 5`,
+    );
+    return;
+  }
+
+  const missingPhases = PHASES.filter(
+    (p) =>
+      !scopeBlock.includes(`**${p}**`) &&
+      !scopeBlock.includes(`Phase ${p} —`) &&
+      !new RegExp(`\\|\\s*\\*\\*${p.replace(".", "\\.")}\\*\\*`).test(scopeBlock),
+  );
+  if (missingPhases.length > 0) {
+    record(
+      "phase acceptance criteria",
+      "fail",
+      `phase(s) absent from the scope section: ${missingPhases.join(", ")}`,
+    );
+    return;
+  }
+  record(
+    "phase acceptance criteria",
+    "pass",
+    `all 8 phases scoped; 0A declares all 7 required fields and ${numbered} criteria`,
+  );
+}
+
+// --------------------------------------------- 12. protected areas documented
+function checkProtectedAreas(fundamentals: string) {
+  const reg = fundamentals.split("## 13. Do Not Touch register")[1]?.split("## 14.")[0] ?? "";
+  if (reg.trim().length === 0) {
+    record("protected areas documented", "fail", "no '## 13. Do Not Touch register' section");
+    return;
+  }
+
+  const mustMention = [
+    "vite.config.ts",
+    "auth.config.ts",
+    "index.css",
+    "convex.json",
+    "scorer.ts",
+    "tax.ts",
+    "nlp.ts",
+    "schemaValidation",
+    "src/main.tsx",
+  ];
+  const missing = mustMention.filter((m) => !reg.includes(m));
+  if (missing.length > 0) {
+    record(
+      "protected areas documented",
+      "fail",
+      `Do Not Touch register does not protect: ${missing.join(", ")}`,
+    );
+    return;
+  }
+  const entries = (reg.match(/^\|\s*\d+\s*\|/gm) ?? []).length;
+  record(
+    "protected areas documented",
+    "pass",
+    `${entries} protected entries, each with a stated reason`,
+  );
+}
+
 // ------------------------------------------------------------------- main
 function main() {
   if (!checkSpecFiles()) {
@@ -281,6 +530,11 @@ function main() {
   checkCommands(specs);
   const adrIds = checkAdrs(specs["02_CHANGELOG.md"]);
   checkBudgets(changelog);
+  checkPhaseStatus(changelog);
+  checkSeverity(changelog);
+  checkTraceability(specs);
+  checkAcceptance(specs["04_SYSTEM_FUNDAMENTALS.md"] ?? "");
+  checkProtectedAreas(specs["04_SYSTEM_FUNDAMENTALS.md"] ?? "");
   const changeIds = [...changelog.matchAll(/^## (CHANGE-\d+)/gm)].map((m) => m[1]);
   const dupeChanges = changeIds.filter((id, i) => changeIds.indexOf(id) !== i);
   if (changeIds.length === 0) {
