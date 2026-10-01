@@ -19,6 +19,26 @@
 
 export type CountryCode = "US" | "UK" | "IN" | "CA" | "AU";
 
+/**
+ * The closed expense-bucket vocabulary. Mirrored by `expenseBucketValidator`
+ * in the Convex schema; `schema-vocab.test.ts` asserts the two agree.
+ */
+export type ExpenseBucket =
+  | "Software & subscriptions"
+  | "Equipment"
+  | "Home office"
+  | "Travel"
+  | "Meals"
+  | "Professional services"
+  | "Insurance"
+  | "Marketing"
+  | "Education & training"
+  | "Office supplies"
+  | "Uncategorised";
+
+/** How much to trust a categorisation. `confirmed` is written by the user. */
+export type ExpenseConfidence = "high" | "medium" | "low" | "confirmed";
+
 export interface Country {
   code: CountryCode;
   name: string;
@@ -538,14 +558,14 @@ export function readinessScore(
 
 /** Categorises a raw expense string into a likely deduction bucket. */
 export function categoriseExpense(description: string): {
-  bucket: string;
+  bucket: ExpenseBucket;
   likelyDeductible: boolean;
-  confidence: "high" | "medium" | "low";
+  confidence: Exclude<ExpenseConfidence, "confirmed">;
   reason: string;
 } {
   const d = description.toLowerCase();
 
-  const rules: { bucket: string; terms: string[]; confidence: "high" | "medium" | "low" }[] = [
+  const rules: { bucket: ExpenseBucket; terms: string[]; confidence: "high" | "medium" | "low" }[] = [
     { bucket: "Software & subscriptions", terms: ["adobe", "figma", "notion", "slack", "github", "openai", "domain", "hosting", "aws", "vercel", "netlify", "subscription", "saas"], confidence: "high" },
     { bucket: "Equipment", terms: ["monitor", "laptop", "keyboard", "mouse", "headset", "desk", "chair", "camera", "phone"], confidence: "medium" },
     { bucket: "Home office", terms: ["desk", "chair", "lamp", "internet", "broadband", "utilities", "heating"], confidence: "low" },

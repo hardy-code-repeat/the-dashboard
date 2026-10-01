@@ -1,14 +1,8 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
-import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
+import type { GenericMutationCtx } from "convex/server";
 import { v } from "convex/values";
 
-import {
-  AREAS,
-  areaBySlug,
-  DEFAULT_AREA_SLUG,
-  PROVIDERS,
-  type ProviderWithState,
-} from "../lib/areas";
+import { AREAS, areaBySlug, DEFAULT_AREA_SLUG, PROVIDERS } from "../lib/areas";
 import {
   categoriseExpense,
   COUNTRIES,
@@ -19,16 +13,7 @@ import {
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
-import {
-  areaSlugValidator,
-  countryCodeValidator,
-  expenseBucketValidator,
-  providerSlugValidator,
-  type AreaSlug,
-  type CountryCodeT,
-  type ExpenseBucket,
-  type ProviderSlug,
-} from "./schema";
+import { type AreaSlug, type CountryCodeT, type ExpenseBucket, type ProviderSlug } from "./schema";
 
 import { mutation, query } from "./_generated/server";
 import { ensurePersonalSpace } from "./spaces";
@@ -489,10 +474,11 @@ export const listConnections = query({
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
 
-    const connectedByProvider = new Set(rows.map((r) => r.provider));
+    const connectedByProvider = new Set<string>(rows.map((r) => r.provider));
     return {
       connected: rows,
       providers: PROVIDERS.map((p) => ({ ...p, connected: connectedByProvider.has(p.slug) })),
+
     };
   },
 });
@@ -516,7 +502,7 @@ export const connectTool = mutation({
     const rows = await ctx.db
       .query("connections")
       .withIndex("by_owner_provider", (q) =>
-        q.eq("ownerUserId", userId).eq("provider", args.provider),
+        q.eq("ownerUserId", userId).eq("provider", providerSlug),
       )
       .first();
     if (rows) return;
@@ -547,7 +533,7 @@ export const disconnectTool = mutation({
     const row = await ctx.db
       .query("connections")
       .withIndex("by_owner_provider", (q) =>
-        q.eq("ownerUserId", userId).eq("provider", provider.slug),
+        q.eq("ownerUserId", userId).eq("provider", provider.slug as ProviderSlug),
       )
       .first();
     if (row) await ctx.db.delete(row._id);

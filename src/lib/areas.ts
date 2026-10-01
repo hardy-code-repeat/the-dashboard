@@ -6,8 +6,31 @@
  * areas a user has enabled and which providers they have connected.
  */
 
+/**
+ * The closed life-area vocabulary.
+ *
+ * Declared as a literal union rather than `string` because this list appears in
+ * two places that must never disagree: this catalogue and the `tasks.area` /
+ * `areas.slug` Convex validators. `schema-vocab.test.ts` asserts the two are
+ * identical, so adding an area without widening the schema fails the suite
+ * instead of silently rejecting writes.
+ */
+export type AreaSlug = "general" | "finance" | "relationships" | "health" | "home";
+
+/** The closed integration-provider vocabulary. Mirrored in schema.ts. */
+export type ProviderSlug =
+  | "google-calendar"
+  | "outlook-calendar"
+  | "nylas"
+  | "plaid"
+  | "github"
+  | "linear"
+  | "notion"
+  | "google-drive"
+  | "strava";
+
 export interface AreaDef {
-  slug: string;
+  slug: AreaSlug;
   label: string;
   /** One-line pitch shown in the "add an area" picker. */
   blurb: string;
@@ -113,7 +136,7 @@ export function accentClasses(accent: AreaDef["accent"]): string {
 export type ProviderStatus = "connected" | "available" | "coming-soon";
 
 export interface ProviderDef {
-  slug: string;
+  slug: ProviderSlug;
   label: string;
   /** What this connection actually does for the user. */
   blurb: string;

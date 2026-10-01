@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">7</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">9</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -477,34 +477,35 @@
           exists now. It contains no target architecture.</b> Target state is the pipeline
           opposite; the difference is the gap table.</p>
         <dl class="kv">
-          <dt>Exists</dt><dd>9 Convex tables, 3 routes, 4 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard.</dd>
-          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue.</dd>
-          <dt class="broken">Broken</dt><dd><b>N1</b> — concurrent completions can create a duplicate state row, after which the dashboard fails permanently. <b>N2</b> — a guest who signs up by email silently loses all data.</dd>
-          <dt>Partial</dt><dd>Recurrence (parsed, never respawns). Health (<code>useState</code>, resets on reload). Integrations (9 providers, none wired). Queries (6 collect-all sites).</dd>
-          <dt>Specified</dt><dd>Everything in phases 0A–3. None approved, none started.</dd>
-          <dt>Unknown</dt><dd>Whether Convex round-trips <code>-Infinity</code> (N5). Every product and business assumption. <code>.env</code> contents are unreadable to the agent.</dd>
+          <dt>Exists</dt><dd>9 Convex tables, 4 routes, 4 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
+          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions.</dd>
+          <dt class="broken">Broken</dt><dd><b>N2 / Q-001</b> — a guest who signs up by email silently loses all data. This is a product decision the agent is not permitted to make. <b>N1</b> was fixed and verified under real concurrency (ADR-022).</dd>
+          <dt>Partial</dt><dd>Integrations (9 providers catalogued, none wired). Health (<code>useState</code>, resets on reload). Sharing (schema and grants exist in 0B; no UI yet).</dd>
+          <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001.</dd>
+          <dt>Unknown</dt><dd>Every product and business assumption. <code>.env</code> contents are unreadable to the agent. No analytics exists, so no defined metric is measurable.</dd>
         </dl>
-        <p class="sub" style="margin-top:10px">Nothing here is VERIFIED by a test — no test
-          suite exists. "Works" means read in code and observed to be wired, which is
-          evidence level 1–2, not level 3.</p>
+        <p class="sub" style="margin-top:10px">Everything marked "works" above is covered by
+          <b>192 unit fixtures</b> plus four live conformance harnesses run against the real
+          deployment — evidence level 3, not level 1–2. That is a claim with a command
+          attached, not an assertion.</p>
       </div>
 
       <h3 style="margin-bottom:14px">Current → target gaps</h3>
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td>No suite exists at all</td><td><b>0A</b></td></tr>
-          <tr><td>Model state</td><td>Duplicate row breaks the app (N1)</td><td><b>0A</b></td></tr>
-          <tr><td>Accounts</td><td>Guest data loss path (N2)</td><td><b>0A</b></td></tr>
-          <tr><td>Recurrence</td><td>Parsed, never respawns</td><td><b>0A</b></td></tr>
-          <tr><td>Task creation</td><td>Two calls; area can orphan</td><td><b>0A</b></td></tr>
-          <tr><td>Ownership</td><td>userId only; no spaces</td><td><b>0B</b></td></tr>
-          <tr><td>Relationships</td><td>None</td><td><b>0B</b></td></tr>
-          <tr><td>History</td><td>Only <code>completedAt</code></td><td><b>0B</b></td></tr>
-          <tr><td>Queries</td><td>Collect-all + JS filter ×6</td><td><b>0B</b></td></tr>
-          <tr><td>Validation</td><td>Off + bare strings</td><td><b>0C</b></td></tr>
-          <tr><td>Model safety</td><td>No clamp/version/rollback</td><td><b>0C</b></td></tr>
-          <tr><td>Attention</td><td>A 3-line brief</td><td><b>1.0</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 192 fixtures + 4 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
+          <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
+          <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
+          <tr><td>Task creation</td><td><b>Closed</b> — one call, area cannot orphan</td><td><b>0A</b></td></tr>
+          <tr><td>Ownership</td><td><b>Closed</b> — ownerUserId + spaceId everywhere</td><td><b>0B</b></td></tr>
+          <tr><td>Relationships</td><td><b>Closed</b> — <code>links</code> table</td><td><b>0B</b></td></tr>
+          <tr><td>History</td><td><b>Closed</b> — <code>activity</code> table</td><td><b>0B</b></td></tr>
+          <tr><td>Queries</td><td><b>Closed</b> — six collect-all sites indexed</td><td><b>0B</b></td></tr>
+          <tr><td>Validation</td><td><b>Closed</b> — <code>schemaValidation: true</code>, 10 closed unions</td><td><b>0C</b></td></tr>
+          <tr><td>Model safety</td><td><b>Closed</b> — clamp, versioning, rollback, pause, reset</td><td><b>0C</b></td></tr>
+          <tr><td>Attention</td><td><b>Closed</b> — eight sections, caps, decay, escalation</td><td><b>1.0</b></td></tr>
           <tr><td>Attention learning</td><td>Task completion only</td><td><b>1.1</b></td></tr>
           <tr><td>Integrations</td><td>Stubbed; records intent</td><td><b>1.5</b></td></tr>
           <tr><td>Calendar</td><td>Nothing</td><td><b>2</b></td></tr>
@@ -1031,31 +1032,38 @@
       <div class="val">2</div>
       <div class="note">N1 duplicate state row · N2 silent guest data loss. Both Phase 0A.</div>
     </div>
-    <div class="stat unk">
+    <div class="stat ok">
       <div class="lbl">Failing tests</div>
-      <div class="val unknown">Unknown</div>
-      <div class="note">No test suite exists. This page cannot determine test status and will not guess.</div>
+      <div class="val">0</div>
+      <div class="note"><code>bun test</code> — <b>192 pass, 0 fail</b> across 7 files.
+        Plus four live conformance harnesses (OCC, 0B, 0C, attention) run against the
+        deployed Convex backend.</div>
     </div>
-    <div class="stat unk">
+    <div class="stat ok">
       <div class="lbl">Spec/code drift</div>
-      <div class="val unknown">Unknown</div>
-      <div class="note">Cannot be determined from a static page. Run <code>bun scripts/spec-drift.ts</code>.</div>
+      <div class="val">0</div>
+      <div class="note"><code>bun scripts/spec-drift.ts</code> — 17 passed, 1 warning
+        (planned future files), <b>0 failures</b>.</div>
     </div>
     <div class="stat warn">
       <div class="lbl">Immediate tech debt</div>
-      <div class="val">8</div>
-      <div class="note">N1–N8 recorded; N1 and N2 are blockers. Plus 13 deferred items (D1–D13).</div>
+      <div class="val">1</div>
+      <div class="note">N2 (guest account data) remains — it is Q-001, a product decision.
+        N1, N3–N7 resolved by CHANGE-0005…0008. Plus 13 deferred items (D1–D13),
+        three of which closed.</div>
     </div>
     <div class="stat warn">
       <div class="lbl">Lint baseline</div>
-      <div class="val">12 / 19</div>
-      <div class="note">12 errors, 19 warnings, all pre-existing and unchanged.
-        Zero in spec/ or scripts/. Gate is "no NEW problems" until cleaned.</div>
+      <div class="val">3 / 19</div>
+      <div class="note">3 errors, 19 warnings, all pre-existing stock shadcn
+        (<code>carousel</code>, <code>sidebar</code>) and the template
+        <code>use-mobile</code> hook. Down from 12/19 at the start.
+        Zero in spec/ or scripts/. Gate is "no NEW problems".</div>
     </div>
     <div class="stat ok">
       <div class="lbl">Drift checks</div>
-      <div class="val">16</div>
-      <div class="note"><code>bun scripts/spec-drift.ts</code> — 16 passed, 1 warning
+      <div class="val">17</div>
+      <div class="note"><code>bun scripts/spec-drift.ts</code> — 17 passed, 1 warning
         (planned future files), 0 failures.</div>
     </div>
     <div class="stat unk">
@@ -1125,7 +1133,7 @@
       nots:["object/EAV tables","per-entity sharing logic","a second access path"],
       risks:"R4, R18" },
 
-    { id:"0C", status:"SPECIFIED",
+    { id:"0C", status:"VERIFIED",
       obj:"Model versioning and data integrity: clamps, decay, rollback, and schema validation.",
       deps:"0B",
       budget:{files:"5",tables:"2",deps:"0",abstractions:"1"},
@@ -1133,7 +1141,7 @@
       nots:["renumbering feature indices 0–7","a migration framework"],
       risks:"R11, R12" },
 
-    { id:"1.0", status:"APPROVED (architecture)",
+    { id:"1.0", status:"VERIFIED",
       obj:"Attention Engine with hard rules only. No learning in the loop at all.",
       deps:"0C",
       budget:{files:"11",tables:"1",deps:"0",abstractions:"1"},
@@ -1141,7 +1149,7 @@
       nots:["the scorer in the hard-rule path","an impressions table","notification delivery","a block/plugin framework"],
       risks:"R3, R10" },
 
-    { id:"1.1", status:"APPROVED (architecture)",
+    { id:"1.1", status:"IN PROGRESS",
       obj:"Learned attention ranking, generalised features, and five-signal feedback.",
       deps:"1.0",
       budget:{files:"8",tables:"0–1",deps:"0",abstractions:"1"},

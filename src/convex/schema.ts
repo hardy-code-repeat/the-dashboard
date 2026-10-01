@@ -540,6 +540,28 @@ const schema = defineSchema(
       byWeekday: v.array(v.number()),
       /** Completion counts keyed by tag. */
       byTag: v.record(v.string(), v.object({ done: v.number(), total: v.number() })),
+      /**
+       * Phase 1.1 counters for the appended features 8–11.
+       *
+       * Optional rather than required so every row written before 1.1 stays
+       * valid and **no data migration is needed** — `extractFeatures` reads an
+       * absent counter exactly as it reads a zero one: no evidence, feature 0.
+       */
+      byArea: v.optional(v.record(v.string(), v.object({ done: v.number(), total: v.number() }))),
+      bySource: v.optional(v.record(v.string(), v.object({ done: v.number(), total: v.number() }))),
+      byPerson: v.optional(v.record(v.string(), v.object({ done: v.number(), total: v.number() }))),
+      byDueBucket: v.optional(v.record(v.string(), v.object({ done: v.number(), total: v.number() }))),
+      /**
+       * Explicit, user-authored category suppression (RJD-006, §5.5.5).
+       *
+       * Written **only** by an explicit "not for me". There is deliberately no
+       * negative category *feature*: if suppression could be learned it would
+       * be learned from habit, and habit is not a decision. Capped at
+       * `MAX_SUPPRESSION_ENTRIES` because an unbounded set written from a
+       * mutation is an unbounded row.
+       */
+      suppressedKinds: v.optional(v.array(v.string())),
+      suppressedAreas: v.optional(v.array(v.string())),
       shortDone: v.number(),
       shortTotal: v.number(),
       longDone: v.number(),
@@ -586,6 +608,38 @@ const schema = defineSchema(
       .index("by_space", ["spaceId"])
       .index("by_owner", ["ownerUserId"])
       .index("by_owner_key", ["ownerUserId", "key"]),
+
+    /**
+     * Feedback about one attention item (§3.5).
+     *
+     * Attention itself is **computed, never stored** (ADR-003) — this table
+     * holds only what the user *did* about an item. There is deliberately no
+     * impressions table: being shown something forty times is not a signal
+     * (ADR-004, no learning from absence).
+     *
+     * Owner-only. A snooze, a rejection and a dismissal are all statements
+     * about how this person wants to be interrupted, and that is exactly the
+     * kind of behavioural fingerprint that is never shared.
+     */
+    attentionState: defineTable({
+      ...ownedBy,
+      /** `hash(kind : sourceId : dueBucket)`. See `fingerprint` in the pipeline. */
+      fingerprint: v.string(),
+      /** How many times the item has been rendered. Display only. */
+      seenCount: v.optional(v.number()),
+      actedAt: v.optional(v.number()),
+      dismissedAt: v.optional(v.number()),
+      /** Epoch ms. A snooze with no end date is rejected for level-2 items. */
+      snoozedUntil: v.optional(v.number()),
+      rejectedAt: v.optional(v.number()),
+      /** Highest escalation level the user was shown, so the rules stay honest. */
+      escalation: v.optional(v.union(v.literal(0), v.literal(1), v.literal(2))),
+      updatedAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      // One row per fingerprint per user: the lookup every query does.
+      .index("by_owner_fingerprint", ["ownerUserId", "fingerprint"]),
 
     // ---------- life areas -------------------------------------------------
 
@@ -678,7 +732,18 @@ const schema = defineSchema(
       .index("by_owner_provider", ["ownerUserId", "provider"]),
   },
   {
-    schemaValidation: false,
+    // Phase 0C. Validation is ON. Every enum-ish field is a closed union, every
+    // product object carries ownerUserId + spaceId, and a full-conformance
+    // audit against the live deployment reported zero non-conforming rows
+    // across all 357 tasks and every other product table before this flag was
+    // flipped. Accepted debt A1 is closed.
+    //
+    // If a future push is ever rejected for a non-conforming document, the fix
+    // is to run `spaces:migrateOwnership` (which normalises ownership, area,
+    // priority and the required task scalars, and recreates any row still
+    // carrying the pre-0B `userId` column) until it reports zero, and push
+    // again — never to turn this back off.
+    schemaValidation: true,
   },
 );
 

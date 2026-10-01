@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
+import { AttentionFeed } from "@/components/AttentionFeed";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,6 +32,17 @@ import { FEATURE_NAMES } from "@/lib/scorer";
 import { cn } from "@/lib/utils";
 
 type Filter = "all" | "open" | "done";
+
+/**
+ * The dashboard is two screens with an explicit switch between them.
+ *
+ * Phase 1.0 split it this way on purpose: "your things" and "what needs you"
+ * are different questions and mixing them makes both harder to read. A plain
+ * two-way toggle is deliberate — there is no plugin registry, no block system
+ * and no way to add a third panel, because every one of those is a framework
+ * this product does not need.
+ */
+type View = "board" | "attention";
 
 const PRIORITY = {
   0: { label: "NOW", className: "bg-primary text-foreground" },
@@ -46,6 +58,7 @@ export default function Dashboard() {
   const data = useQuery(api.assistant.getDashboard);
   const model = useQuery(api.assistant.getModel);
   const areas = useQuery(api.life.listAreas);
+  const [view, setView] = useState<View>("board");
 
   const addTask = useMutation(api.assistant.addTask);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
@@ -165,6 +178,26 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
+            <div
+              role="group"
+              aria-label="View"
+              className="brutal flex overflow-hidden bg-card"
+            >
+              {(["board", "attention"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={view === option}
+                  onClick={() => setView(option)}
+                  className={cn(
+                    "px-4 py-2 text-xs font-bold uppercase transition-colors",
+                    view === option ? "bg-foreground text-background" : "hover:bg-muted",
+                  )}
+                >
+                  {option === "board" ? "Your stuff" : "Needs you"}
+                </button>
+              ))}
+            </div>
             <div className="hidden text-right sm:block">
               <p className="text-xs uppercase text-muted-foreground">Signed in as</p>
               <p className="text-sm font-bold uppercase">{displayName}</p>
@@ -182,6 +215,10 @@ export default function Dashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl px-5 py-8">
+        {view === "attention" ? (
+          <AttentionFeed />
+        ) : (
+        <>
         {/* ---------- AREA TABS ---------- */}
         <nav aria-label="Life areas" className="mb-8">
           <div className="-mx-1 flex flex-wrap items-stretch gap-2">
@@ -677,6 +714,8 @@ export default function Dashboard() {
             </a>
           </div>
         </footer>
+        </>
+        )}
       </main>
     </div>
   );

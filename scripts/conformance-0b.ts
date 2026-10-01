@@ -151,7 +151,7 @@ async function main(): Promise<void> {
     Array.from({ length: concurrency }, (_, i) => alice.client.mutation(ref.addTask, { input: `concurrent task ${i}` })),
   );
 
-  let spaces = await alice.client.query(ref.listMySpaces, {});
+  const spaces = await alice.client.query(ref.listMySpaces, {});
   check("exactly one space after a concurrent burst", spaces.length === 1, spaces);
   check("it is the personal space", spaces[0]?.kind === "personal" && spaces[0]?.isPersonal === true, spaces[0]);
   check("the creator manages it", spaces[0]?.role === "manage", spaces[0]?.role);

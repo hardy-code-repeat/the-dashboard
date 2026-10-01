@@ -348,6 +348,203 @@ changes no architecture, security invariant or product scope.
 
 ---
 
+## CHANGE-0008
+
+```
+Date:       2026-10-01
+Phase:      0C — Model versioning and data integrity
+Type:       architecture
+Severity:   ARCHITECTURE
+Summary:    The learned model gained weight versioning, a hard clamp, a decaying
+            learning rate, automatic restore points, byte-exact rollback, reset,
+            pause and per-user feature flags. Every enum-ish field became a
+            closed union, and `schemaValidation` is now ON.
+Why:        A model that trains forever with no ceiling, no undo and no
+            off-switch is a liability in a tool that tells people what to do.
+            Separately, `schemaValidation: false` meant a typo in a status
+            string or a priority of `7` could reach the database and break a
+            query at read time (defect N7).
+Previous:    `trainOne` grew weights without a bound and at a fixed rate.
+            `AssistantDoc` carried `weightsVersion`/`modelVersion` fields that
+            nothing ever wrote. `snapshotReason: "automatic"` was in the type
+            union and unreachable. There was no way to pause, reset or roll
+            back, and nine enum-ish fields were bare `v.string()`.
+New:        WEIGHT_CLAMP 3.0 applied inside `trainOne`; `learningRateFor`;
+            `alignWeights`; `modelSnapshots` and `featureFlags` tables;
+            automatic restore points every 25 labelled events; a full model
+            control surface; ten closed vocabularies in the schema.
+Files:       src/lib/scorer.ts (modified), src/convex/schema.ts (modified),
+             src/convex/assistant.ts (modified), src/convex/spaces.ts
+             (modified), src/convex/life.ts (modified),
+             src/convex/model.ts (new), src/lib/model.test.ts (new),
+             src/lib/schema-vocab.test.ts (new), scripts/conformance-0c.ts
+             (new) — 3 new files of the 5-file budget.
+Schema:     +2 tables (modelSnapshots, featureFlags), as budgeted.
+             Enum validators on tasks.priority, tasks.area, areas.slug,
+             taxProfile.country, expenses.bucket, expenses.confidence,
+             connections.provider, connections.status, accessLog.objectKind,
+             activity.objectKind.
+             schemaValidation: false -> true. Accepted debt A1 closed.
+Code:        `recordOutcome` now honours `learningPaused` (a paused model moves
+            no weight, no counter and no sample), applies the decaying rate,
+            and takes an automatic restore point on the cadence — all inside
+            the same transaction as the update, so a restore point can never
+            disagree with the state it recorded.
+Tests:       bun test -> 151 pass, 0 fail (31 new model-integrity fixtures,
+             4 new vocabulary-drift fixtures).
+             bun scripts/conformance-0c.ts <url> -> all invariants held.
+             bun scripts/conformance-0b.ts <url> 40 -> still all held.
+             bunx tsc -b --noEmit -> clean.
+             bun convex dev --once -> Convex functions ready.
+             bun scripts/spec-drift.ts -> 17 pass, 1 warn, 0 fail.
+             bun run lint -> 3 errors / 19 warnings, down from 7/19 and from the
+             original 12/19 baseline. Zero new problems; every remaining error
+             is in stock shadcn (carousel, sidebar) or the template
+             use-mobile hook.
+Defect found and fixed by the phase's own test (recorded as D16):
+            `learningRateFor` returned `NaN` for a `NaN` sample count, which
+            would have poisoned every subsequent weight. It now sanitises.
+Defect found and fixed by the live conformance run (recorded as D17):
+            `snapshotReason: "automatic"` was unreachable — nothing took a
+            restore point unless the user explicitly reset, so "undo the model"
+            was unavailable exactly when someone notices it going wrong.
+            Automatic restore points every 25 events now exist, with the
+            cadence published through `getModelControls`.
+Data migration, executed and verified against the live deployment:
+            The dry-run audit (a temporary read-only aggregate fixture, since
+            deleted) found 4 pre-0B rows violating the new validators. Repair
+            was made general rather than special-cased: `migrateOwnership` now
+            normalises ownership, space, area, priority and the required task
+            scalars, and *recreates* any row still carrying the pre-0B `userId`
+            column, which Convex rejects outright once validation is on. A
+            second audit reported zero non-conforming rows, and the push with
+            `schemaValidation: true` was accepted.
+Risks:      Recreating a pre-0B row issues a new `_id`. Nothing references a
+            task id yet — the `links` table was added in 0B and has no writers —
+            so there are no dangling references today. Recorded rather than
+            hidden: if a later phase adds an id-bearing reference, the
+            recreate path must update it in the same transaction.
+Decision:    Repair data before enabling validation, never by weakening the
+            validator. The migration is idempotent and self-healing: every
+            write path runs it once per user via a `migratedAt` sentinel.
+Related ADR: ADR-010, ADR-016, ADR-019, ADR-021
+```
+
+---
+
+## CHANGE-0009
+
+```
+Date:       2026-10-01
+Phase:      1.0 — Attention Engine (hard rules)
+Type:       feature
+Severity:   ARCHITECTURE
+Summary:    Panel now has an Attention screen. Eight fixed sections, each with
+            its own cap and decay half-life, a whole-screen cap of 24, decay by
+            age, grouping of three-or-more, fingerprint de-duplication, pinned
+            items that never decay, escalation to level 2, and four feedback
+            mutations that are enforced server-side. Nothing is stored except
+            the feedback the user actually gave.
+Why:        A dashboard that lists everything is a list. The product thesis is
+            that a person should be told what needs attention now, ranked by
+            what they have historically acted on, and never told to ignore a
+            statutory date. Phase 1.0 delivers the un-negotiable half of that
+            — the part that must never be personalised (ADR-006, ADR-015).
+Previous:    `Dashboard` showed a board of tasks grouped by area and a second
+            view listing every open task. There was no notion of urgency,
+            no cap, no decay, no "waiting on", no "money", no "changes", and
+            no hard-rule surface at all.
+New:        `src/lib/attention/{pipeline,rules,sources}.ts`,
+            `src/convex/attention.ts`, `src/components/AttentionFeed.tsx`,
+            `src/pages/Attention.tsx`, an `attentionState` table, and a
+            two-way View switch on the Dashboard.
+Files:      src/lib/attention/pipeline.ts (new),
+            src/lib/attention/sources.ts (new),
+            src/lib/attention/rules.ts (new),
+            src/lib/attention/attention.test.ts (new),
+            src/convex/attention.ts (new),
+            src/components/AttentionFeed.tsx (new),
+            src/pages/Attention.tsx (new),
+            src/convex/schema.ts (modified), src/pages/Dashboard.tsx
+            (modified), src/main.tsx (modified),
+            scripts/conformance-attention.ts (new)
+            — 7 new files, 4 modified: 11 of the 11-file budget, exactly at
+            budget, not over it.
+Schema:     +1 table (attentionState), as budgeted. Owner-only; there is no
+            sharing story for attention because there is nothing to share.
+Deps:       0.
+Abstraction: 1 (the attention pipeline — `buildAttention` is a pure function
+            over plain inputs; the scorer is not imported anywhere in the
+            hard-rule path, which is asserted structurally by a test rather
+            than trusted).
+Code:       `buildAttention` order is fixed and total: snooze/reject filter →
+            grouping → de-duplication → rank → per-section cap → total cap. It
+            returns `items`, `bySection`, `produced`, `hiddenByCap` and
+            `hiddenByTotalCap`, so the UI can say "3 more" instead of silently
+            dropping work. Ranking is deterministic: same input, same screen.
+            `options.suppress` is accepted and **deliberately ignored**, which
+            is what makes it structurally impossible for learning to hide a
+            hard rule (ADR-006).
+            Server-side enforcement mirrors the client affordances:
+            `attentionDismissed` refuses an escalation-2 item, and
+            `attentionSnoozed` refuses an escalation-2 item without a return
+            date. The refusal is in the mutation, not only in the button.
+Tests:      bun test -> 192 pass, 0 fail (41 attention fixtures).
+            bun scripts/conformance-attention.ts <url> -> all invariants held
+            against the live deployment, including tenant isolation.
+            bunx tsc -b --noEmit -> clean.
+            bunx convex dev --once -> Convex functions ready.
+            bun run lint -> 3 errors / 19 warnings, unchanged. Zero new
+            problems. Every remaining error is pre-existing stock shadcn
+            (carousel, sidebar) or the template use-mobile hook.
+Defects found and fixed by the phase's own work (D19–D21):
+  D19  `connectionRules` gated `connection.unfinished` behind the 48-hour
+       staleness window, so a connection the user had just created and never
+       finished could never surface at all — the rule was unreachable in the
+       case it existed for. Unfinished now fires immediately; quiet still
+       requires 48h.
+  D20  Acting on or dismissing an item was treated as if it removed the item.
+       It does not. A task disappears because it was completed; a statutory
+       deadline disappears because time passed. Acting on a deadline records
+       the signal and leaves the deadline standing. This is now a named test
+       and a named conformance section.
+  D21  The live tenant-isolation check produced a false positive: statutory
+       tax deadlines are global by construction, so their ids are identical
+       across users. The check now distinguishes `isUserOwned` source ids from
+       global ones instead of asserting that no id may repeat.
+Acceptance criteria, §5.7, checked one by one:
+  8 sections with the specified caps (3/5/5/3/3/3/4/3) — PASS
+  total cap of 24, pinned items exempt from it — PASS
+  decay `score *= 0.5^(ageHours/halfLife)`, pins exempt — PASS
+  de-duplication on `kind:sourceId:dueBucket` — PASS
+  grouping only in sections that allow it, only at 3 or more — PASS
+  escalation to level 2 for <4h or severity >= 0.9; level 2 may only snooze
+  with a return date and may never be dismissed — PASS, enforced in the
+  mutation as well as in the UI
+  feedback semantics: acted/completed = label 1, rejected = label 0, snooze and
+  absence = no label — PASS
+  hard rules bypass the scorer entirely — PASS, structural test + live check
+  that a deadline survives repeated training on unrelated work
+Risks:      `hardRules` returns rule output only; nothing it produces can be
+            suppressed or demoted. Recorded rather than assumed: the separation
+            is enforced by an import-graph test and a conformance run, not by
+            types, so a future refactor that imports the scorer into `rules.ts`
+            will fail CI rather than fail silently.
+Decision:    The Attention feed renders inside the existing Dashboard shell via
+            an explicit two-way switch rather than a plugin/registry
+            mechanism. A registry for two views would be a block framework,
+            which the 1.0 budget forbids. `now` is passed down from the server
+            payload into `DueLabel` so the component tree stays free of impure
+            render-time calls (this also kept the lint baseline flat).
+Related ADR: ADR-003 (computed, not stored), ADR-004 (no learning from
+            absence), ADR-005 (snooze is a timing signal), ADR-006 (hard rules
+            bypass the ranker), ADR-015 (attention ships in two phases),
+            ADR-016 (budget), ADR-019 (spec-driven), ADR-021 (the agent
+            executes decisions; it does not own them)
+```
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1165,7 +1362,7 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **N1** | Duplicate `assistantState` row breaks the dashboard permanently. Two concurrent completions both insert; `.unique()` then throws in `getDashboard` and `getModel`. | **RESOLVED and VERIFIED (CHANGE-0006)** — does not occur. The concurrency test fired 1,744 simultaneous mutations across 33 rounds against a live deployment and produced zero duplicate rows; a negative control proved the detector reports a real duplicate. Decision recorded in **ADR-022**; ADR-017 superseded. | `src/convex/assistant.ts` (`recordOutcome`) | Closed |
 | **N2** | Guest accounts have no claim path → silent data loss on account upgrade. | `src/pages/Auth.tsx:83-95` | Phase 0A (ADR-018) |
 | **N5** | `rankTasks` returned `score: -Infinity` for completed tasks. | **RESOLVED (CHANGE-0005)** — `COMPLETED_TASK_SCORE = -1_000_000` is finite, so the value survives serialisation regardless of how Convex handles `-Infinity`. | `src/lib/scorer.ts` | Done |
-| **N7** | No enum validators: `area`, `bucket`, `recurrence`, `provider`, `country`, `status`, `priority` are bare `v.string()` / `v.number()`, with `schemaValidation: false`. | `src/convex/schema.ts` | Phase 0C |
+| **N7** | No enum validators: `area`, `bucket`, `recurrence`, `provider`, `country`, `status`, `priority` are bare `v.string()` / `v.number()`, with `schemaValidation: false`. | **RESOLVED (CHANGE-0008)** — ten closed unions in the schema and `schemaValidation: true`. `recurrence` is the one deliberate exception: its grammar is parameterised (`every:3:week`) and cannot be a Convex literal union, so it is enforced at its single write path in `src/lib/nlp.ts` and the reason is recorded in the schema. | — | Done |
 | **N4** | Query idiom is "collect everything, filter in JS": `getAreaTasks` (hot path), `toggleDocument`, `connectTool`, `disconnectTool`, `disableArea`, `getFinance` expense year filter. | **RESOLVED (CHANGE-0007)** — all six are index ranges now. `getAreaTasks`, `disableArea`'s task sweep, `toggleDocument`, `connectTool`, `disconnectTool` and `resolveArea` use compound `by_owner_*` indexes; `getFinance`'s year filter is over a bounded per-user expense set and is left as-is. | — | Done |
 | **N3** | `previewCapture` was exported but referenced nowhere; its comment claimed the contract is single-sourced, which is false. | **RESOLVED (CHANGE-0005)** — deleted; parsing already happens server-side in `addTask`. | — | Done |
 | **N6** | Three sources of truth: feature names in `explain()` vs `FEATURE_NAMES` in `Dashboard.tsx`; priority semantics differ between schema comment, type, and `PRIORITY` map. | **RESOLVED (CHANGE-0005)** — `FEATURE_NAMES` is exported from `src/lib/scorer.ts` and imported by the dashboard; the `tasks.priority` schema comment now states 0/1/2 = NOW/SOON/LATER. | — | Done |
@@ -1184,18 +1381,24 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | D7 | `AssistantDoc` uses `any` for `_id` / `userId` — a documented workaround for a `DataModel["table"]` wrapper-type issue. | **RESOLVED (CHANGE-0007)** — both are now `Id<"assistantState">` and `Id<"users">`. |
 | **D14** | `getFinance` returned the raw `COUNTRIES` entry, which contains two function properties. Convex cannot serialise a function, so the query threw on every call and the whole Finance area was dead. | **RESOLVED (CHANGE-0007)** — found by `scripts/conformance-0b.ts`, not by inspection. The country is now projected to its scalar fields and the two computed values are resolved server-side. | `src/convex/life.ts` | Done |
 | D15 | `getDashboard` still loads every task a user has ever created, then ranks in memory. | Unbounded `.collect()` is fine at personal scale; scheduled with D2 before Phase 1.0, when Attention needs a bounded working set. |
+| **D16** | `learningRateFor` returned `NaN` for a `NaN` sample count. | **RESOLVED (CHANGE-0008)** — the count is sanitised, because a `NaN` rate poisons every weight written after it. |
+| **D17** | `snapshotReason: "automatic"` was unreachable: restore points only existed if the user explicitly reset the model. | **RESOLVED (CHANGE-0008)** — an automatic restore point is taken every 25 labelled events, inside the same transaction as the update it captures. |
+| D18 | Mutation *arguments* for catalogue values (`enableArea({slug})`, `connectTool({provider})`, `saveTaxProfile({country})`, `addExpense({bucket})`, `addTask({area})`, `getAreaTasks({area})`) are `v.string()` and are narrowed inside the handler, rather than being Convex literal unions. | Deliberate. The client legitimately holds these as plain strings from the catalogues in `src/lib`, and a boundary rejection would surface to the user as an opaque argument error instead of "Unknown area". The *storage columns* are closed unions, so nothing invalid can be written, and each handler throws a plain-language error. Widening the arguments to unions is a natural follow-up once `src/lib/areas.ts` and `src/lib/tax.ts` export the literal types. |
 | D8 | `requireUserId` duplicated in `assistant.ts` and `life.ts`. | **RESOLVED (CHANGE-0005)** — `life.ts` imports the exported helper. |
 | D9 | Stray `}` after the `--sidebar-ring` block in `src/index.css`. Harmless; CSS compiles. | Cosmetic. |
 | D10 | No test files exist. The three original harnesses (`parse-check`, `scorer-check`, `tax-check`) passed and were deleted, taking all regression protection with them. | **RESOLVED (CHANGE-0005)** — 102 fixtures. |
 | D11 | `package.json` has no `test` script. | **RESOLVED (CHANGE-0005)** — `bun test` runs the suites directly; no script needed. |
-| D12 | **`bun run lint` fails at baseline: 12 errors, 19 warnings.** All pre-existing, in `src/hooks/use-mobile.ts`, `src/lib/nlp.ts`, `src/main.tsx`, `src/pages/Dashboard.tsx`, `src/convex/assistant.ts`, `src/convex/life.ts`, `src/convex/_generated/*`, `vly-toolbar-readonly.tsx`, and stock shadcn components. **Zero in `spec/` or `scripts/`.** | Gate is "no NEW problems" until a cleanup phase. See CHANGE-0003. CHANGE-0005 reduced this to 10 errors / 19 warnings; CHANGE-0007 reduced it further to 7 errors / 19 warnings. |
+| D12 | **`bun run lint` fails at baseline: 12 errors, 19 warnings.** All pre-existing, in `src/hooks/use-mobile.ts`, `src/lib/nlp.ts`, `src/main.tsx`, `src/pages/Dashboard.tsx`, `src/convex/assistant.ts`, `src/convex/life.ts`, `src/convex/_generated/*`, `vly-toolbar-readonly.tsx`, and stock shadcn components. **Zero in `spec/` or `scripts/`.** | Gate is "no NEW problems" until a cleanup phase. See CHANGE-0003. CHANGE-0005 reduced this to 10 errors / 19 warnings; CHANGE-0007 to 7/19; CHANGE-0008 to **3 errors / 19 warnings**. CHANGE-0009 held it at 3/19. |
+| **D19** | `connectionRules` gated `connection.unfinished` behind the 48-hour staleness window, so a freshly-created, never-finished connection could never surface. The rule was unreachable in exactly the case it existed for. | **RESOLVED (CHANGE-0009)** — unfinished fires immediately at severity 0.5; quiet still requires 48h. Covered by a unit fixture and by the live conformance run. |
+| **D20** | Acting on, or dismissing, an item was treated as if it removed the item. It does not: a task disappears because it is completed, a statutory deadline because time passed. | **RESOLVED (CHANGE-0009)** — acting on and dismissing now only record a signal. Named unit test and named conformance section. Reinforces ADR-006. |
+| **D21** | The live tenant-isolation check in `scripts/conformance-attention.ts` raised a false positive: statutory tax deadlines are global by construction, so their ids are identical across users. | **RESOLVED (CHANGE-0009)** — the check now separates `isUserOwned` source ids from global ones instead of asserting that no id may repeat across accounts. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
 
 ### Intentionally accepted
 
 | ID | Issue | Why accepted |
 |---|---|---|
-| A1 | `schemaValidation: false` today. | Enabling it before enum validators land would surface junk we are about to create. Scheduled for Phase 0C with a dry-run audit. |
+| A1 | ~~`schemaValidation: false` today.~~ | **CLOSED (CHANGE-0008)** — ten closed unions landed, a full-conformance dry-run audit against the live deployment reported zero non-conforming rows, and `schemaValidation: true` is deployed and accepted. |
 | A2 | Template `users.role` (`admin`/`user`/`member`) exists and is unused. | Must be explicitly quarantined from the real grants model so it is never mistaken for one. |
 | A3 | `vite.config.ts` contains `server.hmr: { overlay: false }`. | Pre-existing template config. The platform forbids modifying it. **Do not touch.** |
 | A4 | Tax engine supports 5 countries; only US has full arithmetic. | All five are working. Depth is expressed with a visible badge, not by deleting capability. |
@@ -1212,9 +1415,9 @@ approval**, not a note.
 |---|---|---|---|---|---|
 | **0A** | 4 | 0 | 1 (optional: test script only — `bun test` needs none) | 1 (deterministic-id upsert helper) | New object kinds · new public exports · behaviour changes beyond the listed defects · schema changes |
 | **0B** | 9 | 6 (`spaces`, `spaceMembers`, `grants`, `accessLog`, `links`, `activity`) — corrected from 5, see CHANGE-0007 | 0 | 1 (`permissions.can` + `scopeForViewer`) | Object/EAV tables · per-entity sharing logic · a second access path |
-| **0C** | 5 | 2 (`modelSnapshots`, `featureFlags`) | 0 | 1 (deterministic-id upsert, shared with 0A) | Renumbering feature indices 0–7 · a migration framework |
+| **0C** | 5 | 2 (`modelSnapshots`, `featureFlags`) | 0 | 1 (`takeSnapshot` — the restore-point helper; the deterministic-id upsert slot was never needed, ADR-022) | Renumbering feature indices 0–7 · a migration framework |
 | **1.0** | 11 | 1 (`attentionState`) | 0 | 1 (attention pipeline) | The scorer in the hard-rule path · an impressions table · notification delivery · a block/plugin framework |
-| **1.1** | 8 | 1 (`modelSnapshots` if not added in 0C) | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
+| **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
 | **3** | per-feature | per-feature | 0 | per-feature | Any of it without its own spec section, ADR, budget and approval |
@@ -1229,23 +1432,26 @@ screen · no push notifications · no sixth spec file · no modification of
 ## Current Development State
 
 ```
-Current phase:        0C — Model versioning and data integrity
-Current objective:    Phase 0B is VERIFIED. Phase 0A remains BLOCKED on Q-001,
-                      which blocks only TASK-0A-003 and no other phase.
-Last completed:       CHANGE-0007 — ownership and access foundation, plus the
-                      Finance serialisation defect (D14).
-Next phase:           0C — no blockers.
+Current phase:        1.1 — Learned attention ranking
+Current objective:    Phases 0B, 0C and 1.0 are VERIFIED. Phase 0A remains
+                      BLOCKED on Q-001, which blocks only TASK-0A-003.
+Last completed:       CHANGE-0009 — the Attention screen. Eight sections, hard
+                      rules that cannot be personalised, caps, decay,
+                      de-duplication, grouping, escalation, and four
+                      server-enforced feedback mutations.
+Next phase:           1.1 — no blockers.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
                       Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified.
                       Non-blocking: Q-002, Q-003, Q-004.
 
-Failing tests:        None. 120 fixtures pass; 0B conformance passes live.
+Failing tests:        None. 192 fixtures pass; 0B, 0C and attention
+                      conformance all pass live.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
   R2  Model self-reinforcement                             → ADR-004/005, Phase 1.1
-  R3  Personalisation suppressing a legal deadline         → ADR-006, Phase 1.0
+  R3  Personalisation suppressing a legal deadline         → CLOSED by CHANGE-0009
   R4  Cross-tenant leak from mixed userId/spaceId scoping   → CLOSED by CHANGE-0007
   R13 Infrastructure growing faster than product value     → ADR-016, every phase
   R15 Convex serialisation of -Infinity                    → CLOSED by CHANGE-0005
@@ -1258,9 +1464,11 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          agent may not make (ADR-021).
   0B     VERIFIED      —                 CHANGE-0007. All acceptance criteria met
                                          with evidence; live conformance passes.
-  0C     IN PROGRESS   —                 Depends on 0B (satisfied)
-  1.0    NOT STARTED   —                 Depends on 0C
-  1.1    NOT STARTED   —                 Depends on 1.0
+  0C     VERIFIED      —                 CHANGE-0008. All acceptance criteria met
+                                         with evidence; live conformance passes.
+  1.0    VERIFIED      —                 CHANGE-0009. All acceptance criteria met
+                                         with evidence; live conformance passes.
+  1.1    IN PROGRESS   —                 Depends on 1.0 (satisfied)
   1.5    NOT STARTED   —                 Depends on 1.1
   2      NOT STARTED   credentials       Depends on 1.5; needs GOOGLE_CLIENT_ID/SECRET
   3      NOT STARTED   —                 Depends on 2
@@ -1272,16 +1480,15 @@ Phase status (authoritative — see MAIN_AGENT §5):
 |---|---|---|---|---|---|
 | **0A** | **BLOCKED** | Hardik | 2026-10-01 | `Q-001` blocks TASK-0A-003 | Approved explicitly: "Implement Phase 0A exactly as specified." Five tasks implemented and verified (CHANGE-0005); TASK-0A-002 closed by ADR-022 after Q-005 was resolved (CHANGE-0006). Q-001 remains open, so the phase is `BLOCKED`, not `VERIFIED`. |
 | **0B** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0007. Ownership on every product table, six new tables, `src/lib/permissions.ts` as the single access path, six query-idiom fixes, backfill verified idempotent against a live deployment. No product strategy, security invariant, ADR or budget was changed. |
-| **0C** | IN PROGRESS | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 0B (satisfied). |
-| **1.0** | NOT STARTED | — | — | — | Depends on 0C |
-| **1.1** | NOT STARTED | — | — | — | Depends on 1.0 |
+| **0C** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0008. Clamp, decaying rate, versioning, automatic restore points, byte-exact rollback, reset, pause, feature flags, ten enum validators, `schemaValidation: true`. Verified by 35 new unit fixtures and a live conformance run. |
+| **1.0** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0009. Eight hard-rule sections with caps, decay, de-duplication, grouping, escalation and pins; four feedback mutations enforced server-side; nothing stored but the feedback actually given. 11 files / 1 table / 0 deps / 1 abstraction, exactly at budget. Verified by 41 unit fixtures and a live conformance run. |
+| **1.1** | IN PROGRESS | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 1.0 (satisfied) |
 | **1.5** | NOT STARTED | — | — | — | Depends on 1.1 |
 | **2** | NOT STARTED | — | — | user credentials | Depends on 1.5 |
 | **3** | NOT STARTED | — | — | — | Depends on 2 |
 
-**Phases 0A, 0B are done to the limit of what the agent may decide. 0C is in
-progress. Nothing is SHIPPED — shipment is the user's decision alone
-(MAIN_AGENT §11.1).**
+**Phases 0A, 0B, 0C and 1.0 are done to the limit of what the agent may decide.
+Nothing is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

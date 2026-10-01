@@ -35,17 +35,88 @@ const OWNED_TABLES = [
 ] as const;
 
 /**
- * Fields that pre-0B rows left unset and that later became required.
+ * Fields that pre-0B rows left unset or out of range, and the value each is
+ * normalised to.
  *
- * The ownership rename is not the only thing a pre-0B row is missing: `tasks.area`
- * was optional and is now required, because area filtering moved from a
- * JavaScript scan to an index range. A row with no area would drop out of every
- * range and vanish from the area views, so the backfill normalises it here
- * rather than leaving a silent hole in someone's task list.
+ * The ownership rename is not the only thing a pre-0B row is missing:
+ *
+ *  - `tasks.area` was optional and is now required, because area filtering
+ *    moved from a JavaScript scan to an index range. A row with no area drops
+ *    out of every range and vanishes from the area views.
+ *  - `tasks.priority` was an unvalidated `v.number()`. Rows written before the
+ *    enum validator — or by an older build — can hold anything, and with
+ *    `schemaValidation: true` a single such row turns every query against the
+ *    table into a server error.
+ *
+ * Defaulting priority to 2 (LATER) is the parser's own default for an input
+ * with no priority cue, so a repaired row is indistinguishable from one the
+ * user actually typed without a cue.
  */
 const LEGACY_FIELD_DEFAULTS: Partial<Record<(typeof OWNED_TABLES)[number], Record<string, unknown>>> = {
-  tasks: { area: DEFAULT_AREA_SLUG },
+  tasks: { area: DEFAULT_AREA_SLUG, priority: 2 },
 };
+
+const AREA_SLUGS = new Set<string>(["general", "finance", "relationships", "health", "home"]);
+
+/**
+ * Required task scalars a row may be missing, with the value that makes the row
+ * mean what it plainly meant.
+ *
+ * A pre-0B task always had these — `addTask` has always set them — so a row
+ * lacking them was written by something that was not the product. Rather than
+ * deleting a row that has a title and an owner, it is completed: an unfinished
+ * task is the conservative reading, and `createdAt` falls back to the row's own
+ * creation time so the age feature stays truthful.
+ */
+function taskScalarRepairs(row: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (row.completed === undefined) patch.completed = false;
+  if (row.completedAt === undefined) patch.completedAt = null;
+  if (row.dueAt === undefined) patch.dueAt = null;
+  if (row.createdAt === undefined) patch.createdAt = row._creationTime ?? Date.now();
+  return patch;
+}
+
+/** The repairs a single row needs, or `null` when it already conforms. */
+function repairsFor(
+  table: (typeof OWNED_TABLES)[number],
+  row: Record<string, unknown>,
+  userId: Id<"users">,
+  spaceId: Id<"spaces">,
+): Record<string, unknown> | null {
+  const patch: Record<string, unknown> = {};
+
+  // A row with no owner at all is pre-0B; a row with an owner but no space is
+  // half-migrated. Both are repaired in the same pass.
+  if (row.ownerUserId !== userId) {
+    if (row.userId !== userId) return null;
+    patch.ownerUserId = userId;
+  }
+  if (row.spaceId !== spaceId) patch.spaceId = spaceId;
+
+  const defaults = LEGACY_FIELD_DEFAULTS[table];
+  if (defaults) {
+    for (const [key, value] of Object.entries(defaults)) {
+      const current = row[key];
+      if (current === undefined) {
+        patch[key] = value;
+      } else if (key === "area" && !AREA_SLUGS.has(String(current))) {
+        patch[key] = value;
+      } else if (key === "priority" && current !== 0 && current !== 1 && current !== 2) {
+        patch[key] = value;
+      }
+    }
+  }
+
+  if (table === "tasks") Object.assign(patch, taskScalarRepairs(row));
+
+  // A pre-0B row still carries `userId` inside the document. It cannot be
+  // patched away, so it is always a repair — that is what makes the caller
+  // recreate the row rather than patch it.
+  if (row.userId !== undefined) return { ...patch, __recreate: true };
+
+  return Object.keys(patch).length > 0 ? patch : null;
+}
 
 /**
  * Returns the user's personal space, creating it on first use.
@@ -119,22 +190,41 @@ export async function backfillUserOwnership(
   let patched = 0;
 
   for (const table of OWNED_TABLES) {
-    // `userId` still exists on pre-0B rows; it is absent on post-0B rows, and
-    // the filter simply finds fewer of them over time.
-    const stale = await ctx.db
+    // Two populations, one scan: rows this user already owns, and rows with no
+    // owner at all (the pre-0B shape, whose legacy `userId` is still in the
+    // document but no longer in the schema, so it is read from the raw value
+    // rather than through a typed field expression). This is a full table scan,
+    // which is acceptable only because it runs at most once per user — the
+    // `migratedAt` sentinel in `ensurePersonalSpace` guarantees that.
+    const candidates = await ctx.db
       .query(table)
-      .filter((q) => q.eq(q.field("ownerUserId"), undefined))
+      .filter((q) => q.or(q.eq(q.field("ownerUserId"), userId), q.eq(q.field("ownerUserId"), undefined)))
       .collect();
 
-    for (const row of stale) {
-      const legacy = row as { userId?: Id<"users"> } & Record<string, unknown>;
-      if (legacy.userId !== userId) continue;
-      const defaults = LEGACY_FIELD_DEFAULTS[table] ?? {};
-      const missing: Record<string, unknown> = { ownerUserId: userId, spaceId };
-      for (const [key, value] of Object.entries(defaults)) {
-        if (legacy[key] === undefined) missing[key] = value;
+    for (const row of candidates) {
+      const raw = row as Record<string, unknown>;
+      const patch = repairsFor(table, raw, userId, spaceId);
+      if (!patch) continue;
+
+      // A pre-0B row still carries the `userId` column inside the document.
+      // `patch` cannot remove a field, and Convex rejects any document holding
+      // a field the schema does not declare — so with `schemaValidation: true`
+      // these rows can only be brought forward by recreating them. Every value
+      // the schema does declare is carried across unchanged; only `_id` and
+      // `_creationTime` differ, and nothing references a task's id yet (the
+      // `links` table was added in the same phase and has no writers).
+      if (patch.__recreate) {
+        const rest: Record<string, unknown> = { ...raw };
+        delete rest._id;
+        delete rest._creationTime;
+        delete rest.userId;
+        const fields: Record<string, unknown> = { ...patch };
+        delete fields.__recreate;
+        await ctx.db.delete(row._id as Id<"tasks">);
+        await ctx.db.insert(table, { ...rest, ...fields } as never);
+      } else {
+        await ctx.db.patch(row._id, patch as never);
       }
-      await ctx.db.patch(row._id, missing as never);
       patched += 1;
     }
   }
@@ -272,12 +362,11 @@ export const auditOwnership = query({
       if (space.kind === "personal") spaces += 1;
     }
 
-    for (const m of await ctx.db
+    memberships = await ctx.db
       .query("spaceMembers")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect()) {
-      memberships += 1;
-    }
+      .collect()
+      .then((rows) => rows.length);
 
     const spaceIds = new Set(
       (await ctx.db

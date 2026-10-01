@@ -2,7 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
-import { DEFAULT_AREA_SLUG } from "../lib/areas";
+import { DEFAULT_AREA_SLUG, areaBySlug } from "../lib/areas";
 import { nextOccurrence, parseTaskInput } from "../lib/nlp";
 import {
   emptyBehaviour,
@@ -21,6 +21,60 @@ import { type AreaSlug, type Priority } from "./schema";
 import { ensurePersonalSpace } from "./spaces";
 
 const DAY_MS = 86_400_000;
+
+/**
+ * How often a restore point is taken automatically, in labelled events.
+ *
+ * Without this, `modelSnapshots` would only ever contain entries a user
+ * explicitly asked for, and "undo the model" would be unavailable precisely
+ * when someone notices it going wrong. Every 25 completions is frequent enough
+ * that a bad stretch costs at most 25 events to undo, and rare enough that the
+ * snapshot table stays small.
+ */
+export const AUTO_SNAPSHOT_EVERY = 25;
+
+/** Snapshots retained per user; the oldest are pruned. */
+export const MAX_SNAPSHOTS = 10;
+
+/**
+ * Records the current weights as a restore point, then prunes to the newest
+ * {@link MAX_SNAPSHOTS}.
+ *
+ * Lives beside `recordOutcome` rather than in `model.ts` because this is the
+ * only place the weights change, and a restore point that can be forgotten at
+ * the write site is not a restore point.
+ */
+export async function takeSnapshot(
+  ctx: GenericMutationCtx<DataModel>,
+  state: AssistantDoc,
+  reason: "manual" | "automatic" | "rollback",
+): Promise<void> {
+  const modelVersion = (state.modelVersion ?? 0) + 1;
+
+  const snapshotId = await ctx.db.insert("modelSnapshots", {
+    ownerUserId: state.ownerUserId,
+    spaceId: state.spaceId,
+    weights: [...state.weights],
+    weightsVersion: state.weightsVersion ?? WEIGHTS_VERSION,
+    modelVersion,
+    samples: state.samples,
+    reason,
+    createdAt: Date.now(),
+  });
+
+  const existing = await ctx.db
+    .query("modelSnapshots")
+    .withIndex("by_owner_modelVersion", (q) => q.eq("ownerUserId", state.ownerUserId))
+    .collect();
+
+  const surplus = existing
+    .sort((a, b) => b.modelVersion - a.modelVersion)
+    .slice(MAX_SNAPSHOTS);
+  for (const old of surplus) await ctx.db.delete(old._id);
+
+  await ctx.db.patch(state._id, { modelVersion });
+  void snapshotId;
+}
 
 export async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
   const userId = await getAuthUserId(ctx);
@@ -45,6 +99,7 @@ type TaskRow = {
 type AssistantDoc = {
   _id: Id<"assistantState">;
   ownerUserId: Id<"users">;
+  spaceId: Id<"spaces">;
   weights: number[];
   weightsVersion?: number;
   modelVersion?: number;
@@ -58,9 +113,14 @@ type AssistantDoc = {
   longTotal: number;
   samples: number;
   updatedAt: number;
-};async function loadState(
+};
+
+/** Reads the caller's model row. `userId` is typed, not `any`: the index value
+ *  and the document's `ownerUserId` are the same thing, and a mismatch between
+ *  them is exactly the kind of bug a `any` hides. */
+async function loadState(
   ctx: GenericQueryCtx<DataModel>,
-  userId: any,
+  userId: Id<"users">,
 ): Promise<AssistantDoc | null> {
   const row = await ctx.db
     .query("assistantState")
@@ -211,13 +271,19 @@ async function resolveArea(
   requested?: string,
 ): Promise<AreaSlug> {
   if (!requested || requested === DEFAULT_AREA_SLUG) return DEFAULT_AREA_SLUG;
+  // Narrow against the catalogue before touching the index: the column is a
+  // closed union, and an unrecognised slug is a stale tab from another session
+  // rather than an error worth surfacing to the composer.
+  const def = areaBySlug(requested);
+  if (!def) return DEFAULT_AREA_SLUG;
+  const slug = def.slug as AreaSlug;
+
   const match = await ctx.db
     .query("areas")
-    .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", userId).eq("slug", requested))
+    .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", userId).eq("slug", slug))
     .first();
-  // Only an area the user actually has enabled is accepted; anything else is a
-  // stale tab from another session, and the composer should not fail over it.
-  return match ? (requested as AreaSlug) : DEFAULT_AREA_SLUG;
+  // Only an area the user actually has enabled is accepted.
+  return match ? slug : DEFAULT_AREA_SLUG;
 }
 
 /**
@@ -309,7 +375,6 @@ export const setTaskCompleted = mutation({
       // today's features for a task resolved today is the honest signal.
       const state = await loadState(ctx, userId);
       const behaviour = toBehaviour(state);
-      const weights = currentWeights(state);
       const x = extractFeatures(
         {
           priority: task.priority as 0 | 1 | 2,
@@ -456,6 +521,15 @@ async function recordOutcome(
 
   if (state) {
     await ctx.db.patch(state._id, base);
+    // Automatic restore point, taken inside the same transaction as the update
+    // it captures, so it can never disagree with the state it recorded.
+    if (base.samples % AUTO_SNAPSHOT_EVERY === 0) {
+      await takeSnapshot(
+        ctx,
+        { ...state, ...base, spaceId, weightsVersion: base.weightsVersion, modelVersion: state.modelVersion },
+        "automatic",
+      );
+    }
     return;
   }
 

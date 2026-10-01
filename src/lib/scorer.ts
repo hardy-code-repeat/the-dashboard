@@ -24,8 +24,13 @@
 
 import type { Priority } from "./nlp";
 
-/** Number of features. Index constants keep the maths readable. */
-export const FEATURE_COUNT = 8;
+/**
+ * Number of features. Index constants keep the maths readable.
+ *
+ * 8 since phase 1.1. Indices 0–7 are frozen (ADR-010); 8–11 were **appended**
+ * and never renumbered, so a stored 8-long vector still means what it meant.
+ */
+export const FEATURE_COUNT = 12;
 
 /**
  * Version of the feature *layout* (ADR-010).
@@ -69,6 +74,11 @@ export const FEATURE_NAMES: readonly string[] = [
   "weekday",
   "tags",
   "task size",
+  // --- appended in phase 1.1; indices 0–7 above never change ---
+  "area",
+  "source",
+  "people",
+  "due window",
 ];
 
 export const F = {
@@ -80,7 +90,33 @@ export const F = {
   WEEKDAY_FIT: 5, // historical completion rate on this weekday
   TAG_FIT: 6, // completion rate for this tag, if any
   ESTIMATE_FIT: 7, // how well the user finishes short vs long tasks
+  AREA_FIT: 8, // completion rate for this life area
+  SOURCE_FIT: 9, // completion rate for items from this origin
+  PEOPLE_FIT: 10, // completion rate for items involving this person
+  DUE_BUCKET_FIT: 11, // completion rate for items in this due window
 } as const;
+
+/**
+ * Coarse, *relative* due window used by `DUE_BUCKET_FIT`.
+ *
+ * Deliberately different from the attention fingerprint's `dueBucket`, which is
+ * an absolute day and exists to answer "is this the same item?". This one is a
+ * learning signal — "do I finish things due today, or things due next month?" —
+ * so it is measured relative to now and coarsened to six buckets. Two functions
+ * with a similar name doing different jobs is a trap; they are named and
+ * documented differently for that reason.
+ */
+export type DueBucketKey = "overdue" | "today" | "week" | "month" | "later" | "none";
+
+export function dueBucketKey(dueAt: number | null, now: Date): DueBucketKey {
+  if (dueAt === null) return "none";
+  const days = (dueAt - now.getTime()) / DAY_MS;
+  if (days < 0) return "overdue";
+  if (days < 1) return "today";
+  if (days < 7) return "week";
+  if (days < 30) return "month";
+  return "later";
+}
 
 const DAY_MS = 86_400_000;
 const HOUR_BUCKETS = 4; // 00–06, 06–12, 12–18, 18–24
@@ -101,6 +137,12 @@ export interface TaskFeatures {
   dueAt: number | null;
   createdAt: number;
   tags: string[];
+  /** Phase 1.1 → `AREA_FIT`. Absent means "no area", feature stays 0. */
+  area?: string;
+  /** Phase 1.1 → `SOURCE_FIT`. Absent means "no recorded origin", feature 0. */
+  source?: string;
+  /** Phase 1.1 → `PEOPLE_FIT`. Populated once People exists (phase 3). */
+  person?: string;
 }
 
 export interface BehaviourStats {
@@ -115,6 +157,18 @@ export interface BehaviourStats {
   shortTotal: number;
   longDone: number;
   longTotal: number;
+  /**
+   * Phase 1.1 counters, backing indices 8–11.
+   *
+   * Optional rather than required, and that is a deliberate regression-safety
+   * choice: every existing fixture, every stored row written before 1.1, and
+   * every current caller keeps compiling, and `extractFeatures` treats an absent
+   * counter exactly as it treats a zero one — "no evidence, feature is 0".
+   */
+  byArea?: Record<string, { done: number; total: number }>;
+  bySource?: Record<string, { done: number; total: number }>;
+  byPerson?: Record<string, { done: number; total: number }>;
+  byDueBucket?: Record<string, { done: number; total: number }>;
 }
 
 export function emptyBehaviour(): BehaviourStats {
@@ -124,6 +178,10 @@ export function emptyBehaviour(): BehaviourStats {
     byTag: {},
     shortDone: 0, shortTotal: 0,
     longDone: 0, longTotal: 0,
+    byArea: {},
+    bySource: {},
+    byPerson: {},
+    byDueBucket: {},
   };
 }
 
@@ -198,7 +256,24 @@ export function extractFeatures(
     }
   }
 
+  // ---- phase 1.1: appended features 8–11 -----------------------------------
+  // Same shape as TAG_FIT: a Laplace-smoothed completion rate centred on 0.
+  // Each is guarded on *both* sides — no key on the item, or no history for
+  // that key — so a new user gets 0 ("no opinion") rather than a confident 0.
+  x[F.AREA_FIT] = fit(task.area, behaviour.byArea);
+  x[F.SOURCE_FIT] = fit(task.source, behaviour.bySource);
+  x[F.PEOPLE_FIT] = fit(task.person, behaviour.byPerson);
+  x[F.DUE_BUCKET_FIT] = fit(dueBucketKey(task.dueAt, now), behaviour.byDueBucket);
+
   return x;
+}
+
+/** Smoothed affinity in [-1, 1]; 0 whenever there is nothing to learn from. */
+function fit(key: string | undefined, stats: Record<string, { done: number; total: number }> | undefined): number {
+  if (key == null || key === "" || !stats) return 0;
+  const s = stats[key];
+  if (!s || s.total <= 0) return 0;
+  return (rate(s.done, s.total) - 0.5) * 2;
 }
 
 /** Linear score — higher means "do this first". */
@@ -212,12 +287,41 @@ export function sigmoid(z: number): number {
   return 1 / (1 + Math.exp(-z));
 }
 
+/**
+ * Hyperbolic tangent — a bounded, signed squash of the raw score.
+ *
+ * Used wherever a model's opinion has to become an *adjustment* rather than a
+ * decision: unlike `sigmoid` it is centred on zero and can push in both
+ * directions, and unlike a hard clamp it stays smooth, so a score just past the
+ * edge moves the output a little rather than all at once.
+ *
+ * `tanh` is computed from `exp` rather than imported so the maths stays in one
+ * file that has no dependencies (ADR-001, ADR-002). The branch exists because
+ * `Math.exp(-1000)` underflows to 0 and `1 - 1` is exactly 0 anyway, but taking
+ * the shortcut keeps a large-magnitude score from producing a `-0`.
+ */
+export function tanh(z: number): number {
+  if (!Number.isFinite(z)) return z > 0 ? 1 : -1;
+  if (z > 20) return 1;
+  if (z < -20) return -1;
+  const e = Math.exp(2 * z);
+  return (e - 1) / (e + 1);
+}
+
 const LEARNING_RATE = 0.08;
 const L2 = 0.0008; // keeps weights from drifting without bound
 
-/** Learning rate at a given evidence count. Halves around 50 samples. */
+/**
+ * Learning rate at a given evidence count. Halves around 50 samples.
+ *
+ * `samples` is sanitised rather than trusted: it arrives from a database
+ * counter, and a `NaN` here would poison every subsequent weight, because the
+ * next step would multiply by it. A nonsense count is treated as "no evidence",
+ * which is the same branch a brand-new user takes.
+ */
 export function learningRateFor(samples: number): number {
-  return LEARNING_RATE / (1 + Math.max(0, samples) / 50);
+  const n = Number.isFinite(samples) ? Math.max(0, samples) : 0;
+  return LEARNING_RATE / (1 + n / 50);
 }
 
 /** Clamps every weight into [-WEIGHT_CLAMP, +WEIGHT_CLAMP]. Never mutates. */
@@ -290,6 +394,10 @@ export function explain(
     [F.WEEKDAY_FIT]: "strong day for you",
     [F.TAG_FIT]: "matches work you finish",
     [F.ESTIMATE_FIT]: "your history with big tasks",
+    [F.AREA_FIT]: "you finish things in this area",
+    [F.SOURCE_FIT]: "you finish things that arrive this way",
+    [F.PEOPLE_FIT]: "you finish things involving this person",
+    [F.DUE_BUCKET_FIT]: "you finish things in this due window",
   };
   return x
     .map((value, i) => ({

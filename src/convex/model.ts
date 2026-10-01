@@ -12,7 +12,7 @@ import {
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
-import { requireUserId } from "./assistant";
+import { AUTO_SNAPSHOT_EVERY, MAX_SNAPSHOTS, requireUserId, takeSnapshot } from "./assistant";
 import { featureFlagValidator } from "./schema";
 import { ensurePersonalSpace } from "./spaces";
 
@@ -30,8 +30,8 @@ import { ensurePersonalSpace } from "./spaces";
  *     *before* the change, never after, so a rollback target always exists.
  */
 
-/** Snapshots retained per user. Oldest are pruned; the newest ten survive. */
-const MAX_SNAPSHOTS = 10;
+/** Re-exported so callers can read the cadence without reaching into assistant.ts. */
+export { AUTO_SNAPSHOT_EVERY, MAX_SNAPSHOTS };
 
 type StateRow = {
   _id: Id<"assistantState">;
@@ -65,41 +65,15 @@ async function loadState(
 /**
  * Records the current weights, then prunes to the newest {@link MAX_SNAPSHOTS}.
  *
- * Idempotent in the sense that matters: two concurrent calls cannot leave the
- * user with more than `MAX_SNAPSHOTS` + the few in-flight ones, because every
- * write is a patch or a delete inside one transaction and the next call prunes
- * again. Pruning only ever deletes snapshots, never the model they describe.
+ * The implementation lives in `assistant.ts` next to the only code that writes
+ * weights, so a restore point can never be skipped by adding a new write path.
  */
 async function snapshot(
   ctx: GenericMutationCtx<DataModel>,
   state: StateRow,
   reason: "manual" | "automatic" | "rollback",
-): Promise<Id<"modelSnapshots">> {
-  const modelVersion = (state.modelVersion ?? 0) + 1;
-
-  const snapshotId = await ctx.db.insert("modelSnapshots", {
-    ownerUserId: state.ownerUserId,
-    spaceId: state.spaceId,
-    weights: [...state.weights],
-    weightsVersion: state.weightsVersion ?? WEIGHTS_VERSION,
-    modelVersion,
-    samples: state.samples,
-    reason,
-    createdAt: Date.now(),
-  });
-
-  const existing = await ctx.db
-    .query("modelSnapshots")
-    .withIndex("by_owner_modelVersion", (q) => q.eq("ownerUserId", state.ownerUserId))
-    .collect();
-
-  const surplus = existing
-    .sort((a, b) => b.modelVersion - a.modelVersion)
-    .slice(MAX_SNAPSHOTS);
-  for (const old of surplus) await ctx.db.delete(old._id);
-
-  await ctx.db.patch(state._id, { modelVersion });
-  return snapshotId;
+): Promise<void> {
+  await takeSnapshot(ctx, state, reason);
 }
 
 /**
@@ -314,6 +288,7 @@ export const getModelControls = query({
       learningPaused: state?.learningPaused ?? false,
       updatedAt: state?.updatedAt ?? null,
       maxSnapshots: MAX_SNAPSHOTS,
+      autoSnapshotEvery: AUTO_SNAPSHOT_EVERY,
       snapshotCount: snapshots.length,
       flags: {
         generalisedRanking: flagMap.get("generalisedRanking") ?? false,
