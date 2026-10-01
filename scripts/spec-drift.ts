@@ -520,8 +520,11 @@ function checkProtectedAreas(fundamentals: string) {
 // superseded entry must keep existing, its named successor must exist, and it
 // must not simultaneously claim to be active.
 function checkSupersededAdrs(changelog: string) {
+  // The terminator is an explicit end-of-input, not `$`: this regex carries
+  // the `m` flag for the `^` anchors, which would also make `$` match every
+  // line end and truncate each block to its first line.
   const blocks = [
-    ...changelog.matchAll(/^### (ADR-\d+)([\s\S]*?)(?=^### |^## |$)/gm),
+    ...changelog.matchAll(/^### (ADR-\d+)([\s\S]*?)(?=^### |^## |(?![\s\S]))/gm),
   ];
   const present = new Set(blocks.map((b) => b[1]));
 
@@ -529,7 +532,9 @@ function checkSupersededAdrs(changelog: string) {
   let checked = 0;
 
   for (const [, id, body] of blocks) {
-    const sup = body.match(/\*\*SUPERSEDED BY (ADR-\d+)\*\*/);
+    // A superseded ADR is announced in a blockquote, so the marker is
+    // optionally prefixed with "> ".
+    const sup = body.match(/^(?:>\s*)?\*\*SUPERSEDED BY (ADR-\d+)\*\*/m);
     if (!sup) continue;
     checked++;
 

@@ -17,30 +17,47 @@ import {
   readinessScore,
 } from "../lib/tax";
 
-import type { DataModel } from "./_generated/dataModel";
+import type { DataModel, Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
+import {
+  areaSlugValidator,
+  countryCodeValidator,
+  expenseBucketValidator,
+  providerSlugValidator,
+  type AreaSlug,
+  type CountryCodeT,
+  type ExpenseBucket,
+  type ProviderSlug,
+} from "./schema";
+
 import { mutation, query } from "./_generated/server";
+import { ensurePersonalSpace } from "./spaces";
 
 const DAY_MS = 86_400_000;
 
 /** Slug that always exists for every user, whether or not they added anything. */
-const DEFAULT_AREA = DEFAULT_AREA_SLUG;
+const DEFAULT_AREA: AreaSlug = DEFAULT_AREA_SLUG;
 
 /**
  * Ensures the default area row exists so ordering and filtering always have a
  * stable anchor. Called from any mutation that touches areas.
  */
-async function ensureDefaultArea(ctx: GenericMutationCtx<DataModel>, userId: any) {
+async function ensureDefaultArea(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+  spaceId: Id<"spaces">,
+) {
   const existing = await ctx.db
     .query("areas")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
-  if (existing.some((a) => a.slug === DEFAULT_AREA)) return;
+    .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", userId).eq("slug", DEFAULT_AREA))
+    .first();
+  if (existing) return;
 
   const def = areaBySlug(DEFAULT_AREA)!;
   await ctx.db.insert("areas", {
-    userId,
-    slug: def.slug,
+    ownerUserId: userId,
+    spaceId,
+    slug: def.slug as AreaSlug,
     label: def.label,
     order: 0,
     createdAt: Date.now(),
@@ -59,7 +76,7 @@ export const listAreas = query({
 
     const rows = await ctx.db
       .query("areas")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
 
     return rows
@@ -85,32 +102,69 @@ export const getAvailableAreas = query({
 
     const rows = await ctx.db
       .query("areas")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
-    const enabled = new Set(rows.map((r) => r.slug));
+    const enabled = new Set<string>(rows.map((r) => r.slug));
 
     return AREAS.filter((a) => !enabled.has(a.slug));
   },
 });
 
+/**
+ * Narrows a caller-supplied slug to a catalogue value.
+ *
+ * Mutation *arguments* stay `v.string()` on purpose. The client legitimately
+ * holds these slugs as plain strings (they come from the catalogue, typed as
+ * `string`), and a Convex validator rejection at the boundary would surface to
+ * the user as an opaque argument error. Checking here instead turns the same
+ * mistake into "Unknown area" — and the storage column is still a closed union,
+ * so nothing invalid can ever be written.
+ */
+function requireAreaSlug(slug: string): AreaSlug {
+  const def = areaBySlug(slug);
+  if (!def) throw new Error("Unknown area");
+  return def.slug as AreaSlug;
+}
+
+const EXPENSE_BUCKETS = new Set<string>([
+  "Software & subscriptions",
+  "Equipment",
+  "Home office",
+  "Travel",
+  "Meals",
+  "Professional services",
+  "Insurance",
+  "Marketing",
+  "Education & training",
+  "Office supplies",
+  "Uncategorised",
+]);
+
+function requireBucket(bucket: string): ExpenseBucket {
+  if (!EXPENSE_BUCKETS.has(bucket)) throw new Error("Unknown expense category");
+  return bucket as ExpenseBucket;
+}
+
 export const enableArea = mutation({
   args: { slug: v.string(), seed: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    await ensureDefaultArea(ctx, userId);
+    const spaceId = await ensurePersonalSpace(ctx, userId);
+    await ensureDefaultArea(ctx, userId, spaceId);
 
-    const def = areaBySlug(args.slug);
-    if (!def) throw new Error("Unknown area");
+    const slug = requireAreaSlug(args.slug);
+    const def = areaBySlug(slug)!;
 
     const existing = await ctx.db
       .query("areas")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner_order", (q) => q.eq("ownerUserId", userId))
       .collect();
-    if (existing.some((a) => a.slug === args.slug)) return;
+    if (existing.some((a) => a.slug === slug)) return;
 
     await ctx.db.insert("areas", {
-      userId,
-      slug: def.slug,
+      ownerUserId: userId,
+      spaceId,
+      slug: def.slug as AreaSlug,
       label: def.label,
       order: existing.length,
       createdAt: Date.now(),
@@ -121,7 +175,8 @@ export const enableArea = mutation({
     if (args.seed && def.starterTasks?.length) {
       for (const title of def.starterTasks) {
         await ctx.db.insert("tasks", {
-          userId,
+          ownerUserId: userId,
+          spaceId,
           title,
           completed: false,
           priority: 1,
@@ -130,7 +185,7 @@ export const enableArea = mutation({
           completedAt: null,
           tags: [],
           recurrence: null,
-          area: def.slug,
+          area: def.slug as AreaSlug,
         });
       }
     }
@@ -141,13 +196,13 @@ export const disableArea = mutation({
   args: { slug: v.string() },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    if (args.slug === DEFAULT_AREA) throw new Error("The General area can't be removed");
+    const slug = requireAreaSlug(args.slug);
+    if (slug === DEFAULT_AREA) throw new Error("The General area can't be removed");
 
-    const row = await ctx.db
+    const target = await ctx.db
       .query("areas")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const target = row.find((a) => a.slug === args.slug);
+      .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", userId).eq("slug", slug))
+      .first();
     if (!target) return;
 
     await ctx.db.delete(target._id);
@@ -155,9 +210,9 @@ export const disableArea = mutation({
     // Re-home the area's tasks into General rather than deleting user data.
     const orphaned = await ctx.db
       .query("tasks")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner_area", (q) => q.eq("ownerUserId", userId).eq("area", slug))
       .collect();
-    for (const task of orphaned.filter((t) => t.area === args.slug)) {
+    for (const task of orphaned) {
       await ctx.db.patch(task._id, { area: DEFAULT_AREA });
     }
   },
@@ -181,16 +236,16 @@ export const getFinance = query({
     const [profile, expenses, gathered] = await Promise.all([
       ctx.db
         .query("taxProfile")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
         .unique()
         .catch(() => null),
       ctx.db
         .query("expenses")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
         .collect(),
       ctx.db
         .query("taxDocuments")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
         .collect(),
     ]);
 
@@ -228,7 +283,16 @@ export const getFinance = query({
       } else {
         state = "none";
       }
-      return { ...d, daysAway, state };
+      return {
+        id: d.id,
+        label: d.label,
+        date: d.date,
+        note: d.note,
+        penalty: d.penalty,
+        source: d.source,
+        daysAway,
+        state,
+      };
     });
 
     const byBucket = new Map<string, { bucket: string; amount: number; count: number }>();
@@ -239,8 +303,22 @@ export const getFinance = query({
       byBucket.set(e.bucket, cur);
     }
 
+    // `Country` carries two function properties (`taxYearLabel`, `deadlines`).
+    // Returning the catalogue entry itself would hand Convex a function to
+    // serialise, which it cannot do — the whole query would throw and the
+    // Finance area would render an error instead of the user's figures. So the
+    // country is projected down to its scalar fields, and the two computed
+    // values are resolved here rather than shipped.
+    const countrySummary = {
+      code: country.code,
+      name: country.name,
+      currencySymbol: country.currencySymbol,
+      authority: country.authority,
+      authorityUrl: country.authorityUrl,
+    };
+
     return {
-      country,
+      country: countrySummary,
       countries: Object.values(COUNTRIES).map((c) => ({
         code: c.code, name: c.name, currencySymbol: c.currencySymbol,
       })),
@@ -256,7 +334,14 @@ export const getFinance = query({
       estimate,
       readiness,
       deadlines,
-      documents: country.documents.map((d) => ({ ...d, gathered: gatheredIds.has(d.id) })),
+      documents: country.documents.map((d) => ({
+        id: d.id,
+        label: d.label,
+        detail: d.detail,
+        for: d.for,
+        conditional: d.conditional === true,
+        gathered: gatheredIds.has(d.id),
+      })),
       expenses: yearExpenses.sort((a, b) => b.spentAt - a.spentAt),
       buckets: [...byBucket.values()].sort((a, b) => b.amount - a.amount),
     };
@@ -274,19 +359,21 @@ export const saveTaxProfile = mutation({
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    if (!COUNTRIES[args.country as keyof typeof COUNTRIES]) throw new Error("Unsupported country");
+    const country = COUNTRIES[args.country as CountryCodeT];
+    if (!country) throw new Error("Unsupported country");
     if (args.grossIncome < 0) throw new Error("Income cannot be negative");
+    const spaceId = await ensurePersonalSpace(ctx, userId);
 
     const now = new Date();
     const taxYear = filingYearFor(now);
 
     const existing = await ctx.db
       .query("taxProfile")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .unique();
 
     const row = {
-      country: args.country,
+      country: args.country as CountryCodeT,
       taxYear,
       grossIncome: args.grossIncome,
       businessMiles: args.businessMiles ?? 0,
@@ -297,7 +384,7 @@ export const saveTaxProfile = mutation({
     };
 
     if (existing) await ctx.db.patch(existing._id, row);
-    else await ctx.db.insert("taxProfile", { userId, ...row });
+    else await ctx.db.insert("taxProfile", { ownerUserId: userId, spaceId, ...row });
   },
 });
 
@@ -320,14 +407,17 @@ export const addExpense = mutation({
     const label = args.label.trim();
     if (!label) throw new Error("Expense needs a description");
     if (args.amount <= 0) throw new Error("Amount must be greater than zero");
+    const spaceId = await ensurePersonalSpace(ctx, userId);
 
     const guess = categoriseExpense(label);
+    const bucket = args.bucket ? requireBucket(args.bucket) : (guess.bucket as ExpenseBucket);
 
     await ctx.db.insert("expenses", {
-      userId,
+      ownerUserId: userId,
+      spaceId,
       label,
       amount: args.amount,
-      bucket: args.bucket ?? guess.bucket,
+      bucket,
       deductible: args.deductible ?? guess.likelyDeductible,
       confidence: guess.confidence,
       spentAt: args.spentAt ?? Date.now(),
@@ -344,7 +434,7 @@ export const setExpenseDeductible = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const row = await ctx.db.get(args.id);
-    if (!row || row.userId !== userId) throw new Error("Expense not found");
+    if (!row || row.ownerUserId !== userId) throw new Error("Expense not found");
     // User overrides are trusted and stop being flagged as a guess.
     await ctx.db.patch(args.id, { deductible: args.deductible, confidence: "confirmed" });
   },
@@ -355,7 +445,7 @@ export const removeExpense = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const row = await ctx.db.get(args.id);
-    if (!row || row.userId !== userId) throw new Error("Expense not found");
+    if (!row || row.ownerUserId !== userId) throw new Error("Expense not found");
     await ctx.db.delete(args.id);
   },
 });
@@ -364,15 +454,17 @@ export const toggleDocument = mutation({
   args: { requirementId: v.string(), gathered: v.boolean() },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    const rows = await ctx.db
+    const existing = await ctx.db
       .query("taxDocuments")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const existing = rows.find((r) => r.requirementId === args.requirementId);
+      .withIndex("by_owner_requirement", (q) =>
+        q.eq("ownerUserId", userId).eq("requirementId", args.requirementId),
+      )
+      .first();
 
     if (args.gathered && !existing) {
+      const spaceId = await ensurePersonalSpace(ctx, userId);
       await ctx.db.insert("taxDocuments", {
-        userId, requirementId: args.requirementId, gatheredAt: Date.now(),
+        ownerUserId: userId, spaceId, requirementId: args.requirementId, gatheredAt: Date.now(),
       });
     } else if (!args.gathered && existing) {
       await ctx.db.delete(existing._id);
@@ -394,7 +486,7 @@ export const listConnections = query({
 
     const rows = await ctx.db
       .query("connections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
 
     const connectedByProvider = new Set(rows.map((r) => r.provider));
@@ -418,12 +510,16 @@ export const connectTool = mutation({
     const userId = await requireUserId(ctx);
     const provider = PROVIDERS.find((p) => p.slug === args.provider);
     if (!provider) throw new Error("Unknown provider");
+    const providerSlug = provider.slug as ProviderSlug;
+    const spaceId = await ensurePersonalSpace(ctx, userId);
 
     const rows = await ctx.db
       .query("connections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    if (rows.some((r) => r.provider === args.provider)) return;
+      .withIndex("by_owner_provider", (q) =>
+        q.eq("ownerUserId", userId).eq("provider", args.provider),
+      )
+      .first();
+    if (rows) return;
 
     const status =
       provider.status === "available"
@@ -431,8 +527,9 @@ export const connectTool = mutation({
         : "coming-soon";
 
     await ctx.db.insert("connections", {
-      userId,
-      provider: provider.slug,
+      ownerUserId: userId,
+      spaceId,
+      provider: providerSlug,
       label: provider.label,
       status,
       connectedAt: Date.now(),
@@ -444,11 +541,15 @@ export const disconnectTool = mutation({
   args: { provider: v.string() },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
-    const rows = await ctx.db
+    const provider = PROVIDERS.find((p) => p.slug === args.provider);
+    if (!provider) throw new Error("Unknown provider");
+
+    const row = await ctx.db
       .query("connections")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const row = rows.find((r) => r.provider === args.provider);
+      .withIndex("by_owner_provider", (q) =>
+        q.eq("ownerUserId", userId).eq("provider", provider.slug),
+      )
+      .first();
     if (row) await ctx.db.delete(row._id);
   },
 });
@@ -462,8 +563,9 @@ export const setTaskArea = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const task = await ctx.db.get(args.id);
-    if (!task || task.userId !== userId) throw new Error("Task not found");
-    await ctx.db.patch(args.id, { area: args.area ?? DEFAULT_AREA });
+    if (!task || task.ownerUserId !== userId) throw new Error("Task not found");
+    const area = args.area ? requireAreaSlug(args.area) : DEFAULT_AREA;
+    await ctx.db.patch(args.id, { area });
   },
 });
 
@@ -472,12 +574,11 @@ export const getAreaTasks = query({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return [];
+    const area = requireAreaSlug(args.area);
 
-    const rows = await ctx.db
+    return await ctx.db
       .query("tasks")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner_area", (q) => q.eq("ownerUserId", userId).eq("area", area))
       .collect();
-
-    return rows.filter((t) => (t.area ?? DEFAULT_AREA) === args.area);
   },
 });

@@ -28,6 +28,31 @@ import type { Priority } from "./nlp";
 export const FEATURE_COUNT = 8;
 
 /**
+ * Version of the feature *layout* (ADR-010).
+ *
+ * Bumped only when the meaning of an existing index changes, never when
+ * features are appended. A stored weight vector from an older layout is
+ * meaningless without knowing which layout wrote it, so every state row
+ * carries this number and `alignWeights` is the only thing allowed to move a
+ * vector between layouts.
+ */
+export const WEIGHTS_VERSION = 1;
+
+/** Hard ceiling on any single weight, applied after every training step. */
+export const WEIGHT_CLAMP = 3.0;
+
+/** Below this many labelled events, ranking falls back to the prior (§5.4). */
+export const MIN_SAMPLES_TO_RANK = 12;
+
+/**
+ * Below this many labelled events a dismissal is *recorded* but not *trained*:
+ * a single "not for me" on a cold model is noise, and training on it is how a
+ * brand-new user ends up with a model that has already learned something
+ * wrong.
+ */
+export const MIN_SAMPLES_TO_TRAIN_DISMISSAL = 5;
+
+/**
  * Human-readable name per feature index.
  *
  * Single source of truth: `explain()` renders these, and the dashboard model
@@ -68,7 +93,7 @@ export function initialWeights(): number[] {
   w[F.PRIORITY] = 0.8;
   w[F.TIME_PRESSURE] = 0.6;
   w[F.AGE] = 0.2;
-  return w;
+  return clampWeights(w);
 }
 
 export interface TaskFeatures {
@@ -179,7 +204,7 @@ export function extractFeatures(
 /** Linear score — higher means "do this first". */
 export function score(x: number[], w: number[]): number {
   let s = 0;
-  for (let i = 0; i < FEATURE_COUNT; i++) s += x[i] * (w[i] ?? 0);
+  for (let i = 0; i < w.length; i++) s += x[i] * (w[i] ?? 0);
   return s;
 }
 
@@ -190,11 +215,50 @@ export function sigmoid(z: number): number {
 const LEARNING_RATE = 0.08;
 const L2 = 0.0008; // keeps weights from drifting without bound
 
+/** Learning rate at a given evidence count. Halves around 50 samples. */
+export function learningRateFor(samples: number): number {
+  return LEARNING_RATE / (1 + Math.max(0, samples) / 50);
+}
+
+/** Clamps every weight into [-WEIGHT_CLAMP, +WEIGHT_CLAMP]. Never mutates. */
+export function clampWeights(w: number[]): number[] {
+  return w.map((v) => Math.max(-WEIGHT_CLAMP, Math.min(WEIGHT_CLAMP, v)));
+}
+
 /**
- * One online gradient-descent step. Mutates and returns a copy of `w`.
+ * Moves a stored weight vector into a layout of `targetCount` features
+ * (ADR-010) without ever shifting an existing index.
+ *
+ * Growth appends neutral zeros, so a feature added in a later release starts
+ * with no opinion instead of inheriting someone else's weight. Shrinking
+ * truncates, which is the only lossy direction and is never performed
+ * automatically — it happens only when a user explicitly rolls back to a
+ * snapshot taken under an older layout.
+ */
+export function alignWeights(w: number[], targetCount: number = FEATURE_COUNT): number[] {
+  const out = new Array<number>(targetCount).fill(0);
+  for (let i = 0; i < Math.min(targetCount, w.length); i++) out[i] = w[i];
+  return out;
+}
+
+/** True once there is enough evidence for the learned ranking to be trusted. */
+export function shouldRank(samples: number): boolean {
+  return samples >= MIN_SAMPLES_TO_RANK;
+}
+
+/** True once a dismissal is strong enough to be worth training on. */
+export function shouldTrainDismissal(samples: number): boolean {
+  return samples >= MIN_SAMPLES_TO_TRAIN_DISMISSAL;
+}
+
+/**
+ * One online gradient-descent step. Returns a new, clamped vector.
  *
  * label 1 → the user completed this shape of task.
  * label 0 → they deleted or ignored it.
+ *
+ * The clamp is applied here rather than at the call site so there is exactly
+ * one place a weight can change, and no code path can skip the ceiling.
  */
 export function trainOne(
   w: number[],
@@ -204,11 +268,11 @@ export function trainOne(
 ): number[] {
   const z = score(x, w);
   const error = label - sigmoid(z);
-  const next = new Array<number>(FEATURE_COUNT).fill(0);
-  for (let i = 0; i < FEATURE_COUNT; i++) {
+  const next = new Array<number>(w.length).fill(0);
+  for (let i = 0; i < w.length; i++) {
     next[i] = w[i] + lr * (error * x[i] - L2 * w[i]);
   }
-  return next;
+  return clampWeights(next);
 }
 
 /** Human-readable explanation of why a task ranked where it did. */

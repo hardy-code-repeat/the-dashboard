@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">6</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">7</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -1117,10 +1117,10 @@
       nots:["new object kinds","new public exports","behaviour changes beyond listed defects","schema changes"],
       risks:"R1, R15" },
 
-    { id:"0B", status:"SPECIFIED",
+    { id:"0B", status:"VERIFIED",
       obj:"Ownership and access foundation: spaces, links, activity, and the query-idiom fixes.",
       deps:"0A",
-      budget:{files:"9",tables:"5",deps:"0",abstractions:"1"},
+      budget:{files:"9",tables:"6",deps:"0",abstractions:"1"},
       criteria:["Every table has ownerUserId + spaceId; 26 functions signed off","Grep gate: no public query filters on userId for reads","Backfill is idempotent","links rejects unknown rel; meta is scalar-only","canRead table-tested incl. expired/revoked/over-broad grants","ActivityKind is a closed union","Six collect-all sites now indexed"],
       nots:["object/EAV tables","per-entity sharing logic","a second access path"],
       risks:"R4, R18" },

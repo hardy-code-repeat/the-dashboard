@@ -8,13 +8,17 @@ import {
   emptyBehaviour,
   extractFeatures,
   initialWeights,
+  learningRateFor,
   rankTasks,
   trainOne,
+  WEIGHTS_VERSION,
   type BehaviourStats,
 } from "../lib/scorer";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
+import { type AreaSlug, type Priority } from "./schema";
+import { ensurePersonalSpace } from "./spaces";
 
 const DAY_MS = 86_400_000;
 
@@ -27,20 +31,24 @@ export async function requireUserId(ctx: GenericMutationCtx<DataModel>) {
 /** The persisted task shape `spawnNextOccurrence` needs, kept narrow on purpose. */
 type TaskRow = {
   _id: Id<"tasks">;
-  userId: Id<"users">;
+  ownerUserId: Id<"users">;
+  spaceId: Id<"spaces">;
   title: string;
-  priority: number;
+  priority: Priority;
   dueAt?: number | null;
   tags?: string[];
   recurrence?: string | null;
-  area?: string;
+  area: AreaSlug;
 };
 
 /** Shape of a persisted assistant row. */
 type AssistantDoc = {
-  _id: any;
-  userId: any;
+  _id: Id<"assistantState">;
+  ownerUserId: Id<"users">;
   weights: number[];
+  weightsVersion?: number;
+  modelVersion?: number;
+  learningPaused?: boolean;
   byHour: number[];
   byWeekday: number[];
   byTag: Record<string, { done: number; total: number }>;
@@ -56,7 +64,7 @@ type AssistantDoc = {
 ): Promise<AssistantDoc | null> {
   const row = await ctx.db
     .query("assistantState")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
     .unique();
   return (row as AssistantDoc | null) ?? null;
 }
@@ -90,8 +98,8 @@ export const getDashboard = query({
     if (!userId) return null;
 
     const [tasks, notes, state] = await Promise.all([
-      ctx.db.query("tasks").withIndex("by_user", (q) => q.eq("userId", userId)).collect(),
-      ctx.db.query("notes").withIndex("by_user", (q) => q.eq("userId", userId)).collect(),
+      ctx.db.query("tasks").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
+      ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
       loadState(ctx, userId),
     ]);
 
@@ -201,13 +209,15 @@ async function resolveArea(
   ctx: GenericMutationCtx<DataModel>,
   userId: Id<"users">,
   requested?: string,
-): Promise<string> {
+): Promise<AreaSlug> {
   if (!requested || requested === DEFAULT_AREA_SLUG) return DEFAULT_AREA_SLUG;
-  const rows = await ctx.db
+  const match = await ctx.db
     .query("areas")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
-  return rows.some((a) => a.slug === requested) ? requested : DEFAULT_AREA_SLUG;
+    .withIndex("by_owner_slug", (q) => q.eq("ownerUserId", userId).eq("slug", requested))
+    .first();
+  // Only an area the user actually has enabled is accepted; anything else is a
+  // stale tab from another session, and the composer should not fail over it.
+  return match ? (requested as AreaSlug) : DEFAULT_AREA_SLUG;
 }
 
 /**
@@ -220,12 +230,14 @@ export const addTask = mutation({
   args: { input: v.string(), area: v.optional(v.string()) },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
+    const spaceId = await ensurePersonalSpace(ctx, userId);
     const parsed = parseTaskInput(args.input);
 
     if (parsed.title.length > 200) throw new Error("Task title is too long (max 200 characters)");
 
     return await ctx.db.insert("tasks", {
-      userId,
+      ownerUserId: userId,
+      spaceId,
       title: parsed.title,
       completed: false,
       priority: parsed.priority,
@@ -259,7 +271,8 @@ async function spawnNextOccurrence(ctx: GenericMutationCtx<DataModel>, task: Tas
   if (!Number.isFinite(nextDue) || nextDue <= task.dueAt) return;
 
   await ctx.db.insert("tasks", {
-    userId: task.userId,
+    ownerUserId: task.ownerUserId,
+    spaceId: task.spaceId,
     title: task.title,
     completed: false,
     priority: task.priority,
@@ -277,8 +290,9 @@ export const setTaskCompleted = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const task = await ctx.db.get(args.id);
-    if (!task || task.userId !== userId) throw new Error("Task not found");
+    if (!task || task.ownerUserId !== userId) throw new Error("Task not found");
 
+    const spaceId = await ensurePersonalSpace(ctx, userId);
     const now = Date.now();
     // Only a real transition trains the model or respawns the recurrence. This
     // is what makes completing an already-completed task a no-op, whether it
@@ -308,7 +322,7 @@ export const setTaskCompleted = mutation({
       );
 
       await ctx.db.patch(args.id, { featuresAtCompletion: x });
-      await recordOutcome(ctx, userId, state, x, task, 1, new Date());
+      await recordOutcome(ctx, userId, spaceId, state, x, task, 1, new Date());
 
       // Respawn before returning so the next occurrence exists by the time the
       // client sees the completion. Idempotent — see spawnNextOccurrence.
@@ -321,13 +335,13 @@ export const updateTask = mutation({
   args: {
     id: v.id("tasks"),
     title: v.optional(v.string()),
-    priority: v.optional(v.number()),
+    priority: v.optional(v.union(v.literal(0), v.literal(1), v.literal(2))),
     dueAt: v.optional(v.union(v.null(), v.number())),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const task = await ctx.db.get(args.id);
-    if (!task || task.userId !== userId) throw new Error("Task not found");
+    if (!task || task.ownerUserId !== userId) throw new Error("Task not found");
 
     const patch: Record<string, unknown> = {};
     if (args.title !== undefined) {
@@ -347,10 +361,11 @@ export const removeTask = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const task = await ctx.db.get(args.id);
-    if (!task || task.userId !== userId) throw new Error("Task not found");
+    if (!task || task.ownerUserId !== userId) throw new Error("Task not found");
 
     // Deleting something you never finished is a negative training signal.
     if (!task.completed) {
+      const spaceId = await ensurePersonalSpace(ctx, userId);
       const state = await loadState(ctx, userId);
       const behaviour = toBehaviour(state);
       const x = extractFeatures(
@@ -363,7 +378,7 @@ export const removeTask = mutation({
         behaviour,
         new Date(),
       );
-      await recordOutcome(ctx, userId, state, x, task, 0, new Date());
+      await recordOutcome(ctx, userId, spaceId, state, x, task, 0, new Date());
     }
 
     await ctx.db.delete(args.id);
@@ -380,6 +395,7 @@ export const removeTask = mutation({
 async function recordOutcome(
   ctx: GenericMutationCtx<DataModel>,
   userId: Id<"users">,
+  spaceId: Id<"spaces">,
   state: AssistantDoc | null,
   x: number[],
   task: { priority: number; dueAt?: number | null; tags?: string[] },
@@ -387,7 +403,15 @@ async function recordOutcome(
   when: Date,
 ) {
   const weights = currentWeights(state);
-  const nextWeights = trainOne(weights, x, label);
+
+  // A paused model learns nothing at all: not the weights, not the habit
+  // counters, not the sample count. Pausing is meant to be a real pause, and a
+  // half-pause would keep nudging the ranking the user asked to stop trusting.
+  if (state?.learningPaused) return;
+
+  // Learning rate decays as evidence accumulates (§5.4), so the first hundred
+  // completions move the model and the tenth thousand barely nudge it.
+  const nextWeights = trainOne(weights, x, label, learningRateFor(state?.samples ?? 0));
 
   const behaviour = toBehaviour(state);
   const hourBucket = Math.min(3, Math.floor(when.getHours() / 6));
@@ -408,6 +432,8 @@ async function recordOutcome(
   const isLong = task.dueAt != null && task.dueAt - Date.now() > 2 * DAY_MS;
   const base = {
     weights: nextWeights,
+    weightsVersion: state?.weightsVersion ?? WEIGHTS_VERSION,
+    modelVersion: state?.modelVersion ?? 0,
     byHour,
     byWeekday,
     byTag,
@@ -436,13 +462,13 @@ async function recordOutcome(
   // No row yet, so create it.
   //
   // This read-then-insert is safe by construction under Convex's transactional
-  // OCC: the read above scans the `by_user` index range, so a concurrent
+  // OCC: the read above scans the `by_owner` index range, so a concurrent
   // insert into that range conflicts, the loser is rolled back and re-executed,
   // and on retry it observes this row and patches instead of inserting.
   // Verified against a live deployment — see ADR-022 and the N1 entry in
   // spec/02_CHANGELOG.md. Do not reintroduce a deterministic-id upsert:
   // `ctx.db.insert` has no explicit-id overload in any released Convex version.
-  await ctx.db.insert("assistantState", { userId, ...base });
+  await ctx.db.insert("assistantState", { ownerUserId: userId, spaceId, ...base });
 }
 
 export const clearCompleted = mutation({
@@ -451,7 +477,7 @@ export const clearCompleted = mutation({
     const userId = await requireUserId(ctx);
     const tasks = await ctx.db
       .query("tasks")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
 
     const done = tasks.filter((t) => t.completed);
@@ -468,7 +494,8 @@ export const addNote = mutation({
     if (!body) throw new Error("Note cannot be empty");
     if (body.length > 2000) throw new Error("Note is too long (max 2000 characters)");
 
-    await ctx.db.insert("notes", { userId, body, createdAt: Date.now() });
+    const spaceId = await ensurePersonalSpace(ctx, userId);
+    await ctx.db.insert("notes", { ownerUserId: userId, spaceId, body, createdAt: Date.now() });
   },
 });
 
@@ -477,7 +504,7 @@ export const removeNote = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const note = await ctx.db.get(args.id);
-    if (!note || note.userId !== userId) throw new Error("Note not found");
+    if (!note || note.ownerUserId !== userId) throw new Error("Note not found");
     await ctx.db.delete(args.id);
   },
 });
