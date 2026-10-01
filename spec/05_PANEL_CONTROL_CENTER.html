@@ -158,8 +158,8 @@
       </div>
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
-        <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">12</span> changes</span>
+        <span class="tag t-b"><span id="spec-adr-count">24</span> ADRs</span>
+        <span class="tag t-y"><span id="spec-change-count">13</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -477,15 +477,15 @@
           exists now. It contains no target architecture.</b> Target state is the pipeline
           opposite; the difference is the gap table.</p>
         <dl class="kv">
-          <dt>Exists</dt><dd>9 Convex tables, 4 routes, 4 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
-          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions.</dd>
+          <dt>Exists</dt><dd>17 Convex tables, 4 routes, 5 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
+          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions. <b>People</b> — a person is a row with identity keys; a merge rewrites nothing and is exactly reversible.</dd>
           <dt class="broken">Broken</dt><dd><b>N2 / Q-001</b> — a guest who signs up by email silently loses all data. This is a product decision the agent is not permitted to make. <b>N1</b> was fixed and verified under real concurrency (ADR-022).</dd>
           <dt>Partial</dt><dd>Integrations (9 providers catalogued, none wired). Health (<code>useState</code>, resets on reload). Sharing (schema and grants exist in 0B; no UI yet).</dd>
-          <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001.</dd>
+          <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001. Phase 3 feature 1 (People) is built and verified; features 2+ are specified but not built.</dd>
           <dt>Unknown</dt><dd>Every product and business assumption. <code>.env</code> contents are unreadable to the agent. No analytics exists, so no defined metric is measurable.</dd>
         </dl>
         <p class="sub" style="margin-top:10px">Everything marked "works" above is covered by
-          <b>192 unit fixtures</b> plus four live conformance harnesses run against the real
+          <b>278 unit fixtures</b> plus eight live conformance harnesses run against the real
           deployment — evidence level 3, not level 1–2. That is a claim with a command
           attached, not an assertion.</p>
       </div>
@@ -494,7 +494,7 @@
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td><b>Closed</b> — 250 fixtures + 7 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 278 fixtures + 8 live harnesses</td><td><b>0A</b></td></tr>
           <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
           <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
           <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
@@ -1003,7 +1003,7 @@
     </div>
     <div class="stat ok">
       <div class="lbl">Decisions recorded</div>
-      <div class="val"><span id="spec-adr-count-2">22</span></div>
+      <div class="val"><span id="spec-adr-count-2">24</span></div>
       <div class="note">ADRs, plus 11 rejected decisions. Not re-litigated without new evidence.</div>
     </div>
     <div class="stat bad">
@@ -1037,9 +1037,10 @@
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>250 pass, 0 fail</b> across 10 files.
-        Plus seven live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2)
-        run against the deployed Convex backend.</div>
+      <div class="note"><code>bun test</code> — <b>278 pass, 0 fail</b> across 11 files.
+        Plus eight live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3)
+        run against the deployed Convex backend. Phase 3's harness reports
+        <b>0 skips</b>; phase 2's reports one section as SKIP (D32).</div>
     </div>
     <div class="stat ok">
       <div class="lbl">Spec/code drift</div>
@@ -1175,12 +1176,12 @@
       nots:["writing to Google","storing private event titles","storing attendees/descriptions/locations","a second OAuth path"],
       risks:"R8" },
 
-    { id:"3", status:"SPECIFIED",
-      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents.",
+    { id:"3", status:"IN PROGRESS",
+      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Feature 1 (People) built and verified.",
       deps:"2",
-      budget:{files:"per-feature",tables:"per-feature",deps:"0",abstractions:"per-feature"},
-      criteria:["People first-class with reversible merge (tombstone + identityKeys)","Capture has per-kind confidence thresholds; server result is authoritative","Documents drive expiry → renewal → task","Commitments support inbound and outbound","Each agent has fixtures for fire / non-fire / double-run","Agent proposals are capped and counted, never silently truncated"],
-      nots:["anything without its own spec section, ADR, budget and approval"],
+      budget:{files:"per-feature — f1 used 4 of 6",tables:"per-feature — f1 used 1",deps:"0",abstractions:"per-feature — f1 used 1"},
+      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","Capture has per-kind confidence thresholds; server result is authoritative — NOT STARTED","Documents drive expiry → renewal → task — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
+      nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing"],
       risks:"R7, R19" }
   ];
 
@@ -1204,7 +1205,9 @@
     {id:"ADR-017",t:"State rows use deterministic ids",c:"Database",s:"Single-row-per-user state is upserted with a deterministic document id, not read-then-insert. Fixes N1.",c2:"Makes the invariant structural rather than timing-dependent."},
     {id:"ADR-018",t:"Guest accounts need a claim path or removal",c:"Security",s:"Fixes N2. Anonymous sign-in currently orphans all data on account upgrade — silent data loss is prohibited.",c2:"Must be resolved before any sharing work."},
     {id:"ADR-019",t:"Spec-driven development; Markdown is authoritative",c:"Product",s:"Five persistent control artefacts. The HTML control centre is a read-only view. Drift is detected mechanically.",c2:"Five files is enough to be authoritative and few enough to stay accurate."},
-    {id:"ADR-022",t:"Assistant state relies on transactional OCC",c:"Database",s:"Supersedes ADR-017. assistantState is created by read-then-insert; Convex's serializable mutations make concurrent initialisation safe. Verified: 1,792 concurrent mutations across 34 rounds, 0 duplicates.",c2:"Depends on a platform guarantee Panel does not own — documented, with a failure path that escalates to a schema constraint."}
+    {id:"ADR-022",t:"Assistant state relies on transactional OCC",c:"Database",s:"Supersedes ADR-017. assistantState is created by read-then-insert; Convex's serializable mutations make concurrent initialisation safe. Verified: 1,840 concurrent mutations across 39 rounds, 0 duplicates — re-run whenever recordOutcome changes.",c2:"Depends on a platform guarantee Panel does not own — documented, with a failure path that escalates to a schema constraint."},
+    {id:"ADR-023",t:"A merge is a tombstone, not a rewrite",c:"Database",s:"mergePeople sets mergedIntoId and stops. No task is moved, no key copied, no link rewritten; every read resolves through the tombstone. Unmerge clears two fields and that is the whole of it.",c2:"Unmerge is exact rather than approximate: there is no restoration step that can half-run, because nothing was ever moved. A merge the user cannot see is a merge they cannot undo, so mergedCount is surfaced."},
+    {id:"ADR-024",t:"Identity is a set of keys, and a name is the weakest",c:"Product",s:"A person carries normalised identity keys, namespaced by kind. Sharing one is evidence, never a merge. A shared email clears the suggestion bar; a shared name only ever produces something to check. Nothing merges automatically (RJD-004).",c2:"Every part fails toward a second row the user can merge in two clicks, rather than toward a silent merge. Revisit when a provider starts contributing keys automatically — that becomes a security decision, not a threshold."}
   ];
 
   /* ------------------------------------------------------------- rendering */

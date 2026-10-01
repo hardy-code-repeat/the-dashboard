@@ -14,6 +14,7 @@ import {
   trainOne,
   WEIGHTS_VERSION,
   type BehaviourStats,
+  type TaskFeatures,
 } from "../lib/scorer";
 
 import type { DataModel, Id } from "./_generated/dataModel";
@@ -105,6 +106,7 @@ type TaskRow = {
   tags?: string[];
   recurrence?: string | null;
   area: AreaSlug;
+  personId?: Id<"people">;
 };
 
 /** Shape of a persisted assistant row. Exported so a second training path can
@@ -334,13 +336,23 @@ async function resolveArea(
  * preview was skipped (quick add) or not.
  */
 export const addTask = mutation({
-  args: { input: v.string(), area: v.optional(v.string()) },
+  args: { input: v.string(), area: v.optional(v.string()), personId: v.optional(v.id("people")) },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const spaceId = await ensurePersonalSpace(ctx, userId);
     const parsed = parseTaskInput(args.input);
 
     if (parsed.title.length > 200) throw new Error("Task title is too long (max 200 characters)");
+
+    // A person is only ever attached by the user picking them, and only ever
+    // from their own account. The check is here rather than in the UI because a
+    // client can send any id it likes — including somebody else's.
+    let personId: Id<"people"> | undefined;
+    if (args.personId) {
+      const person = await ctx.db.get(args.personId);
+      if (!person || person.ownerUserId !== userId) throw new Error("Person not found");
+      personId = person._id;
+    }
 
     return await ctx.db.insert("tasks", {
       ownerUserId: userId,
@@ -354,6 +366,7 @@ export const addTask = mutation({
       tags: parsed.tags,
       recurrence: parsed.recurrence,
       area: await resolveArea(ctx, userId, args.area),
+      personId,
     });
   },
 });
@@ -389,6 +402,10 @@ async function spawnNextOccurrence(ctx: GenericMutationCtx<DataModel>, task: Tas
     tags: task.tags ?? [],
     recurrence: task.recurrence,
     area: task.area,
+    // The link to a person is part of *what* the recurring task is, so it
+    // respawns with it. Copying an id forward is safe in a way copying keys
+    // would not be: a tombstone resolved on read still reaches the same person.
+    personId: task.personId,
   });
 }
 
@@ -416,21 +433,18 @@ export const setTaskCompleted = mutation({
       // today's features for a task resolved today is the honest signal.
       const state = await loadState(ctx, userId);
       const behaviour = toBehaviour(state);
-      const x = extractFeatures(
-        {
-          priority: task.priority as 0 | 1 | 2,
-          dueAt: task.dueAt ?? null,
-          createdAt: task.createdAt,
-          tags: task.tags ?? [],
-          area: task.area,
-          source: task.origin,
-        },
-        behaviour,
-        new Date(),
-      );
+
+      // Phase 3: `PEOPLE_FIT` finally has something real to read. The key is the
+      // person **id**, not a name — two people called "Raj" must not share
+      // completion evidence. Rows written before phase 3 keyed this counter by a
+      // free-text name; those keys simply stop being read, because a name is
+      // exactly the thing that cannot identify a person safely. The column is
+      // optional and nothing migrates.
+      const features = featuresOf(task);
+      const x = extractFeatures(features, behaviour, new Date());
 
       await ctx.db.patch(args.id, { featuresAtCompletion: x });
-      await recordOutcome(ctx, userId, spaceId, state, x, task, 1, new Date());
+      await recordOutcome(ctx, userId, spaceId, state, x, features, 1, new Date());
 
       // One append-only row per real completion. This is what the seven-day
       // chart reads, so it is written on the transition and not derived from the
@@ -488,24 +502,51 @@ export const removeTask = mutation({
       const spaceId = await ensurePersonalSpace(ctx, userId);
       const state = await loadState(ctx, userId);
       const behaviour = toBehaviour(state);
-      const x = extractFeatures(
-        {
-          priority: task.priority as 0 | 1 | 2,
-          dueAt: task.dueAt ?? null,
-          createdAt: task.createdAt,
-          tags: task.tags ?? [],
-          area: task.area,
-          source: task.origin,
-        },
-        behaviour,
-        new Date(),
-      );
-      await recordOutcome(ctx, userId, spaceId, state, x, task, 0, new Date());
+      const features = featuresOf(task);
+      const x = extractFeatures(features, behaviour, new Date());
+      await recordOutcome(ctx, userId, spaceId, state, x, features, 0, new Date());
     }
 
     await ctx.db.delete(args.id);
   },
 });
+
+/**
+ * The one place a task row becomes a feature vector.
+ *
+ * `recordOutcome` used to be handed the raw row, whose fields are `origin` and
+ * `personId`, while the feature object it must roll up by is keyed `source` and
+ * `person`. Both names existed, both were optional, and nothing failed: the
+ * roll-ups simply saw `undefined` and returned the counter map unchanged, every
+ * time. `SOURCE_FIT` (9) and `PEOPLE_FIT` (10) were therefore permanently 0 —
+ * two features in a frozen layout that could never receive evidence, and whose
+ * weights could never move (D34).
+ *
+ * Building the object once and handing *the same object* to both halves of the
+ * step makes that class of drift a compile error instead of a silent zero, and
+ * means a future field rename has exactly one place to be renamed in.
+ */
+function featuresOf(task: {
+  priority: number;
+  dueAt?: number | null;
+  createdAt: number;
+  tags?: string[];
+  area?: string;
+  origin?: string;
+  personId?: string;
+}): TaskFeatures {
+  return {
+    priority: task.priority as 0 | 1 | 2,
+    dueAt: task.dueAt ?? null,
+    createdAt: task.createdAt,
+    tags: task.tags ?? [],
+    area: task.area,
+    source: task.origin,
+    // Keyed by person id, never by name: two people called "Raj" must not
+    // share a row of completion evidence.
+    person: task.personId,
+  };
+}
 
 /**
  * Updates the trained model and the rolled-up behaviour counters.
@@ -520,14 +561,7 @@ async function recordOutcome(
   spaceId: Id<"spaces">,
   state: AssistantDoc | null,
   x: number[],
-  task: {
-    priority: number;
-    dueAt?: number | null;
-    tags?: string[];
-    area?: string;
-    source?: string;
-    person?: string;
-  },
+  task: TaskFeatures,
   label: 0 | 1,
   when: Date,
 ) {

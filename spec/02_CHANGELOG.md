@@ -995,6 +995,236 @@ Related ADR: ADR-006, ADR-012, ADR-013, ADR-014, ADR-016, ADR-019
 
 ---
 
+## CHANGE-0013
+
+```
+Date:       2026-10-01
+Phase:      3, feature 1 — People as first-class objects
+Type:       feature
+Severity:   MAJOR
+Summary:    A person is a row, not a string in a task title. Merging two
+            people rewrites nothing — it sets a tombstone pointer — which is
+            what makes unmerge exact rather than approximate, and it means no
+            move can half-run because no move exists. Identity is a set of
+            normalised keys, and sharing one is evidence the user acts on rather
+            than a merge Panel takes. Nothing merges automatically, ever.
+            Building it also exposed D34: two features in the frozen scorer
+            layout had never received a single piece of evidence, and no
+            existing test could have noticed.
+```
+
+Phase:        3, feature 1 — People as first-class objects.
+Status:       **VERIFIED.**
+Date:         2026-10-01.
+Scope block:  SYSTEM_FUNDAMENTALS §11.2 (People). APPROVED in PRODUCT_CONTEXT
+              (`People as first-class objects | APPROVED | 3`), under the
+              standing roadmap approval of 2026-10-01.
+
+Problem:      `PeopleArea` stored the string `"catch up with mum every week"`
+              in `tasks.title`. A person was therefore not an object: it could
+              not be linked, shared, reasoned about, or kept, and two captures
+              of the same person produced two unrelated strings. The panel was
+              lying about its own data model.
+
+Files:        4 new · 4 edited · 1 table · 0 deps · 1 abstraction.
+              (`src/lib/people.ts`, `src/lib/people.test.ts`,
+              `src/convex/people.ts`, `scripts/conformance-3.ts`; plus
+              `src/convex/schema.ts`, `src/convex/assistant.ts`,
+              `src/convex/model.ts`, `src/components/Areas.tsx`.)
+              Budget was 6 files / 1 table / 0 deps / 1 abstraction
+              (SYSTEM_FUNDAMENTALS §11.2). **4 of 6 files used.** The one
+              abstraction is the identity-key matcher, as budgeted.
+
+Decisions:    D34, D35, D36, plus ADR-023 and ADR-024.
+Tests:        28 new unit fixtures (`src/lib/people.test.ts`), 50 live
+              conformance invariants (`scripts/conformance-3.ts`, 0 skips).
+Related ADR:  ADR-007, ADR-009, ADR-010, ADR-016, ADR-021, ADR-023, ADR-024
+
+### What was built
+
+A `people` table and the surface that uses it.
+
+- **`src/lib/people.ts`** — the only new abstraction, and the only file in
+  this feature that contains a decision. Identity keys are normalised
+  strings that are individually meaningful evidence; nothing in it can merge
+  anything and it calls no mutation.
+- **`src/convex/people.ts`** — `listPeople`, `getPerson`, `createPerson`,
+  `updatePerson`, `mergePeople`, `unmergePerson`. Every read and write is
+  scoped by the caller's own `ownerUserId`, which is never an argument.
+- **`src/components/Areas.tsx`** — `PeopleArea` was a fake: it called
+  `addTask({ input: "catch up with X every week" })`. It is now a real panel
+  (add, duplicate-refusal, linked work, merge, unmerge). `TasksArea` also
+  gained an optional "about" picker, so a person can be linked from any
+  area's composer rather than only from the People panel.
+
+### The decision that shapes the feature (ADR-023)
+
+**A merge rewrites nothing.** `mergePeople` sets `mergedIntoId` on the source
+row and stops. It does not move tasks, does not copy identity keys, does not
+rewrite links. Every read resolves through the tombstone instead.
+
+That is what makes unmerge *exact*. There is no restoration step that could
+half-run, because nothing was ever moved: unmerging clears two fields and
+every task, link and counter is exactly where it was. A merge implemented as
+"move the children" needs a journal in order to be reversible; this one does
+not, and the conformance harness proves the property rather than asserting it
+— it merges, unmerges, and compares the row count, the row identities, the
+display name, the link count and the identity keys either side.
+
+### The decision the feature refuses to make (RJD-004)
+
+Nothing merges automatically, ever. `createPerson` *refuses* a probable
+duplicate and names the row it had in mind, unless the user passes `force`.
+Refusing is not merging: it declines to create a second row, it changes
+nothing, and the user can always insist. In the UI this reads as "Same name —
+check these are the same person" with two buttons, not a warning the user has
+to dismiss.
+
+`judgeMatch` is deliberately asymmetric: a shared **email** clears the bar on
+its own, a shared **name** only ever produces a suggestion. An address is
+something a person owns; a name is something they are called, and "Raj" is not
+a person.
+
+### Defects found and fixed by this phase
+
+D34 — **Two frozen features could never receive evidence.**
+`recordOutcome` declared its `task` parameter as
+`{ ..., source?: string; person?: string }` and was called with the raw
+database row, whose fields are `origin` and `personId`. Both properties are
+optional, so nothing failed to compile and nothing threw: the roll-ups saw
+`undefined` on every single call and returned the counter map unchanged.
+`SOURCE_FIT` (index 9) and `PEOPLE_FIT` (index 10) were therefore
+permanently 0 — not merely under-trained, but *identically* zero at training
+time and at inference time, so their weights could never receive a gradient
+and never moved from their initial values. Two slots in a frozen, versioned
+feature layout were carrying no information at all, and nothing in any
+harness would have reported it: every existing test asserted that the
+*mechanism* worked, and the mechanism was working perfectly on an input that
+was always empty.
+
+Found by `scripts/conformance-3.ts` asserting acceptance criterion 5
+("PEOPLE_FIT reads the person id") against a live deployment and finding an
+empty counter map where evidence should have been.
+
+Fixed by deriving the feature object once, in `featuresOf()`, and handing *the
+same object* to both halves of the step. `recordOutcome` now takes
+`TaskFeatures`, so a field rename is a compile error rather than a silent
+zero. The feature layout is untouched: indices 0–7 are unchanged, 8–11 keep
+their meanings, `FEATURE_COUNT` is still 12 and `WEIGHTS_VERSION` is still 1.
+Nothing migrates. Users' stored weights for indices 9 and 10 are still their
+initial values, which is exactly what the previous behaviour implied, so no
+vector is re-based and no ranking shifts retroactively. Counters begin filling
+from the next completion.
+
+D35 — **`normaliseKey` was the wrong function for an email address.**
+Applied to `raj@ex.co.uk` it produced `raj ex co uk`, because punctuation
+becomes a space. That is wrong twice over: it reads as nonsense, and
+`email:raj ex co uk` collides with the key a *name* of "raj ex co uk" would
+produce under a different namespace. An address is a single token with
+meaningful separators, not a phrase, so `normaliseEmailKey` now keeps
+`@ . - _ +` and drops only what cannot appear in an address. Found by the unit
+fixtures, written before the normaliser had been thought about properly.
+
+Two related behaviours were corrected at the same time, both now pinned by
+fixtures. Punctuation folding is *conservative*: "O'Brien" and "OBrien" stay
+different keys, and "Jean Luc" stays different from "Jeanluc". The docstring
+claimed the opposite, and the code was right. Under-matching costs a second
+row a human can merge by hand; over-matching costs a merge that was never
+right, and given RJD-004 the conservative direction is the correct one to fail
+in.
+
+D36 — **A recurring task lost its person on respawn.**
+`spawnNextOccurrence` rebuilt the row field by field and did not copy
+`personId`, so completing "call Raj every week" produced a follow-up
+belonging to nobody — the exact failure REQ-017 exists to prevent, reproduced
+for a new field. Copying an id forward is safe here in a way copying identity
+keys would not be: a tombstone resolved on read still reaches the same person.
+
+### Acceptance criteria (§11.2)
+
+**(1) A capture naming a known person links to that row rather than creating
+a second — PASS, live.** The harness creates a task with `personId` and reads
+it back through `getPerson`, then confirms the linkage survives a merge and
+returns on unmerge.
+
+**(2) Two rows with the same normalised name stay separate until the user
+merges them — PASS, live.** "Raj Patel" and "raj  patel" normalise
+identically. The second is REFUSED, which is the first half of the guarantee:
+the list still holds one row. It is created only on `force`. Three namesakes
+then coexist, and the shared name appears as a `matchHint` on each rather than
+as a mutation. No row was combined with any other at any point.
+
+**(3) Merge is reversible: unmerge restores both rows and every link — PASS,
+live.** Row count, row identities, display name, link count on the survivor,
+and the identity keys are all compared either side and identical.
+
+**(4) A merged row is a tombstone that no query returns — PASS, live.**
+`listPeople` omits it and reports `mergedCount`; `getPerson` on the tombstone
+returns the person who absorbed it, with the absorbed work reachable; the
+survivor is told what was merged into it.
+
+**(5) `PEOPLE_FIT` reads the person id, so two namesakes do not share
+evidence — PASS, live.** This is the check that found D34. Three people share
+the name "Raj Patel"; two linked completions against one of them produce
+exactly one row of evidence, keyed by that person's id.
+
+**(6) Live conformance: merge → unmerge leaves the row count and the link
+count exactly as they were — PASS, live.**
+
+### Additional verification
+
+    28 unit fixtures (src/lib/people.test.ts) ... PASS, 278 total, 0 fail
+      normaliseKey / normaliseEmailKey folding, and the spellings each keeps apart
+      identityKeysFor namespacing, omission of a bogus email, boundedness
+      judgeMatch: email clears the bar, name only advises (RJD-004)
+      resolvedIdentityKeys: tombstone chains, multi-hop, cycles, dangling targets
+      describeKey: machine strings never reach the screen raw
+
+    50 live conformance invariants ............ PASS, 0 skipped
+      cross-user isolation: a second account's list is empty, a foreign id reads
+        as null, a foreign area is empty, and all four write paths refuse
+      a person cannot be merged into themselves, or merged twice
+      unmerging somebody who is not merged says so rather than pretending
+
+    ADR-022 / N1 re-verified .................. PASS
+      `recordOutcome` writes `assistantState`, so the OCC invariant was re-armed
+      and re-run rather than assumed: 3 rounds x 8 concurrent mutations, 48
+      mutations, one row per user in every round, negative control able to see a
+      deliberate duplicate. Cumulative 1,840 mutations / 39 rounds / 0 duplicates.
+      The fixture was removed again and the exports reverted.
+
+    lint ........................ 3 errors / 19 warnings, all pre-existing
+                                  (carousel, sidebar, use-mobile). No new problems.
+    spec-drift ................... 18 passed, 0 failures, 1 warning (pre-existing:
+                                  two planned paths that do not exist yet).
+
+### A note on what was deliberately not built
+
+- **No `deletePerson`.** A destructive path that did not exist before is not a
+  safe improvement, and deletion is not in this feature's scope. The
+  conformance fixture rows are inert and owner-scoped, and every run uses a
+  fresh throwaway account.
+- **No automatic merge, ever.** RJD-004, and the roadmap's own must-nots.
+- **No contact import, no inbound email parsing, nothing that writes to a
+  provider.** All named as out of scope in §11.2.
+- **No person sharing.** A person is owner-scoped. Sharing a person is not a
+  capability Panel has; adding one later means adding a grant check, rather
+  than loosening what is here.
+
+### A finding worth recording separately
+
+The S3 check in the phase-3 harness was written to compare the refusal for
+"this id is not yours" with the refusal for "this id does not exist". It could
+not be run: **no client can construct a person id that is well-formed but
+absent.** Convex ids carry an integrity check, so every variant of a real id a
+client can produce is rejected by the argument validator before any handler
+runs. Rather than skip the check, the harness now asserts that stronger
+property — if a future platform version ever lets such an id through, the
+check turns to FAIL and someone examines whether `owned()` still answers both
+cases identically. As written, `owned()` throws one message for both.
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1722,17 +1952,30 @@ uninterpretable — a counter that cannot see a duplicate proves nothing.
 | C | 32 | 10 | 640 | 0 |
 | D (final shipped script) | 32 | 10 | 640 | 0 |
 | E (re-run after 1.1 changed `recordOutcome`) | 8 | 3 | 48 | 0 |
-| **Total** | — | **36** | **1,792** | **0** |
+| F (re-run after phase 3 changed `recordOutcome` again) | 8 | 3 | 48 | 0 |
+| **Total** | — | **39** | **1,840** | **0** |
 
 Run D re-executed the suite after the driver was decoupled from Convex codegen,
 so the artifact left in the repository is the one that was actually observed to
-pass. Run E exists because ADR-022's own failure path requires re-verification
-whenever the code it reasons about changes: phase 1.1 altered `recordOutcome` —
-the exact function under test — so the suite was re-armed and re-run rather than
-assumed still valid. Doing so exposed a defect in the harness itself (D29): the
-negative control seeded the *first* state row for a user and then asserted two,
-so it was a control that could never pass for the right reason. Fixed, and the
-control now genuinely proves the detector can see a duplicate.
+pass. Runs E and F exist because ADR-022's own failure path requires
+re-verification whenever the code it reasons about changes: phase 1.1 altered
+`recordOutcome` — the exact function under test — so the suite was re-armed and
+re-run rather than assumed still valid. Doing so exposed a defect in the harness
+itself (D29): the negative control seeded the *first* state row for a user and
+then asserted two, so it was a control that could never pass for the right
+reason. Fixed, and the control now genuinely proves the detector can see a
+duplicate.
+
+Run F is the same discipline applied a second time. Phase 3 changed
+`recordOutcome` again — not its transaction shape, but its `task` parameter type
+and the object it is handed (D34) — so the invariant was re-verified rather than
+inherited. Two further harness defects surfaced while re-arming, both recorded
+because a harness that lies about its own setup is worse than no harness: the
+inspector conflated "this user has no state rows" with "this user does not
+exist", and the cold-start path inserted a row whose `shortTotal` disagreed
+with its own `samples`. Both fixed; the cold path now writes exactly the
+counters `recordOutcome` would have written, so the two paths are
+indistinguishable by construction.
 
 The negative control reported `count === 2` on every run, establishing that the
 detector is capable of observing a violation. `samples` equalled the batch size
@@ -1787,6 +2030,148 @@ adds an explicit-id insert, which would make the ADR-017 mechanism possible
 again and worth reconsidering on its own merits; `loadState` stops reading
 `assistantState` through an index; or `assistantState` gains a write path outside
 `recordOutcome` that does not go through a mutation.
+
+---
+
+### ADR-023 — A merge is a tombstone, not a rewrite
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 1 (CHANGE-0013).
+
+**Decision.** Merging two people sets `mergedIntoId` on the source row and
+stops. It moves no tasks, copies no identity keys, and rewrites no links.
+Every read resolves through the tombstone instead. Unmerging clears the two
+fields the merge set, and that is the whole of it.
+
+**Context.** Merging is the only genuinely destructive-sounding action in
+People, and "you cannot undo a merge" is a sentence no personal data product
+should be able to say. The usual implementation — move the children, delete
+the source — is reversible only if every move is journalled, and a journal is
+itself a thing that can be half-written, race, or be read by code that
+disagrees with the data it describes. Reversibility bought that way is
+reversibility in name.
+
+It is also worth being precise about what "the same person" means. Two people
+called Raj are, in the general case, two people. RJD-004 already settled that
+Panel must never merge them on its own. So the merge is a statement the user
+makes, and the cost of being wrong is the cost of any user decision: the
+ability to take it back.
+
+**Alternatives considered.**
+- *Move tasks and links, then delete the source row.* Rejected: the source
+  must be kept anyway, because deleting it breaks every task pointing at it.
+  Keeping the row and moving the children is strictly worse — it does the
+  risky work and still keeps the row.
+- *Move the children and record an undo journal.* Rejected: more write paths,
+  more failure modes, and the journal itself needs a conformance story. A
+  design whose reversibility depends on a second store being perfectly
+  consistent is weaker than one that never moves anything.
+- *Hard-delete the source on unmerge-failure.* Rejected: there is no such
+  state, which is the point.
+- *A `mergedIntoId` that is resolved by a trigger or a view rather than in
+  the read path.* Rejected: Convex has no triggers or views, and a second
+  stored copy of "who is this really" is a second source of truth (ADR-003's
+  principle applied to identity).
+
+**Why chosen.** Unmerge becomes exact rather than approximate. There is no
+restoration step that can half-run, because there is nothing to restore: the
+conformance harness proves it by merging, unmerging, and comparing the row
+count, the row identities, the display name, the link count and the identity
+keys either side.
+
+**Consequences.**
+- A tombstone is a row that still costs storage. Bounded, and the alternative
+  — a delete — is the thing that costs correctness.
+- Every read path that touches a person must resolve through the tombstone. A
+  read that forgets is a read that shows a merged-away person. The cost is
+  paid at the read site, deliberately, because it is where the mistake is
+  visible rather than hidden behind a denormalised column.
+- Identity keys are *resolved* through the chain, never copied. Copying would
+  make unmerge inexact for the key set, which is the one thing it cannot be.
+- Chains are possible (`a → b → c`) and are resolved by a cycle-guarded walk
+  capped at 8 hops, in both the pure module and the query helpers. A cycle
+  must not hang a query; a hang is a worse failure than a short key list.
+- `mergedCount` is surfaced in the UI. A merge the user cannot see is a merge
+  they cannot undo.
+
+**Conditions for revisiting.** Revisit if a merge ever needs to carry
+*information* rather than only an identity — for example, if merging must
+also drop one of the two email addresses, or renumber something. At that point
+a rewrite becomes unavoidable and this ADR must be superseded with a journal
+design, not quietly worked around.
+
+---
+
+### ADR-024 — Identity evidence is a set of keys, and a name is the weakest one
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 1 (CHANGE-0013).
+Extends ADR-021 (agent authority) and RJD-004.
+
+**Decision.** A person carries a set of normalised **identity keys**, each
+namespaced by kind (`name:`, `email:`). Sharing a key is *evidence* and never a
+merge. Nothing in the system merges automatically. `judgeMatch` is asymmetric
+by design: a shared email clears the suggestion bar on its own, a shared name
+only ever produces something to check. `createPerson` refuses a probable
+duplicate and names the row it had in mind, and the user may insist.
+
+**Context.** "Raj" is a common name in more than one country. Two people
+called Raj are not the same person, and a system that merges them has
+destroyed information in a way the user cannot see, let alone undo. The
+roadmap settled the principle in RJD-004 before any of this code existed; this
+ADR is about the mechanism that makes the principle cheap enough that nobody
+would be tempted to skip it.
+
+The second reason is forward-looking. A provider adapter — contacts, email,
+messaging — will eventually contribute identity evidence Panel did not ask
+for. Keys give that contribution a shape: an adapter adds strings to a set and
+nothing else. It cannot merge, cannot delete, and cannot reach a mutation. The
+authority boundary is structural rather than a rule someone has to remember.
+
+**Alternatives considered.**
+- *Key on a normalised name alone.* Rejected: it is the exact case RJD-004
+  exists to prevent.
+- *Fuzzy matching (Levenshtein, Jaro-Winkler, embeddings).* Rejected: it
+  produces confident wrong answers, and every one of them is a merge the user
+  did not choose. Determinism and explainability are worth more here than
+  coverage; "Raj" and "Raja" being near each other is not evidence of
+  anything.
+- *A confidence threshold that merges above 0.8 automatically.* Rejected
+  outright. It is the automatic merging the roadmap forbids, and a threshold
+  does not make an unmergeable merge safe — it only decides how often it
+  happens.
+- *Email only, no name key.* Rejected: most people a user cares about are
+  entered by name, and an address-less person would be unreachable by evidence
+  entirely. A weak key that only ever produces a suggestion is safe in a way
+  no key at all is not.
+- *An external identity provider or a contact-sync service to resolve people.*
+  Rejected: out of scope, and it would make identity resolution depend on a
+  third party's matching, which is not a guarantee Panel can reason about.
+
+**Why chosen.** The failure mode of a wrong merge is silent and hard to
+reverse. The failure mode of not merging is a second row the user can merge in
+two clicks. Every part of this design is chosen to fail in the second
+direction.
+
+**Consequences.**
+- The matcher is conservative on purpose: "O'Brien" and "OBrien" stay
+  different keys, "Jean Luc" stays different from "Jeanluc". Under-matching
+  costs a row; over-matching costs a wrong merge.
+- A name-key collision between two real, different people is expected and
+  normal, not a bug. The UI says so in as many words.
+- Name keys are **recomputed** on edit, never accumulated. A person renamed
+  from "Raj" to "Rakesh" stops matching `name:raj`, because an old name that
+  kept matching forever is how one person ends up merged with three different
+  people over the years.
+- Keys are bounded (12 per person, 120 characters each) because a mutation
+  writes them and an unbounded array in a row is a row with no ceiling.
+- Identity keys are displayed as readable evidence (`name "raj patel"`), never
+  as raw machine strings. `name:raj patel` on screen looks like a bug and
+  teaches the user nothing about how Panel decides what is the same.
+
+**Conditions for revisiting.** Revisit when a provider integration begins
+contributing identity evidence automatically. That is the point at which this
+becomes a security decision rather than an engineering one: an adapter that
+can add keys can, over enough syncs, manufacture a duplicate on its own. The
+answer will not be a better threshold.
 
 ---
 
@@ -1861,7 +2246,11 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D31** | `markDerivedOrphaned` tested `task.orphanedSource === false`, which is almost never true — the column is optional and `addTask` never sets it to `false`. The §7.2 orphan flag was effectively never set. | **RESOLVED (CHANGE-0012)** — `task.origin === "integration" && task.orphanedSource !== true`. |
 | **D32** | **This deployment serves no application HTTP routes.** Every path 404s, including Convex Auth's OIDC discovery endpoint and its own `addHttpRoutes`, which predate this work. `/` and `/version` answer because they are Convex's built-ins. The push succeeds and Convex validates the router, so the module is deployed — the backend does not serve it. | **OPEN — ENVIRONMENT, not code.** Consequence: the OAuth redirect cannot be exercised live. Both conformance harnesses report that section as `[SKIP]` with this reason rather than as a pass. The handler's decision logic is covered by unit fixtures; only the transport is unverified. Needs an answer from the platform owner: does this deployment type serve HTTP routes at all? |
 | **D33** | `applyBatch` reported `deletes` as the diff's count of removals, including rows kept and flagged `cancelled`. | **RESOLVED (CHANGE-0012)** — the counts now separate `deletes` (rows actually removed) from `cancelled` (rows kept and flagged). Found by the phase-2 harness, which expected the honest number. |
+| **D34** | **`SOURCE_FIT` (index 9) and `PEOPLE_FIT` (index 10) could never receive evidence.** `recordOutcome` typed its `task` parameter as `{ ..., source?, person? }` and was called with the raw row, whose fields are `origin` and `personId`. Both optional, so nothing failed to compile and nothing threw: the roll-ups saw `undefined` every time and returned the counter map unchanged. The two features were identically 0 at training and at inference, so their weights never took a gradient. Two slots in a frozen, versioned feature layout carried no information at all, and no existing test could see it — every one asserted that the *mechanism* worked, and the mechanism was working perfectly on an input that was always empty. | **RESOLVED (CHANGE-0013)** — the feature object is built once in `featuresOf()` and the *same* object goes to both `extractFeatures` and `recordOutcome`, which now takes `TaskFeatures`, so a field rename is a compile error rather than a silent zero. Layout untouched: `FEATURE_COUNT` 12, `WEIGHTS_VERSION` 1, indices 0–7 unchanged, nothing migrates, no stored vector is re-based. Found by the phase-3 harness asserting acceptance criterion 5 against a live deployment. |
+| **D35** | `normaliseKey` was applied to email addresses, turning `raj@ex.co.uk` into `raj ex co uk` — nonsense on screen, and a key that collides with what a name of the same words would produce. A related docstring claimed "O'Brien" and "OBrien" normalised alike; they do not, and should not. | **RESOLVED (CHANGE-0013)** — `normaliseEmailKey` keeps the structure of an address. The name normaliser's conservatism is now the documented, fixture-pinned intent: under-matching costs a second row, over-matching costs a wrong merge, and RJD-004 makes the conservative direction the correct one. Found by the new unit fixtures. |
+| **D36** | `spawnNextOccurrence` rebuilt the task row field by field and did not copy `personId`, so completing "call Raj every week" produced a follow-up belonging to nobody — the REQ-017 failure mode, reproduced for a new field. | **RESOLVED (CHANGE-0013)** — `personId` is copied forward. Safe in a way copying identity keys would not be: a tombstone resolved on read still reaches the same person. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
+| D37 | `listPeople` and `getPerson` read **every task the user has ever created** in order to count open items per person, on a reactively-subscribed query. | **RESOLVED (CHANGE-0013)** — a `tasks.by_owner_person` index. Convex omits a document from an index when the indexed field is absent, so that range holds exactly the tasks that name somebody, which is the entire input these two functions need. The read is now scoped by the index rather than by a filter over everything the user owns. The wider audit found every other `.collect()` in `src/convex` is already index-scoped to one owner or one space, which is the correct shape for a product where each user is their own tenant; a table-wide scan would be the defect, and there is none. |
 
 ### Intentionally accepted
 
@@ -1889,7 +2278,7 @@ approval**, not a note.
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
-| **3** | per-feature | per-feature | 0 | per-feature | Any of it without its own spec section, ADR, budget and approval |
+| **3** | per-feature. **Feature 1 (People): 4 — used 4 of 6** (`src/lib/people.ts`, `src/lib/people.test.ts`, `src/convex/people.ts`, `scripts/conformance-3.ts`) | per-feature. **Feature 1: 1** (`people`) | 0 | per-feature. **Feature 1: 1** (the identity-key matcher, `src/lib/people.ts`) | Any of it without its own spec section, ADR, budget and approval. Feature 1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · anything that writes to a provider · person sharing |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -1902,13 +2291,15 @@ screen · no push notifications · no sixth spec file · no modification of
 
 ```
 Current phase:        3 — feature work (each feature needs its own spec + ADR +
-                      budget before it starts)
-Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED. Phase 0A
-                      remains BLOCKED on Q-001, which blocks only TASK-0A-003.
-Last completed:       CHANGE-0012 — Google Calendar. A real OAuth handshake, a
-                      real paged sync, minimisation that is structural rather
-                      than filtered, and meetings that become hard attention
-                      items inside four hours.
+                      budget before it starts). Feature 1 (People) is done.
+Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED, and so
+                      is phase 3 feature 1. Phase 0A remains BLOCKED on Q-001,
+                      which blocks only TASK-0A-003.
+Last completed:       CHANGE-0013 — People as first-class objects. A person is a
+                      row rather than a task title; a merge rewrites nothing and
+                      is exactly reversible; identity keys are evidence and
+                      never a merge. The run also found D34: two frozen scorer
+                      features had never received evidence at all.
 Next phase:           3 — the first feature, in the order the roadmap lists them.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
@@ -1919,9 +2310,11 @@ Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 on
                       GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
                       D32, this deployment serving no application HTTP routes.
 
-Failing tests:        None. 250 fixtures pass; 0B, 0C, attention, 1.1, 1.5 and 2
-                      conformance all pass live. The phase-2 harness reports one
-                      section as SKIP (D32) rather than as a pass.
+Failing tests:        None. 278 fixtures pass; 0B, 0C, attention, 1.1, 1.5, 2 and
+                      3 conformance all pass live, plus the ADR-022 OCC suite
+                      re-verified (48 mutations, 0 duplicates). The phase-2
+                      harness reports one section as SKIP (D32) rather than as a
+                      pass. The phase-3 harness has no skips.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -1952,9 +2345,13 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          criterion passes except the live
                                          handshake, which is blocked on the
                                          environment (credentials + D32).
-  3      NOT STARTED   —                 Depends on 2 (satisfied). Each feature
-                                         needs its own spec section, ADR and
-                                         budget before it starts (§11.3).
+  3      IN PROGRESS   —                 Feature 1 (People) VERIFIED by
+                                         CHANGE-0013: 4 of 6 files, 1 table,
+                                         0 deps, 1 abstraction. Remaining
+                                         features (capture, Life Admin,
+                                         commitments, Finance, agents) each
+                                         need their own spec, ADR and budget
+                                         (§11.3).
 ```
 
 ### Phase lifecycle status table
@@ -1968,11 +2365,11 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
-| **3** | **NOT STARTED** | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 2 (satisfied). Roadmap order: People first (first-class with reversible merge), then multi-object capture, documents, commitments, Finance expansion, agents. Each gets its own spec section, ADR, budget and approval per §11.3 — the standing approval covers starting the phase, not every feature inside it. |
+| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. Remaining features — multi-object capture, documents, commitments, Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
 
-**Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are done to the limit of what the agent may
-decide. Nothing is SHIPPED — shipment is the user's decision alone
-(MAIN_AGENT §11.1).**
+**Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and phase 3 feature 1 (People) is
+VERIFIED. Everything here is done to the limit of what the agent may decide.
+Nothing is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

@@ -3,21 +3,28 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Calendar,
   Check,
+  ChevronDown,
+  ChevronUp,
   Circle,
+  GitMerge,
   HeartPulse,
   Home,
+  Info,
   Landmark,
   Link2,
   Loader2,
   PlugZap,
   Plus,
   Trash2,
+  Undo2,
+  UserPlus,
   Users,
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { describeDue, parseTaskInput } from "@/lib/nlp";
@@ -40,11 +47,13 @@ export function areaIcon(kind: string) {
 
 export function TasksArea({ area, label }: { area: string; label: string }) {
   const tasks = useQuery(api.life.getAreaTasks, { area }) ?? [];
+  const people = useQuery(api.people.listPeople)?.people;
   const addTask = useMutation(api.assistant.addTask);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
   const removeTask = useMutation(api.assistant.removeTask);
 
   const [input, setInput] = useState("");
+  const [personId, setPersonId] = useState<Id<"people"> | "">("");
   const [busy, setBusy] = useState(false);
 
   const open = tasks.filter((t) => !t.completed);
@@ -59,7 +68,8 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
     setBusy(true);
     try {
       // The area is part of the insert, so this is one atomic mutation (D6).
-      await addTask({ input: value, area });
+      // A person is optional and, when given, checked for ownership server-side.
+      await addTask({ input: value, area, personId: personId || undefined });
       setInput("");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add task");
@@ -88,6 +98,29 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
             Add
           </Button>
         </div>
+        {(people?.length ?? 0) > 0 && (
+          <div className="mt-2 flex items-center gap-2">
+            <label
+              htmlFor={`person-for-${area}`}
+              className="shrink-0 text-[10px] font-bold uppercase text-muted-foreground"
+            >
+              About
+            </label>
+            <select
+              id={`person-for-${area}`}
+              value={personId}
+              onChange={(e) => setPersonId(e.target.value as Id<"people">)}
+              className="h-9 flex-1 border-2 border-border bg-background px-2 text-[10px] font-bold uppercase focus-visible:ring-0 focus-visible:outline-none"
+            >
+              <option value="">Nobody in particular</option>
+              {people?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {preview && (
           <p className="mt-2.5 flex flex-wrap items-center gap-2 border-2 border-dashed border-border p-2 text-[10px] uppercase text-muted-foreground">
             <span className="text-foreground">{preview.title}</span>
@@ -157,26 +190,85 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Relationships — people you need to stay in touch with
+// People — a person is a row, not a task title
 // ---------------------------------------------------------------------------
 
-export function PeopleArea() {
-  const tasks = useQuery(api.life.getAreaTasks, { area: "relationships" }) ?? [];
+/**
+ * The shape a person card needs from `listPeople`.
+ *
+ * Written out rather than inferred, because a change to the query is caught at
+ * the `people.map` call site below: if the query stops returning one of these,
+ * the map stops compiling.
+ */
+type PersonSummary = {
+  id: Id<"people">;
+  name: string;
+  note: string | null;
+  hasEmail: boolean;
+  openTasks: number;
+  matchHint: { id: Id<"people">; name: string; suggest: boolean; reason: string; shared: string[] } | null;
+};
+
+/** How often a keep-in-touch task can come back. Mirrors the parser's grammar. */const CADENCES = [
+  { value: "today", label: "Today" },
+  { value: "tomorrow", label: "Tomorrow" },
+  { value: "every week", label: "Every week" },
+  { value: "every 2 weeks", label: "Every 2 weeks" },
+  { value: "every month", label: "Every month" },
+] as const;
+
+const selectClass =
+  "h-11 border-2 border-border bg-background px-3 text-xs font-bold uppercase focus-visible:ring-0 focus-visible:outline-none";
+
+/**
+ * One person, their open work, and the two irreversible-looking buttons that
+ * are actually both reversible.
+ *
+ * Merge is a user decision taken here, not a suggestion Panel applies: RJD-004
+ * ("Raj" ≠ "Raj") means a shared name is *evidence*, and the only person who
+ * knows whether two Rajs are one is the user. So this offers, explains, and
+ * waits.
+ */
+function PersonCard({
+  person,
+  others,
+  open,
+  onToggle,
+}: {
+  person: PersonSummary;
+  others: { id: Id<"people">; name: string }[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const detail = useQuery(api.people.getPerson, { id: person.id });
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
   const removeTask = useMutation(api.assistant.removeTask);
-  const [name, setName] = useState("");
-  const [cadence, setCadence] = useState("every week");
-  const [busy, setBusy] = useState(false);
   const addTask = useMutation(api.assistant.addTask);
+  const merge = useMutation(api.people.mergePeople);
+  const unmerge = useMutation(api.people.unmergePerson);
 
-  const handleAdd = async (event: React.FormEvent) => {
+  const [taskInput, setTaskInput] = useState("");
+  const [cadence, setCadence] = useState<string>("every week");
+  const [mergeInto, setMergeInto] = useState<Id<"people"> | "">("");
+  const [busy, setBusy] = useState(false);
+
+  const mergedFrom = detail?.mergedFrom ?? [];
+  const tasks = detail?.tasks ?? [];
+  const openList = tasks.filter((t) => !t.completed);
+
+  const addForPerson = async (event: React.FormEvent) => {
     event.preventDefault();
-    const who = name.trim();
-    if (!who || busy) return;
+    const value = taskInput.trim();
+    if (!value || busy) return;
     setBusy(true);
     try {
-      await addTask({ input: `catch up with ${who} ${cadence}`, area: "relationships" });
-      setName("");
+      await addTask({
+        input: `${value} ${cadence}`,
+        area: "relationships",
+        personId: person.id,
+      });
+      setTaskInput("");
+      toast.success("Added");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not add");
     } finally {
@@ -184,11 +276,270 @@ export function PeopleArea() {
     }
   };
 
+  const doMerge = async () => {
+    if (!mergeInto) return;
+    setBusy(true);
+    try {
+      const result = await merge({ sourceId: person.id, targetId: mergeInto });
+      setMergeInto("");
+      toast.success(`Merged ${result.from} into ${result.into} — undo it any time`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not merge");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doUnmerge = async (id: Id<"people">, name: string) => {
+    try {
+      const result = await unmerge({ id });
+      if (result.unmerged) toast.success(`${name} is their own person again`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not undo merge");
+    }
+  };
+
+  return (
+    <motion.li
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.18 }}
+      className="brutal-flat bg-card"
+    >
+      <div className="flex items-center gap-3 p-3">
+        <span className="flex size-9 shrink-0 items-center justify-center border-2 border-border bg-background">
+          <Users className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-bold uppercase">{person.name}</p>
+          <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">
+            {person.openTasks === 0 ? "Nothing open" : `${person.openTasks} open`}
+            {person.hasEmail ? " · has email" : ""}
+            {mergedFrom.length > 0 ? ` · ${mergedFrom.length} merged in` : ""}
+          </p>
+          {person.note && (
+            <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+              {person.note}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Show"} ${person.name}`}
+          className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-muted"
+        >
+          {open ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+        </button>
+      </div>
+
+      {person.matchHint && (
+        <p className="flex items-start gap-2 border-t-2 border-border bg-muted px-3 py-2 text-[10px] uppercase text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            <span className="font-bold text-foreground">{person.matchHint.reason}</span> as{" "}
+            {person.matchHint.name}. Two people can share a name and still be two
+            people — merge only if you are sure.
+          </span>
+        </p>
+      )}
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="overflow-hidden border-t-2 border-border"
+          >
+            <div className="flex flex-col gap-4 p-3">
+              {/* linked work */}
+              <section>
+                <h3 className="mb-2 text-[10px] font-bold uppercase text-muted-foreground">
+                  Linked work
+                </h3>
+                {openList.length === 0 ? (
+                  <p className="border-2 border-dashed border-border p-3 text-[10px] uppercase text-muted-foreground">
+                    Nothing linked to {person.name} yet
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-2">
+                    {openList.map((t) => (
+                      <li key={t.id} className="flex items-center gap-2.5 border-2 border-border bg-background p-2">
+                        <button
+                          type="button"
+                          onClick={() => void setCompleted({ id: t.id, completed: true })}
+                          aria-label={`Mark "${t.title}" as done`}
+                          className="brutal-press flex size-6 shrink-0 items-center justify-center border-2 border-border bg-background"
+                        >
+                          <Check className="size-3.5" />
+                        </button>
+                        <span className="min-w-0 flex-1 text-sm">{t.title}</span>
+                        <button
+                          type="button"
+                          onClick={() => void removeTask({ id: t.id })}
+                          aria-label={`Delete ${t.title}`}
+                          className="brutal-press shrink-0 border-2 border-border p-1 hover:bg-primary"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <form onSubmit={addForPerson} className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    value={taskInput}
+                    onChange={(e) => setTaskInput(e.target.value)}
+                    placeholder={`Something to do with ${person.name}...`}
+                    aria-label={`New task for ${person.name}`}
+                    className="h-10 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+                  />
+                  <select
+                    value={cadence}
+                    onChange={(e) => setCadence(e.target.value)}
+                    aria-label="How often"
+                    className={selectClass}
+                  >
+                    {CADENCES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="submit"
+                    disabled={!taskInput.trim() || busy}
+                    className="brutal h-10 gap-2 bg-primary px-4 font-bold uppercase"
+                  >
+                    <Plus className="size-4" />
+                    Add
+                  </Button>
+                </form>
+              </section>
+
+              {/* merge / unmerge */}
+              <section>
+                <h3 className="mb-2 text-[10px] font-bold uppercase text-muted-foreground">
+                  If these are the same person
+                </h3>
+                {mergedFrom.length > 0 && (
+                  <ul className="mb-3 flex flex-col gap-2">
+                    {mergedFrom.map((m) => (
+                      <li
+                        key={m.id}
+                        className="flex items-center gap-2.5 border-2 border-border bg-background p-2"
+                      >
+                        <Undo2 className="size-3.5 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate text-xs">
+                          {m.name} was merged into {person.name}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void doUnmerge(m.id, m.name)}
+                          className="brutal-flat shrink-0 border-2 border-border bg-background px-2.5 py-1 text-[9px] font-bold uppercase hover:bg-muted"
+                        >
+                          Undo
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {others.length > 0 && (
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <select
+                      value={mergeInto}
+                      onChange={(e) => setMergeInto(e.target.value as Id<"people">)}
+                      aria-label={`Merge ${person.name} into`}
+                      className={selectClass}
+                    >
+                      <option value="">Merge {person.name} into…</option>
+                      {others.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      onClick={() => void doMerge()}
+                      disabled={!mergeInto || busy}
+                      className="brutal h-11 gap-2 bg-primary px-4 font-bold uppercase"
+                    >
+                      <GitMerge className="size-4" />
+                      Merge
+                    </Button>
+                  </div>
+                )}
+                <p className="mt-2 text-[9px] uppercase text-muted-foreground">
+                  A merge hides {person.name} and moves their work. Nothing is
+                  deleted, and Undo brings it all straight back.
+                </p>
+              </section>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.li>
+  );
+}
+
+export function PeopleArea() {
+  const list = useQuery(api.people.listPeople);
+  const create = useMutation(api.people.createPerson);
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  /**
+   * The refusal. `createPerson` declines a probable duplicate and names the row
+   * it had in mind; this holds that answer so the user can open the person
+   * instead, or insist. Nothing is merged either way.
+   */
+  const [refusal, setRefusal] = useState<{ id: string; name: string; reason: string } | null>(null);
+  const [openId, setOpenId] = useState<Id<"people"> | null>(null);
+
+  const submit = async (event: React.FormEvent, force = false) => {
+    event.preventDefault();
+    const who = name.trim();
+    if (!who || busy) return;
+    setBusy(true);
+    try {
+      const result = await create({
+        name: who,
+        email: email.trim() || undefined,
+        force: force || undefined,
+      });
+      if (result.created) {
+        setName("");
+        setEmail("");
+        setRefusal(null);
+        toast.success(`${who} added`);
+      } else {
+        setRefusal(result.duplicateOf);
+        toast.info(`You already have someone called ${result.duplicateOf.name}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not add");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const people = list?.people ?? [];
+  const others = people.map((p) => ({ id: p.id, name: p.name }));
+  const loading = list === undefined;
+
   return (
     <div className="flex flex-col gap-5">
-      <form onSubmit={handleAdd} className="brutal-flat bg-card p-4">
-        <p className="mb-3 text-[11px] font-bold uppercase text-muted-foreground">
-          Someone to keep in touch with
+      <form onSubmit={(e) => void submit(e)} className="brutal-flat bg-card p-4">
+        <p className="mb-3 flex items-center gap-2 text-[11px] font-bold uppercase text-muted-foreground">
+          <UserPlus className="size-4" />
+          Someone worth keeping
         </p>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
@@ -198,30 +549,71 @@ export function PeopleArea() {
             aria-label="Person's name"
             className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
           />
-          <select
-            value={cadence}
-            onChange={(e) => setCadence(e.target.value)}
-            aria-label="How often"
-            className="h-11 border-2 border-border bg-background px-3 text-xs font-bold uppercase focus-visible:ring-0 focus-visible:outline-none"
-          >
-            <option value="today">Today</option>
-            <option value="tomorrow">Tomorrow</option>
-            <option value="every week">Every week</option>
-            <option value="every 2 weeks">Every 2 weeks</option>
-            <option value="every month">Every month</option>
-          </select>
+          <Input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email (optional)"
+            type="email"
+            aria-label="Person's email address"
+            className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+          />
           <Button
             type="submit"
             disabled={!name.trim() || busy}
             className="brutal h-11 gap-2 bg-primary px-5 font-bold uppercase"
           >
-            <Plus className="size-4" />
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
             Add
           </Button>
         </div>
+
+        {refusal && (
+          <div className="mt-3 border-2 border-border bg-muted p-3">
+            <p className="flex items-start gap-2 text-[10px] uppercase text-muted-foreground">
+              <Info className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                <span className="font-bold text-foreground">{refusal.reason}</span> — not
+                adding a second {refusal.name}. Two people can share a name and
+                still be two people.
+              </span>
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  setOpenId(refusal.id as Id<"people">);
+                  setRefusal(null);
+                }}
+                className="brutal h-9 gap-2 bg-primary px-4 font-bold uppercase"
+              >
+                Open {refusal.name}
+              </Button>
+              <Button
+                type="button"
+                onClick={(e) => void submit(e, true)}
+                disabled={busy}
+                className="brutal-flat h-9 border-2 border-border bg-background px-4 text-[10px] font-bold uppercase hover:bg-muted"
+              >
+                They are different people
+              </Button>
+            </div>
+          </div>
+        )}
       </form>
 
-      {tasks.length === 0 ? (
+      {list && list.mergedCount > 0 && (
+        <p className="border-2 border-dashed border-border p-2.5 text-[10px] uppercase text-muted-foreground">
+          {list.mergedCount} {list.mergedCount === 1 ? "person" : "people"} merged and
+          hidden. Open a person below to undo.
+        </p>
+      )}
+
+      {loading ? (
+        <div className="brutal-flat bg-card p-8 text-center text-xs uppercase text-muted-foreground">
+          <Loader2 className="mx-auto mb-2 size-5 animate-spin" />
+          Loading people…
+        </div>
+      ) : people.length === 0 ? (
         <div className="brutal-flat bg-card px-6 py-12 text-center">
           <Users className="mx-auto mb-3 size-7 text-muted-foreground" />
           <p className="font-display text-base uppercase">No one tracked yet</p>
@@ -231,46 +623,14 @@ export function PeopleArea() {
         </div>
       ) : (
         <ul className="flex flex-col gap-2.5">
-          {tasks.map((t) => (
-            <motion.li
-              key={t._id}
-              initial={{ opacity: 0, x: -6 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.18 }}
-              className={cn(
-                "brutal-flat flex items-center gap-3 bg-card p-3",
-                t.completed && "bg-muted",
-              )}
-            >
-              <button
-                type="button"
-                onClick={() => void setCompleted({ id: t._id, completed: !t.completed })}
-                aria-label={t.completed ? "Mark as not done" : "Mark as done"}
-                aria-pressed={t.completed}
-                className={cn(
-                  "brutal-press flex size-7 shrink-0 items-center justify-center border-2 border-border",
-                  t.completed ? "bg-foreground" : "bg-background",
-                )}
-              >
-                {t.completed && <Check className="size-4 text-background" strokeWidth={4} />}
-              </button>
-              <p className={cn("flex-1 text-sm", t.completed && "text-muted-foreground line-through")}>
-                {t.title}
-              </p>
-              {t.recurrence && (
-                <span className="shrink-0 border-2 border-border bg-muted px-1.5 py-0.5 text-[10px] font-bold uppercase">
-                  {t.recurrence.replace(":", " · ")}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => void removeTask({ id: t._id })}
-                aria-label={`Delete ${t.title}`}
-                className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-primary"
-              >
-                <Trash2 className="size-4" />
-              </button>
-            </motion.li>
+          {people.map((p) => (
+            <PersonCard
+              key={p.id}
+              person={p}
+              others={others.filter((o) => o.id !== p.id)}
+              open={openId === p.id}
+              onToggle={() => setOpenId(openId === p.id ? null : p.id)}
+            />
           ))}
         </ul>
       )}

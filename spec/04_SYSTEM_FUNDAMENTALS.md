@@ -747,13 +747,20 @@ phases are `NOT STARTED`.
 | **2** | Google Calendar adapter, OAuth, sync, minimisation | writing to Google; private titles; attendees | ADR-013 | `GOOGLE_CLIENT_ID`/`SECRET` |
 | **3** | People, capture, Life Admin, commitments, Finance expansion, agents | anything without its own spec + ADR + budget | identity resolution guarantees (ADR-021) | none |
 
-#### Phase 3, feature 1 — People as first-class objects (PROPOSED, not approved)
+#### Phase 3, feature 1 — People as first-class objects (APPROVED · **VERIFIED**)
+
+> **Status corrected 2026-10-01.** This block previously read "PROPOSED, not
+> approved", which had drifted: PRODUCT_CONTEXT line 452 records
+> `People as first-class objects | APPROVED | 3`, and the standing roadmap
+> approval of 2026-10-01 covers starting phase 3. Code wins, and the
+> specification was the stale side. Built and verified as CHANGE-0013; ADR-023
+> (merge is a tombstone) and ADR-024 (identity keys, and a name is the weakest
+> one) were recorded with it.
 
 Phase 3 is a phase *of* phases. §11.3 requires each feature to carry its own
 scope, budget and approval, and the standing roadmap approval covers *starting*
-phase 3 — not every decision inside it. What follows is drafted so the first
-feature can begin without re-deriving anything. **It is a proposal. The agent has
-not started it and may not mark it approved.**
+phase 3 — not every decision inside it. What follows is the approved scope for
+the first feature.
 
 | Field | Value |
 |---|---|
@@ -762,9 +769,11 @@ not started it and may not mark it approved.**
 | **IN SCOPE** | a `people` table (name, `identityKeys`, tombstone, `mergedIntoId`); capture that can produce a person *or* propose one; `people` as a real area surface; `PEOPLE_FIT` (feature 10) fed by a real person id rather than a free-text name; merge and unmerge as explicit, reversible user actions. |
 | **OUT OF SCOPE** | automatic merge (RJD-004); importing contacts from Google or iCloud; any inbound email parsing; anything that writes to a provider. |
 | **DO NOT TOUCH** | the identity-resolution guarantees in ADR-021; indices 0–7 of the feature layout; `permissions.can` as the single access path. |
-| **Budget (ADR-016)** | 6 new files · 1 new table · 0 deps · 1 abstraction (the identity-key matcher). Every figure is a ceiling, and exceeding one is a stop condition. |
+| **Budget (ADR-016)** | 6 new files · 1 new table · 0 deps · 1 abstraction (the identity-key matcher). Every figure is a ceiling, and exceeding one is a stop condition. **Used: 4 files · 1 table · 0 deps · 1 abstraction.** |
 | **Acceptance criteria** | (1) A capture naming a known person links to that row rather than creating a second. (2) Two rows with the same normalised name stay separate until the user merges them. (3) Merge is reversible: unmerge restores both rows and every link. (4) A merged row is a tombstone that no query returns. (5) `PEOPLE_FIT` reads the person id, so two namesakes do not share evidence. (6) Live conformance: merge → unmerge leaves the row count and the link count exactly as they were. |
 | **Why it is first** | It is the only phase-3 item where the roadmap already made the hard decision (RJD-004), it unlocks feature 10 which is already computed from nothing, and it removes a place where the product currently lies about its own data model. |
+| **Verified how** | 28 unit fixtures (`src/lib/people.test.ts`) and 50 live conformance invariants (`scripts/conformance-3.ts`, 0 skips). All six acceptance criteria pass against a real deployment. `recordOutcome` writes `assistantState`, so ADR-022's OCC invariant was re-verified rather than assumed: 3 rounds × 8 concurrent mutations, 48 mutations, 0 duplicates (run F; cumulative 1,840 / 39 rounds). |
+| **What the run found** | **D34** — `SOURCE_FIT` (9) and `PEOPLE_FIT` (10) had never received evidence. `recordOutcome` was handed the raw database row, whose fields are `origin` and `personId`, while the feature object is keyed `source` and `person`. Both optional, so nothing threw; the roll-ups silently returned unchanged. The two features were identically 0 at training and at inference, so their weights never took a gradient. Acceptance criterion 5 is what found it. Fixed by deriving the feature object once and passing the *same* object to both halves, so a field rename is now a compile error. Layout untouched: `FEATURE_COUNT` 12, `WEIGHTS_VERSION` 1, indices 0–7 unchanged, nothing migrates. Also **D35** (the name normaliser was being applied to email addresses) and **D36** (a recurring task lost its person on respawn). |
 | **Risks** | R7 (identity resolution) and R19 (agents) are adjacent, not involved. The real risk is scope: "people" invites contacts, threads and social graph, none of which is in the budget. |
 
 ### 11.3 Scope rules
@@ -822,8 +831,35 @@ it, and how do we know it works?"**
 | REQ-030 | Testing is a gate, not a formality | ADR-016 | 0A |
 | REQ-031 | Preserve working functionality | ADR-021 | all |
 | REQ-032 | No fabricated integrations or completion | — | all |
+| REQ-033 | A person merge rewrites nothing and is exactly reversible | ADR-023 | 3 |
+| REQ-034 | No automatic person merging; identity evidence is advisory | ADR-024 | 3 |
 
-### 12.2 Full chains — Phase 0A (next)
+### 12.2 Full chains
+
+**Phase 3, feature 1 (People) — VERIFIED**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-034 | ADR-024 | 3F | TASK-3F-001 | AC-3F-001, AC-3F-002 | TEST-3F-001 (`src/lib/people.test.ts`, 28 fixtures); TEST-3F-002 (`scripts/conformance-3.ts`) | CHANGE-0013 |
+| REQ-033 | ADR-023 | 3F | TASK-3F-002 | AC-3F-003, AC-3F-004, AC-3F-006 | TEST-3F-002 (`scripts/conformance-3.ts`) | CHANGE-0013 |
+| REQ-015 | ADR-010 | 3F | TASK-3F-003 | AC-3F-005 | TEST-3F-002 (`scripts/conformance-3.ts`) — this check found D34 | CHANGE-0013 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-004 | AC-3F-001 | TEST-3F-002 (S1, S2, S3: cross-user isolation, foreign-id refusal on all four write paths) | CHANGE-0013 |
+| REQ-016 | ADR-016 | 3F | TASK-3F-005 | AC-3F-006 | TEST-3F-002 | CHANGE-0013 — 4 of 6 files, 1 table, 0 deps, 1 abstraction |
+
+**Phase 3 feature 1 acceptance criteria (§11.2) → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-001 | A capture naming a known person links to that row rather than creating a second | `conformance-3.ts`, "A1" | PASS, live |
+| AC-3F-002 | Two rows with the same normalised name stay separate until the user merges them | `conformance-3.ts`, "A2" (refusal, then `force`, then three coexisting namesakes) | PASS, live |
+| AC-3F-003 | Merge is reversible: unmerge restores both rows and every link | `conformance-3.ts`, "A3" | PASS, live |
+| AC-3F-004 | A merged row is a tombstone that no query returns | `conformance-3.ts`, "A4" | PASS, live |
+| AC-3F-005 | `PEOPLE_FIT` reads the person id, so two namesakes do not share evidence | `conformance-3.ts`, "A5" | PASS, live — found D34 |
+| AC-3F-006 | Merge → unmerge leaves the row count and the link count exactly as they were | `conformance-3.ts`, "A6" | PASS, live |
+
+**Phase 0A (next)**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
 
 | REQ | ADR | Phase | Task | Acceptance | Test | Change |
 |---|---|---|---|---|---|---|

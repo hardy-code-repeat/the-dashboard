@@ -506,3 +506,90 @@ extends to metrics: an approximate metric must be labelled approximate.
 The only activity record that exists is implicit — task completion timestamps
 from which the 7-day chart is computed. The `activity` table (Phase 0B) is what
 makes most of §6.2 measurable at all.
+
+---
+
+## 7. Research register
+
+A durable record inside the specification system, per MAIN_AGENT §14. Each
+entry: the question, the sources actually consulted, the evidence, the finding,
+a confidence level, the Panel area it touches, the implication, and whether it
+is now a decision, a proposal, or nothing.
+
+Research is evidence, not authority (MAIN_AGENT §44). Nothing here changes the
+product on its own; an entry becomes a change only through the changelog and,
+where it is architectural, an ADR.
+
+### R-001 — Can a "mechanism works" test detect a feature that is never exercised?
+
+- **Date:** 2026-10-01 · **Source:** Panel's own code, `src/convex/assistant.ts`
+  and `src/lib/scorer.ts` · **Confidence:** High (reproduced and fixed)
+- **Question:** Phase 1.1 appended four scorer features (8–11) and wired a
+  roll-up counter for each. Were those counters ever written?
+- **Evidence:** `recordOutcome` declared its `task` parameter as
+  `{ …, source?: string; person?: string }` and both call sites passed the raw
+  database row, whose fields are `origin` and `personId`. Both properties are
+  optional, so the code compiled, ran, and returned the counter map unchanged on
+  every call. `SOURCE_FIT` and `PEOPLE_FIT` were identically 0 at training and
+  at inference, so their weights never received a gradient.
+- **Finding:** A test that asserts *the mechanism works* passes forever when
+  the mechanism is handed an input that is always empty. Every one of the
+  phase-1.1 tests was of that shape. The failure was invisible to unit tests,
+  to lint, to types, and to every conformance harness that existed, because all
+  of them tested the path rather than the effect.
+- **Affected area:** Intelligence — the feature layout, the learning path.
+- **Implication:** For any learned or derived value, the assertion has to be on
+  the *observable result* — "completing this produces this counter", checked
+  against a real deployment — not on the call succeeding. Acceptance criterion 5
+  ("`PEOPLE_FIT` reads the person id") was written that way and found it in one
+  run. Fixed as D34; `recordOutcome` now takes `TaskFeatures`, so the same class
+  of mismatch is a compile error.
+- **Status:** **Decision** (ADR-010 unaffected; D34 recorded in CHANGE-0013).
+
+### R-002 — Can a well-formed but non-existent Convex id be produced by a client?
+
+- **Date:** 2026-10-01 · **Source:** Convex 1.42.1 runtime, live deployment
+  `little-pelican-326`, `scripts/conformance-3.ts` · **Confidence:** High
+  (36 character variants tried, all rejected)
+- **Question:** Panel's S3 check wanted to confirm that a refusal for "this id
+  is not yours" is indistinguishable from a refusal for "this id does not
+  exist". How can a client produce the second case?
+- **Evidence:** Every single-character variant of a real, valid id was rejected
+  by the argument validator with `ArgumentValidationError` before any handler
+  ran. Convex ids carry an integrity check, so the id space is not
+  client-constructible.
+- **Finding:** The existence-oracle question does not arise at the API surface
+  on this platform, because the second case has no inputs. That is strictly
+  stronger than indistinguishability, and it means the check can assert a
+  property instead of being skipped.
+- **Affected area:** Security — authorisation and id handling.
+- **Implication:** Had ids been plain strings, `owned()` would be the only
+  thing preventing an oracle, and it is correct by construction today (one
+  message for both cases). Worth re-asserting if the platform ever changes.
+- **Status:** **Finding.** No product change. Harness now asserts the stronger
+  property, and will turn to FAIL if a future platform version relaxes it.
+
+### R-003 — Is `people` the right first-class boundary, or should it be contacts?
+
+- **Date:** 2026-10-01 · **Sources:** the roadmap's own RJD-004, the phase-3
+  scope block, and the shape of the code that existed · **Confidence:** Medium
+- **Question:** Should the first phase-3 feature be a people table, a contacts
+  mirror, or a relationships graph?
+- **Evidence:** The panel already pretended to have people — `PeopleArea` wrote
+  `"catch up with mum every week"` into `tasks.title`. Feature 10 (`PEOPLE_FIT`)
+  was already computed from a free-text name. Both are worse than useless: a
+  name is not an identifier, so the counters could not be keyed safely, and a
+  person stored as a title cannot be linked, merged, or undone.
+- **Finding:** The gap was not a missing feature but a **false model**: the
+  product claimed a relationship it did not represent. That is a stronger reason
+  to build it first than "people is a good starting point", and it is why
+  feature 1 had to land before capture, commitments or agents could be trusted —
+  each of those wants to point at a person.
+- **Affected area:** Product model, data model, intelligence.
+- **Implication:** A contacts mirror is a *later* feature and a different one: it
+  needs a provider, a sync, and a trust conversation about reading someone's
+  address book. Building it first would have meant a person model defined by
+  whatever Google returned, which is the opposite of Panel owning context
+  (MAIN_AGENT §21).
+- **Status:** **Decision** — ADR-023, ADR-024, CHANGE-0013. Contact import is
+  explicitly out of scope for feature 1 and recorded as such.

@@ -44,6 +44,7 @@ type StateRow = {
   byHour: number[];
   byWeekday: number[];
   byTag: Record<string, { done: number; total: number }>;
+  byPerson?: Record<string, { done: number; total: number }>;
   shortDone: number;
   shortTotal: number;
   longDone: number;
@@ -287,6 +288,18 @@ export const getModelControls = query({
       modelVersion: state?.modelVersion ?? 0,
       samples: state?.samples ?? 0,
       learningPaused: state?.learningPaused ?? false,
+      /**
+       * Per-person completion evidence, keyed by person id.
+       *
+       * Exposed because learning has to be observable (ADR-004): without it,
+       * "the model knows who you actually follow up with" is an assertion
+       * rather than a thing you can read. These are the caller's own person
+       * ids and the caller's own counters, so nothing crosses an account
+       * boundary, and the keys are deliberately ids rather than names — two
+       * namesakes must not be able to share a row of evidence, which is
+       * exactly the bug PEOPLE_FIT existing at all prevents.
+       */
+      byPerson: state?.byPerson ?? {},
       updatedAt: state?.updatedAt ?? null,
       maxSnapshots: MAX_SNAPSHOTS,
       autoSnapshotEvery: AUTO_SNAPSHOT_EVERY,

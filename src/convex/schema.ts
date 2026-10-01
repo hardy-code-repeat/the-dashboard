@@ -109,6 +109,9 @@ export const ACTIVITY_KINDS = [
   "expense.added",
   "capture.committed",
   "person.created",
+  "person.updated",
+  "person.merged",
+  "person.unmerged",
   "commitment.made",
   "attention.acted",
   "attention.dismissed",
@@ -138,6 +141,9 @@ export const activityKindValidator = v.union(
   v.literal("expense.added"),
   v.literal("capture.committed"),
   v.literal("person.created"),
+  v.literal("person.updated"),
+  v.literal("person.merged"),
+  v.literal("person.unmerged"),
   v.literal("commitment.made"),
   v.literal("attention.acted"),
   v.literal("attention.dismissed"),
@@ -498,13 +504,87 @@ const schema = defineSchema(
       /** Set when an upstream source this row came from disappeared. */
       orphanedSource: v.optional(v.boolean()),
       sourceDisconnected: v.optional(v.boolean()),
+      /**
+       * Phase 3: the person this task is about.
+       *
+       * An id, not a name — feature 10 (`PEOPLE_FIT`) keys its completion
+       * counters on this value, and two people called "Raj" must not share
+       * evidence about each other's follow-ups.
+       *
+       * It may point at a **tombstone**, and that is deliberate: a merge rewrites
+       * nothing (see `people.mergedIntoId`), so a task keeps pointing at exactly
+       * the row the user picked, and unmerging restores it without touching a
+       * single task. Reads resolve through `mergedIntoId`.
+       */
+      personId: v.optional(v.id("people")),
     })
       .index("by_space", ["spaceId"])
       .index("by_owner", ["ownerUserId"])
       .index("by_owner_created", ["ownerUserId", "createdAt"])
       // Phase 0B query-idiom fix: area filtering happens in the index, not in
       // JavaScript after a full collect.
-      .index("by_owner_area", ["ownerUserId", "area"]),
+      .index("by_owner_area", ["ownerUserId", "area"])
+      /**
+       * Phase 3: tasks that are *about somebody*, and nothing else.
+       *
+       * Convex omits a document from an index when an indexed field is
+       * `undefined`, so this range holds exactly the tasks carrying a
+       * `personId` — never a full scan of the user's tasks. `listPeople` and
+       * `getPerson` need every task with a person to resolve open counts and
+       * links through tombstones, and before this index they were reading every
+       * task the user has ever created, on a reactively-subscribed query.
+       *
+       * Tombstone ids appear here too, and deliberately: a merged-away row is
+       * still the row a task points at (ADR-023), and the read resolves the
+       * chain rather than needing the index to follow it.
+       */
+      .index("by_owner_person", ["ownerUserId", "personId"]),
+
+    /**
+     * A person (phase 3, feature 1).
+     *
+     * People were previously faked: `PeopleArea` stored "catch up with mum every
+     * week" in `tasks.title`, which meant a person could not be shared, synced,
+     * linked, or reasoned about, and two captures of the same person were two
+     * unrelated strings.
+     *
+     * **Identity is a set of keys, never a name.** RJD-004 settled it: "Raj" ≠
+     * "Raj". `identityKeys` holds normalised, namespaced keys (`name:raj`,
+     * `email:…`) that a future provider can contribute to without a schema
+     * change. Sharing a key is *evidence* shown to the user, never an automatic
+     * merge — see `src/lib/people.ts`.
+     *
+     * **A merge rewrites nothing.** `mergedIntoId` is set on the source and the
+     * row is kept as a tombstone; reads resolve through it and identity keys are
+     * derived by following the chain. Nothing is copied, so unmerge is clearing
+     * two fields and is exact by construction — there is no restoration step
+     * that could get it wrong.
+     */
+    people: defineTable({
+      ...ownedBy,
+      /** Display name. Editable, and deliberately *not* the identity. */
+      name: v.string(),
+      /**
+       * Normalised identity keys. Bounded (`MAX_KEYS`) because a mutation
+       * writes them, and computed rather than accepted verbatim so a client
+       * cannot invent a key that matches somebody else's evidence.
+       */
+      identityKeys: v.array(v.string()),
+      /** Optional contact detail. Contributes an `email:` key; never exported. */
+      email: v.optional(v.string()),
+      note: v.optional(v.string()),
+      /**
+       * Set when this person was merged into another. The row is **kept**, not
+       * deleted: it is the indirection that makes unmerge exact.
+       */
+      mergedIntoId: v.optional(v.id("people")),
+      mergedAt: v.optional(v.number()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      .index("by_space_name", ["spaceId", "name"]),
 
     /** A short free-form note pinned to the dashboard. */
     notes: defineTable({
