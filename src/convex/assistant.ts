@@ -3,6 +3,7 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { DEFAULT_AREA_SLUG, areaBySlug } from "../lib/areas";
+import { planCapture } from "../lib/capture";
 import { nextOccurrence, parseTaskInput } from "../lib/nlp";
 import {
   dueBucketKey,
@@ -34,6 +35,15 @@ const DAY_MS = 86_400_000;
  * snapshot table stays small.
  */
 export const AUTO_SNAPSHOT_EVERY = 25;
+
+/**
+ * How much activity `captureAudit` reads.
+ *
+ * A read, so it is bounded rather than exhaustive. This is a question of "did
+ * the audit row get written, and with what count", not an export, and an
+ * unbounded read on a query a client may call is the shape of defect D37.
+ */
+const AUDIT_SCAN_LIMIT = 500;
 
 /** Snapshots retained per user; the oldest are pruned. */
 export const MAX_SNAPSHOTS = 10;
@@ -328,6 +338,202 @@ async function resolveArea(
   // Only an area the user actually has enabled is accepted.
   return match ? slug : DEFAULT_AREA_SLUG;
 }
+
+/**
+ * Creates a task from natural language, optionally straight into a life area.
+ *
+ * Parsing happens server-side so behaviour is identical whether the composer
+ * preview was skipped (quick add) or not.
+ */
+/**
+ * Multi-object capture (phase 3, feature 2).
+ *
+ * The one capture entry point that can produce more than one task. Everything
+ * it does, it does through the *existing* `addTask` semantics: same parser,
+ * same area resolution, same ownership check, same row shape. There is no
+ * second way to make a task in Panel, which is the point — a feature that
+ * introduced its own insert path would be a feature that could drift from
+ * `addTask`'s without anyone noticing.
+ *
+ * **The server result is authoritative.** The client may preview a parse, but
+ * this mutation re-plans from the raw string, so a client that lies about its
+ * own segmentation gets the server's answer. Preview and commit therefore
+ * cannot disagree about what was created.
+ *
+ * **One space per capture.** `ensurePersonalSpace` is resolved once and every
+ * created task carries it, so a capture cannot straddle two spaces.
+ *
+ * **One `capture.committed` row per accepted capture**, carrying the real
+ * segment count. That kind has been in the closed taxonomy since phase 0B and
+ * written by nothing until now (D38) — an audit row that is declared but never
+ * written is a promise the code does not keep.
+ */
+export const capture = mutation({
+  args: {
+    input: v.string(),
+    area: v.optional(v.string()),
+    /**
+     * A person the whole capture is about, chosen explicitly by the user.
+     * Ownership-checked server-side, exactly as in `addTask`. It is applied to
+     * every segment that does not name a different person itself.
+     */
+    personId: v.optional(v.id("people")),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const spaceId = await ensurePersonalSpace(ctx, userId);
+    const area = await resolveArea(ctx, userId, args.area);
+
+    // An explicitly chosen person is verified once, here, and the *verified*
+    // id is what the plan is given. The plan therefore cannot attach a person
+    // the user does not own, even by accident.
+    let explicitPerson: { id: string; name: string } | null = null;
+    if (args.personId) {
+      const person = await ctx.db.get(args.personId);
+      if (!person || person.ownerUserId !== userId) throw new Error("Person not found");
+      explicitPerson = { id: person._id, name: person.name };
+    }
+
+    // Read the caller's own people, bounded, so a segment that opens with a
+    // known name can be linked. Identity resolution is advisory (ADR-024): this
+    // reads keys, and never writes or merges anything.
+    const ownPeople = await ctx.db
+      .query("people")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+      .collect();
+    const byId = new Map(ownPeople.map((p) => [p._id, p] as const));
+
+    const known = ownPeople
+      .filter((p) => p.mergedIntoId === undefined)
+      .map((p) => ({ id: p._id, name: p.name }));
+
+    const plan = planCapture(args.input, known, new Date());
+
+    if (plan.refused) {
+      // Refusing is the whole of the low-confidence rule: no object is created,
+      // and the reason travels back so the UI can say it rather than shrugging.
+      return {
+        created: [] as { id: string; title: string; dueAt: number | null; personId: string | null }[],
+        dropped: plan.dropped,
+        overflow: 0,
+        refused: true as const,
+        refusalReason: plan.refusalReason ?? "Nothing to capture",
+      };
+    }
+
+    const created: { id: string; title: string; dueAt: number | null; personId: string | null }[] = [];
+
+    for (const segment of plan.segments) {
+      // A segment naming its own person wins over the capture-level choice.
+      const subject = segment.leadingPerson ?? explicitPerson;
+      if (subject) {
+        // Re-check even for a plan-derived person: the plan was given ids this
+        // mutation read, but the check is cheap and ownership is not something
+        // to be inferred from a previous line of the same function.
+        const row = byId.get(subject.id as Id<"people">);
+        if (!row || row.ownerUserId !== userId) continue;
+      }
+
+      const id = await ctx.db.insert("tasks", {
+        ownerUserId: userId,
+        spaceId,
+        title: segment.parsed.title,
+        completed: false,
+        priority: segment.parsed.priority,
+        dueAt: segment.parsed.dueAt,
+        createdAt: Date.now(),
+        completedAt: null,
+        tags: segment.parsed.tags,
+        recurrence: segment.parsed.recurrence,
+        area,
+        personId: subject ? (subject.id as Id<"people">) : undefined,
+      });
+
+      created.push({
+        id,
+        title: segment.parsed.title,
+        dueAt: segment.parsed.dueAt,
+        personId: subject?.id ?? null,
+      });
+    }
+
+    await ctx.db.insert("activity", {
+      spaceId,
+      actor: "user",
+      kind: "capture.committed",
+      // `objectKind` and `objectId` are deliberately absent. A capture is an
+      // *act*, not an object, and it may have created several tasks — so there
+      // is no single object to point at, and naming the first one would make
+      // the audit row claim the capture was about something it was not. The
+      // kind already says what happened; `meta` carries how much of it.
+      meta: { segments: String(created.length) },
+      at: Date.now(),
+    });
+
+    return {
+      created,
+      dropped: plan.dropped,
+      overflow: plan.overflow,
+      refused: false as const,
+      refusalReason: null,
+    };
+  },
+});
+
+/**
+ * The caller's own capture audit trail.
+ *
+ * Exists so `capture.committed` can be *read back* rather than assumed. A
+ * harness that trusted the mutation's return value would prove only that the
+ * mutation returned; this query is what makes "the audit row was actually
+ * written, with the real count" a checkable claim rather than a promise
+ * (D38 is the defect class where a kind is declared and never written).
+ *
+ * Owner-scoped to the caller's personal space, and bounded — this is an
+ * inspection surface for a person checking their own history, not an export.
+ */
+export const captureAudit = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { kinds: [] as string[], segments: [] as string[] };
+
+    const spaces = await ctx.db
+      .query("spaces")
+      .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
+      .collect();
+    if (spaces.length === 0) return { kinds: [], segments: [] };
+
+    const kinds: string[] = [];
+    const segments: string[] = [];
+
+    for (const space of spaces) {
+      // One indexed range per space, and bounded. The first version of this
+      // query read `by_space_at` with no range and filtered the owner's spaces
+      // in JavaScript — a table-wide collect on a read path, which is exactly
+      // the defect class phase 3 feature 1 audited for (D37) and exactly what
+      // this query must not reintroduce. The range is `spaceId` because that
+      // is the index's prefix, so the database does the scoping.
+      const rows = await ctx.db
+        .query("activity")
+        .withIndex("by_space_at", (q) => q.eq("spaceId", space._id))
+        .take(AUDIT_SCAN_LIMIT);
+
+      for (const row of rows) {
+        kinds.push(row.kind);
+        // `meta` is a scalar union, so the count comes back typed as
+        // `string | number | boolean` even though this writer only ever stores
+        // a string. Coercing here rather than casting keeps the shape honest
+        // for any future writer of the same kind.
+        if (row.kind === "capture.committed") {
+          segments.push(String(row.meta?.segments ?? ""));
+        }
+      }
+    }
+
+    return { kinds, segments };
+  },
+});
 
 /**
  * Creates a task from natural language, optionally straight into a life area.

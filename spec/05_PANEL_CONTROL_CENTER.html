@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">24</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">13</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">14</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -478,14 +478,14 @@
           opposite; the difference is the gap table.</p>
         <dl class="kv">
           <dt>Exists</dt><dd>17 Convex tables, 4 routes, 5 pure <code>src/lib</code> modules, Convex Auth, brutalist design system, Landing/Auth/Dashboard/Attention.</dd>
-          <dt>Works</dt><dd>NL capture end to end. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions. <b>People</b> — a person is a row with identity keys; a merge rewrites nothing and is exactly reversible.</dd>
+          <dt>Works</dt><dd>NL capture end to end — <b>multi-object</b>: one capture, several tasks, splitting on explicit structure only. Deterministic parser. Learned ranking with reasons and a live model inspector. Notes. Life areas. Tax engine (5 countries, per-line sourcing). Honest integration catalogue. <b>Attention screen</b> — eight sections, hard rules, caps, decay, escalation, four server-enforced feedback actions. <b>People</b> — a person is a row with identity keys; a merge rewrites nothing and is exactly reversible.</dd>
           <dt class="broken">Broken</dt><dd><b>N2 / Q-001</b> — a guest who signs up by email silently loses all data. This is a product decision the agent is not permitted to make. <b>N1</b> was fixed and verified under real concurrency (ADR-022).</dd>
           <dt>Partial</dt><dd>Integrations (9 providers catalogued, none wired). Health (<code>useState</code>, resets on reload). Sharing (schema and grants exist in 0B; no UI yet).</dd>
           <dt>Specified</dt><dd>Everything in phases 1.1–3, plus the guest-account path blocked on Q-001. Phase 3 feature 1 (People) is built and verified; features 2+ are specified but not built.</dd>
           <dt>Unknown</dt><dd>Every product and business assumption. <code>.env</code> contents are unreadable to the agent. No analytics exists, so no defined metric is measurable.</dd>
         </dl>
         <p class="sub" style="margin-top:10px">Everything marked "works" above is covered by
-          <b>278 unit fixtures</b> plus eight live conformance harnesses run against the real
+          <b>321 unit fixtures</b> plus nine live conformance harnesses run against the real
           deployment — evidence level 3, not level 1–2. That is a claim with a command
           attached, not an assertion.</p>
       </div>
@@ -494,7 +494,7 @@
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td><b>Closed</b> — 278 fixtures + 8 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 321 fixtures + 9 live harnesses</td><td><b>0A</b></td></tr>
           <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
           <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
           <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
@@ -1037,9 +1037,9 @@
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>278 pass, 0 fail</b> across 11 files.
-        Plus eight live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3)
-        run against the deployed Convex backend. Phase 3's harness reports
+      <div class="note"><code>bun test</code> — <b>321 pass, 0 fail</b> across 12 files.
+        Plus nine live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3, 4)
+        run against the deployed Convex backend. The phase-3 harnesses report
         <b>0 skips</b>; phase 2's reports one section as SKIP (D32).</div>
     </div>
     <div class="stat ok">
@@ -1177,11 +1177,11 @@
       risks:"R8" },
 
     { id:"3", status:"IN PROGRESS",
-      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Feature 1 (People) built and verified.",
+      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Features 1 (People) and 2 (Multi-object Capture) built and verified.",
       deps:"2",
-      budget:{files:"per-feature — f1 used 4 of 6",tables:"per-feature — f1 used 1",deps:"0",abstractions:"per-feature — f1 used 1"},
-      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","Capture has per-kind confidence thresholds; server result is authoritative — NOT STARTED","Documents drive expiry → renewal → task — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
-      nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing"],
+      budget:{files:"per-feature — f1 used 4 of 6, f2 used 2 of 4",tables:"per-feature — f1 used 1, f2 used 0",deps:"0",abstractions:"per-feature — f1 used 1, f2 used 1"},
+      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","One capture produces several tasks, each parsed independently — PASS, live (CHANGE-0014)","Unseparated capture is byte-identical to the single-task path — PASS, live","A bare \"and\" is never a separator; \"and then\" is — PASS, live","An unusable segment is dropped AND reported, never silently — PASS, live","The server's segmentation is authoritative over the client's — PASS, live","Documents drive expiry → renewal → task — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
+      nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing","prose-conjunction splitting in capture","fuzzy or embedding matching","creating a person from a capture"],
       risks:"R7, R19" }
   ];
 

@@ -593,3 +593,78 @@ where it is architectural, an ADR.
   (MAIN_AGENT §21).
 - **Status:** **Decision** — ADR-023, ADR-024, CHANGE-0013. Contact import is
   explicitly out of scope for feature 1 and recorded as such.
+
+### R-004 — Can a single capture be split into several objects without damaging the user's data?
+
+- **Date:** 2026-10-01 · **Sources:** Todoist's own Quick Add documentation
+  (todoist.com/help, read 2026-10-01), Things 3 and Apple Reminders quick-entry
+  behaviour, the multi-intent-detection literature (MixATIS / MixSNIPS
+  benchmark work), and Panel's own parser · **Confidence:** High for the
+  separator decision; Medium for the negative case (no product publishes its
+  false-positive rate, which is itself evidence that this is hard)
+- **Question:** Capture currently returns exactly one task. Should a single
+  input be split on prose conjunctions ("call Raj and email Priya") so the user
+  can capture a list in one go?
+- **Evidence:**
+  1. **Mature products do not do this.** Todoist's Quick Add separates date,
+     deadline, label, priority, reminder, assignee and project with *explicit
+     symbols* (`%label`, `p1`, `!14:00`, `+Name`, `#Project`). It has shipped
+     ~115 features a year and multi-task-from-one-input is reached through
+     *text/image/document* capture, not through prose splitting. Things 3 and
+     Apple Reminders likewise use explicit structure, not conjunctions.
+  2. **The academic framing agrees on the difficulty.** Multi-intent detection
+     is a *research* problem in 2024–2025 (MixATIS, MixSNIPS, blended-pattern
+     models). It is not a solved parsing step. Doing it deterministically with a
+     word list is the least reliable version of it available.
+  3. **The failure is asymmetric and the damage is real.** "Call the dentist
+     and book the dentist" is one task. "Buy milk and eggs" is one task. "Pick up
+     bread and jam from the shop" is one task. A false split silently destroys a
+     correct task and invents a second one — the user is not told, because from
+     their point of view the capture succeeded.
+  4. **Panel already has the right precedent.** The parser consumes tokens with
+     a `used` flag and leaves the rest as the title; it never guesses. The
+     capture feature inherits that character or betrays it.
+- **Finding:** **Explicit structure only.** Newline, semicolon, and the literal
+  ` and then ` are separators. A bare `and` never is. The cost is that Panel
+  will not auto-split a prose list, which is the right trade: a user who wants
+  three tasks types three lines, and a user who typed "and" keeps one task that
+  says what they meant.
+- **Affected area:** Capture, NLP, data integrity.
+- **Implication:** Confidence is measured on the **split**, not on comprehension
+  — the parser's closed vocabulary already answers "what is a task", and the new
+  uncertainty is only "one thing or several". This keeps the feature inside its
+  budget (one abstraction, zero new tables) instead of becoming a
+  general extraction engine.
+- **Status:** **Decision**, scoped in SYSTEM_FUNDAMENTALS §11.2. The residual
+  question — whether a multi-object capture should itself be a learning signal —
+  is **Q-006**, open, and non-blocking.
+
+### R-005 — Is the activity taxonomy honest about what is actually written?
+
+- **Date:** 2026-10-01 · **Source:** `src/convex/schema.ts` against every
+  `db.insert("activity", …)` site in `src/convex` · **Confidence:** High
+  (mechanically verified)
+- **Question:** `activityKindValidator` declares a closed taxonomy. Do the
+  declared kinds correspond to writes?
+- **Evidence:** Declared and never written anywhere: `task.created`,
+  `task.deleted`, `note.created`, `expense.added`, `capture.committed`,
+  `commitment.made`. `addTask`, `removeTask`, `addNote` and `addExpense` insert
+  their object rows and write no activity row at all. The 7-day chart is
+  unaffected — it reads only `task.completed`, which *is* written — so nothing
+  is visibly broken.
+- **Finding:** The taxonomy is a *design intent* that has drifted from the
+  writes. It is not a security or integrity defect: no query reads the unwritten
+  kinds, and a closed union that is a superset of what is written cannot be
+  invalid data. But it is a claim in a specification that the code does not meet,
+  and it is precisely the shape of the D34 class — a path that compiles and
+  promises an effect that never happens.
+- **Affected area:** Audit, activity, the 7-day chart.
+- **Implication:** `capture.committed` is the one kind Feature 2 genuinely
+  needs, and it must be **written**, not merely declared. The other unwritten
+  kinds (`task.created`, `note.created`, `expense.added`) are a separate,
+  low-priority honesty task; they are now recorded as D38 rather than left as an
+  unexamined gap between spec and code.
+- **Status:** **Finding.** `capture.committed` becomes an acceptance criterion
+  of Feature 2. The rest is recorded as D38, to be fixed when an activity view
+  actually needs them — not by deleting the taxonomy, which is the correct
+  design and should stay.

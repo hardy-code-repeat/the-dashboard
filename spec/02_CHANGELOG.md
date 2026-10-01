@@ -1225,6 +1225,205 @@ cases identically. As written, `owned()` throws one message for both.
 
 ---
 
+## CHANGE-0014
+
+```
+Date:       2026-10-01
+Phase:      3, feature 2 — Multi-object Capture
+Type:       feature
+Severity:   MINOR
+Summary:    One capture can now produce several tasks. It splits on explicit
+            structure only — a new line, a semicolon, or "and then" — and
+            never on a bare conjunction, because "call the dentist and book
+            the dentist" is one task and splitting it would destroy a correct
+            object and invent a wrong one, silently. The composer shows every
+            task before you commit to any of them, and the server re-plans the
+            whole capture so the preview and the record cannot disagree.
+```
+
+Phase:        3, feature 2 — Multi-object Capture.
+Status:       **VERIFIED.**
+Scope block:  SYSTEM_FUNDAMENTALS §11.2 (Multi-object Capture).
+
+Problem:      `parseTaskInput` returns exactly one `ParsedTask`. A user
+              thinking in lists — "call the dentist, renew the passport, email
+              Raj" — had to capture three times, and the first two landed in
+              one title with the separators still in it. Capture is the
+              product's front door and it was making the user do Panel's
+              segmentation work.
+
+Files:        2 new · 3 edited · **0 new tables** · 0 deps · 1 abstraction.
+              (`src/lib/capture.ts`, `src/lib/capture.test.ts`,
+              `scripts/conformance-4.ts`; plus `src/convex/assistant.ts`,
+              `src/pages/Dashboard.tsx`, `src/convex/schema.ts` for the
+              multi-line composer.)
+              Budget was 4 files / 0 tables / 0 deps / 1 abstraction
+              (SYSTEM_FUNDAMENTALS §11.2). **2 of 4 files used, 0 of 0 tables,
+              1 of 1 abstraction.** Zero new tables was the load-bearing
+              constraint: a capture feature that needed a table would be a
+              different feature.
+
+Decisions:    D38 (partially), plus the scope block's answers to three
+              questions the roadmap had left open.
+Tests:        43 new unit fixtures, 51 live conformance invariants, 0 skips.
+Related ADR:  ADR-001, ADR-002, ADR-004, ADR-006, ADR-010, ADR-019,
+              ADR-021, ADR-023, **ADR-024**
+
+### The decision that shapes the feature
+
+**Only explicit structure separates objects. A bare "and" never does.**
+
+This is not timidity, and it was not decided by preference. The evidence is in
+R-004: mature products reach the same place by a different route (Todoist
+separates everything with explicit symbols — `%label`, `p1`, `!14:00`,
+`#Project` — and gets multi-task capture from *text/image/document* input, not
+prose splitting), multi-intent detection is an open research problem rather
+than a solved parsing step, and the failure is asymmetric. Failing to split
+costs a user three lines of typing. Splitting wrongly costs them data they did
+not know they had lost.
+
+The consequence is stated in the product as well as the code, because a user
+who does not know the rule will hit it: the composer says *"A plain 'and' stays
+part of the task."*
+
+### Confidence is about segmentation, not comprehension
+
+The parser's closed vocabulary already answers "what is a task". The genuinely
+new question is only "one thing, or several". So confidence measures the
+*split*:
+
+- **high** — the user stated a separator. Create it.
+- **medium** — no separator anywhere, so the whole capture is one task. Create
+  it, and say so: *"No separator found, so this is one task."*
+- **low** — refused. Nothing is created, and the reason travels back.
+
+The low-confidence rule is the one that matters: nothing is ever created that
+Panel is not sure about, and the refusal is explained rather than silent.
+
+### What is deliberately not built
+
+- **No commitments, documents, expenses or notes.** Each is a separate approved
+  phase-3 feature with its own table and budget, or already has a dedicated
+  tested create path. A `commitments` table does not exist, and creating it
+  here would have spent Feature 3's budget without its spec.
+- **No person is created from a capture, and none is ever merged.** A name
+  Panel does not recognise stays as words in the title. ADR-024 and RJD-004
+  are unchanged, and the harness checks that the people count does not move.
+- **No prose-conjunction splitting, no fuzzy matching, no LLM** (ADR-001).
+- **No new feature index.** `FEATURE_COUNT` is still 12, `WEIGHTS_VERSION` is
+  still 1, indices 0–7 are untouched.
+
+### Defects found and fixed
+
+```
+D38 (partially resolved)  `capture.committed` was declared in the closed
+     activity taxonomy since phase 0B and written by nothing. A feature that
+     creates several objects must be auditable, so the kind is now genuinely
+     written — once per accepted capture, carrying the real segment count — and
+     read back by `assistant:captureAudit` so the claim is checkable rather
+     than asserted. The four other unwritten kinds are left alone deliberately
+     and the reasoning is recorded in the defect register.
+
+D39  `captureAudit` shipped a table-wide `.collect()` on its first draft: it
+     read `activity` across every space in the deployment and filtered the
+     caller's own in JavaScript. That is exactly the defect class phase 3
+     feature 1 audited for and recorded as D37, reintroduced one feature later
+     by the same agent. Caught in self-review by the performance pass, not by
+     a test. Now one indexed range per space, bounded at 500 rows.
+```
+
+### Self-review — three bugs the tests caught before review did
+
+Recorded because a feature that only finds its own bugs in review is not being
+tested hard enough.
+
+1. **`labelSegments` attributed the wrong separator, and missed one.** It
+   split newline-first and then refused to re-split its own output, so
+   `"call the dentist\nrenew the passport; email Raj"` kept the semicolon
+   *inside* the second segment and silently produced two tasks where the user
+   wrote three. Rewritten as a single pass over one combined pattern.
+2. **Leading-person matching never fired.** The boundary check read
+   `remainder[0]` *after* trimming, which had already deleted the very space it
+   was testing for — so `"Raj Patel call the dentist"` matched nobody. It now
+   reads the character before trimming, which is also what correctly rejects
+   `"Raja"` against `"Raj"`.
+3. **The cue-only drop rule was far too broad.** Keying on "the parsed title
+   equals the segment text" also matched `"call the dentist"`, which has no cue
+   to consume at all — the rule would have deleted real tasks. Narrowed to "the
+   title is unchanged **and** a date or recurrence was produced", which
+   distinguishes `"tomorrow"` from `"call the dentist"` without duplicating the
+   parser's vocabulary.
+
+Each is now pinned by a fixture that fails without the fix.
+
+### Acceptance criteria (§11.2) — all PASS, live
+
+```
+AC-2-1  One capture with two separators produces three tasks, each parsed
+         independently and correctly dated ............ PASS
+AC-2-2  An input with no separator produces exactly one task, byte-identical
+         to the single-task path ...................... PASS
+         Checked against the *deployed* `addTask`, not against the parser. If
+         the two paths ever diverged, every existing user's composer would
+         have changed and nothing would have reported it.
+AC-2-3  "call the dentist and book the dentist" produces ONE task .... PASS
+         Plus "buy milk and eggs" and "pick up bread and jam from the shop",
+         and the positive control that "and then" *does* split.
+AC-2-4  An unusable segment is dropped AND reported, never silently ..... PASS
+         Includes the whole-capture refusal, which creates nothing and
+         returns a reason the UI can show.
+AC-2-5  Every created task is owner-scoped, in the personal space, and
+         invisible to a second account ................................. PASS
+         A foreign `personId` is refused with the same message `addTask`
+         uses, and a name the other account does not know links to nobody.
+AC-2-6  `capture.committed` is written once per accepted capture, carrying
+         the real segment count ............................. PASS
+         Read back through a query, so a mutation that merely *returned* the
+         count would not pass.
+AC-2-7  The server is authoritative ...................................... PASS
+         A client claiming two objects still gets one.
+AC-2-8  Existing capture behaviour is unchanged; the learned model is
+         untouched by authorship ............................. PASS
+         `samples` 0 → 0 and the weight vector byte-identical across two
+         multi-segment captures. See Q-006 for why that is the interim
+         answer.
+```
+
+### Additional verification
+
+```
+43 unit fixtures (src/lib/capture.test.ts) ....... PASS, 321 total, 0 fail
+51 live conformance invariants .................. PASS, 0 skipped
+
+ADR-022 / N1 re-verified ......................... PASS (run G)
+  `capture` writes no `assistantState` and calls no `recordOutcome`, and the
+  feature-2 harness proves that live. But "the new code does not call it" is a
+  claim about code, and ADR-022 requires the invariant to be *executed*. The
+  suite was re-armed and re-run rather than inherited: 3 rounds x 8 concurrent
+  mutations, 48 mutations, one row per user in every round, negative control
+  able to see a deliberate duplicate. Cumulative 1,888 mutations / 42 rounds /
+  0 duplicates. Fixture removed and exports reverted again.
+
+The 21 pre-existing nlp.test.ts fixtures ....... PASS, unmodified
+  Do-Not-Touch #7 — the token-consumption loop was not edited. The segmenter
+  calls `parseTaskInput` and never touches its internals.
+
+lint ........................ 3 errors / 19 warnings — the stock baseline
+                                (carousel, sidebar, use-mobile). No new problems.
+spec-drift ................... 18 passed, 0 failures, 1 warning.
+```
+
+### What the UI does now
+
+The composer is a two-row textarea. Enter captures; Shift+Enter adds a line.
+The preview lists **every** task the capture will produce, with each one's
+priority, date, recurrence and tags — so the segmentation is visible before
+anything is saved, and the user can fix a wrong split before it becomes data.
+Dropped segments and overflow are surfaced as warnings, because a drop the user
+cannot see is indistinguishable from a capture that worked.
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1350,6 +1549,45 @@ remain `user only` under MAIN_AGENT §9.2 and ADR-021.
 | **Created** | 2026-10-01 |
 | **Resolved** | 2026-10-01 — the question was put and decided by Hardik: supersede ADR-017. Answered by **ADR-022**, which replaces the deterministic-id mechanism with Convex's transactional OCC. |
 | **ADR created** | **ADR-022** — "Assistant state initialisation relies on transactional OCC". ADR-017 marked SUPERSEDED BY ADR-022, retained not deleted. |
+
+---
+
+### Q-006 — Should a multi-object capture be a learning signal?
+
+**Status: OPEN. Non-blocking.** Recorded 2026-10-01 by CHANGE-0014.
+
+**The question.** Today the model learns from *task completion*: a task the user
+finishes teaches Panel they finish things like that. A multi-object capture is
+a **single act of authorship producing N tasks**, and none of them is a signal
+about any individual task.
+
+**Why it is not trivial.** If Panel treats "created via multi-capture" as a
+positive training signal, every one of those tasks inherits evidence it never
+earned — the same defect shape as D34, where a signal that was never really
+present still moved the weights. If it stays silent, a genuinely useful
+behaviour never becomes learnable.
+
+**Options.**
+- **(a) No learning signal from capture at all.** Capture is authorship, not
+  outcome, and only completion is an outcome.
+- **(b) A new feature index** for "created in a multi-object capture",
+  appended at 12, requiring the ADR-010 governance.
+- **(c) Use the existing `origin` field** to mark the source and let
+  completion-supplied evidence dominate.
+
+**Recommendation (technical only — this is the agent's engineering judgement,
+not a product decision):** **(a)**. Smallest option, cannot leak authorship into
+outcome evidence, and consistent with ADR-004's refusal to learn from anything
+other than an explicit outcome. Option (b) spends a frozen-layout slot on a
+hypothesis, which is precisely what ADR-010 exists to prevent.
+
+**Interim behaviour, shipped and verified:** (a). A captured task is an ordinary
+`panel`-origin task and capture adds no training signal. The harness asserts
+this live (`samples` 0 → 0, weight vector byte-identical), so if it ever changes
+the change is visible. Option (b) remains available later as an additive change
+to the feature layout, not a redesign.
+
+**Blocked by:** a human decision.
 
 ---
 
@@ -1952,8 +2190,9 @@ uninterpretable — a counter that cannot see a duplicate proves nothing.
 | C | 32 | 10 | 640 | 0 |
 | D (final shipped script) | 32 | 10 | 640 | 0 |
 | E (re-run after 1.1 changed `recordOutcome`) | 8 | 3 | 48 | 0 |
-| F (re-run after phase 3 changed `recordOutcome` again) | 8 | 3 | 48 | 0 |
-| **Total** | — | **39** | **1,840** | **0** |
+| F (re-run after phase 3 feature 1 changed `recordOutcome` again) | 8 | 3 | 48 | 0 |
+| G (re-run after feature 2 edited `assistant.ts`) | 8 | 3 | 48 | 0 |
+| **Total** | — | **42** | **1,888** | **0** |
 
 Run D re-executed the suite after the driver was decoupled from Convex codegen,
 so the artifact left in the repository is the one that was actually observed to
@@ -1976,6 +2215,14 @@ exist", and the cold-start path inserted a row whose `shortTotal` disagreed
 with its own `samples`. Both fixed; the cold path now writes exactly the
 counters `recordOutcome` would have written, so the two paths are
 indistinguishable by construction.
+
+Run G applied the same discipline to phase 3 feature 2. `capture` writes no
+`assistantState` and calls no `recordOutcome`, and the feature-2 harness proves
+that live — but "the new code does not call it" is a claim about code, not an
+execution. The suite was re-armed and re-run anyway. This is the rule working
+as intended: reasoning about which paths touch the guarded row is the cheap
+check, and re-running is the expensive one, and ADR-022 asks for the expensive
+one whenever `assistant.ts` changes.
 
 The negative control reported `count === 2` on every run, establishing that the
 detector is capable of observing a violation. `samples` equalled the batch size
@@ -2250,6 +2497,8 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D35** | `normaliseKey` was applied to email addresses, turning `raj@ex.co.uk` into `raj ex co uk` — nonsense on screen, and a key that collides with what a name of the same words would produce. A related docstring claimed "O'Brien" and "OBrien" normalised alike; they do not, and should not. | **RESOLVED (CHANGE-0013)** — `normaliseEmailKey` keeps the structure of an address. The name normaliser's conservatism is now the documented, fixture-pinned intent: under-matching costs a second row, over-matching costs a wrong merge, and RJD-004 makes the conservative direction the correct one. Found by the new unit fixtures. |
 | **D36** | `spawnNextOccurrence` rebuilt the task row field by field and did not copy `personId`, so completing "call Raj every week" produced a follow-up belonging to nobody — the REQ-017 failure mode, reproduced for a new field. | **RESOLVED (CHANGE-0013)** — `personId` is copied forward. Safe in a way copying identity keys would not be: a tombstone resolved on read still reaches the same person. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
+| **D38** | **The activity taxonomy is a superset of what is actually written.** `task.created`, `task.deleted`, `note.created`, `expense.added`, `capture.committed` and `commitment.made` are declared in `activityKindValidator` and written by nothing: `addTask`, `removeTask`, `addNote` and `addExpense` insert their object rows and no activity row. Nothing is visibly broken — the 7-day chart reads only `task.completed`, which *is* written, and a closed union wider than the writes cannot itself be invalid data. But it is a specification claim the code does not meet, and it is the same shape as D34: a path that compiles and promises an effect that never happens. | **PARTIALLY RESOLVED (CHANGE-0014)** — `capture.committed` is now genuinely written, once per accepted capture with the real segment count, and read back by `assistant:captureAudit` so the claim is checkable. The remaining four are **deliberately left unwritten and deliberately left declared**: no query reads them, and an activity timeline that only records what a query already knows is not worth the write. Recorded rather than quietly fixed so the gap between the taxonomy and the code stays visible instead of becoming folklore. |
+| **D39** | `assistant:captureAudit` read `activity` across **every space in the deployment** and filtered the caller's own in JavaScript — a table-wide `.collect()` on a read path, reintroduced by the same agent that had just audited for exactly that in phase 3 feature 1 (D37). | **RESOLVED (CHANGE-0014)**, same change. One indexed range per space via `by_space_at`, bounded at 500 rows. Found in self-review, not by a test — a test that only checked the audit row *exists* would have passed against the unbounded version. The lesson is recorded: a bounded read needs a fixture that would notice an unbounded one, and there is not yet one. |
 | D37 | `listPeople` and `getPerson` read **every task the user has ever created** in order to count open items per person, on a reactively-subscribed query. | **RESOLVED (CHANGE-0013)** — a `tasks.by_owner_person` index. Convex omits a document from an index when the indexed field is absent, so that range holds exactly the tasks that name somebody, which is the entire input these two functions need. The read is now scoped by the index rather than by a filter over everything the user owns. The wider audit found every other `.collect()` in `src/convex` is already index-scoped to one owner or one space, which is the correct shape for a product where each user is their own tenant; a table-wide scan would be the defect, and there is none. |
 
 ### Intentionally accepted
@@ -2278,7 +2527,7 @@ approval**, not a note.
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
-| **3** | per-feature. **Feature 1 (People): 4 — used 4 of 6** (`src/lib/people.ts`, `src/lib/people.test.ts`, `src/convex/people.ts`, `scripts/conformance-3.ts`) | per-feature. **Feature 1: 1** (`people`) | 0 | per-feature. **Feature 1: 1** (the identity-key matcher, `src/lib/people.ts`) | Any of it without its own spec section, ADR, budget and approval. Feature 1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · anything that writes to a provider · person sharing |
+| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) | per-feature. **F1: 1** (`people`) · **F2: 0** | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -2291,30 +2540,33 @@ screen · no push notifications · no sixth spec file · no modification of
 
 ```
 Current phase:        3 — feature work (each feature needs its own spec + ADR +
-                      budget before it starts). Feature 1 (People) is done.
+                      budget before it starts). Features 1 (People) and 2
+                      (Multi-object Capture) are done.
 Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED, and so
-                      is phase 3 feature 1. Phase 0A remains BLOCKED on Q-001,
-                      which blocks only TASK-0A-003.
-Last completed:       CHANGE-0013 — People as first-class objects. A person is a
-                      row rather than a task title; a merge rewrites nothing and
-                      is exactly reversible; identity keys are evidence and
-                      never a merge. The run also found D34: two frozen scorer
-                      features had never received evidence at all.
+                      are phase 3 features 1 (People) and 2 (Multi-object
+                      Capture). Phase 0A remains BLOCKED on Q-001, which blocks
+                      only TASK-0A-003. Q-006 is open and non-blocking.
+Last completed:       CHANGE-0014 — Multi-object Capture. One capture can
+                      produce several tasks, splitting on explicit structure
+                      only and never on a bare conjunction. The composer shows
+                      every task before any is committed, and the server
+                      re-plans so preview and record cannot disagree.
 Next phase:           3 — the first feature, in the order the roadmap lists them.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
-                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified twice.
-                      Non-blocking: Q-002, Q-003, Q-004.
+                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified seven
+                      times, most recently as run G after feature 2.
+                      Non-blocking: Q-002, Q-003, Q-004, Q-006.
                       Phase 2 live handshake — blocked on two environment items,
                       neither of them code: GOOGLE_CLIENT_ID /
                       GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
                       D32, this deployment serving no application HTTP routes.
 
-Failing tests:        None. 278 fixtures pass; 0B, 0C, attention, 1.1, 1.5, 2 and
-                      3 conformance all pass live, plus the ADR-022 OCC suite
-                      re-verified (48 mutations, 0 duplicates). The phase-2
-                      harness reports one section as SKIP (D32) rather than as a
-                      pass. The phase-3 harness has no skips.
+Failing tests:        None. 321 fixtures pass; 0B, 0C, attention, 1.1, 1.5, 2,
+                      3 and 4 conformance all pass live, plus the ADR-022 OCC
+                      suite re-verified (48 mutations, 0 duplicates, run G). The
+                      phase-2 harness reports one section as SKIP (D32) rather
+                      than as a pass. The phase-3 harnesses have no skips.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -2345,13 +2597,12 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          criterion passes except the live
                                          handshake, which is blocked on the
                                          environment (credentials + D32).
-  3      IN PROGRESS   —                 Feature 1 (People) VERIFIED by
-                                         CHANGE-0013: 4 of 6 files, 1 table,
-                                         0 deps, 1 abstraction. Remaining
-                                         features (capture, Life Admin,
-                                         commitments, Finance, agents) each
-                                         need their own spec, ADR and budget
-                                         (§11.3).
+  3      IN PROGRESS   —                 Features 1 (People, CHANGE-0013) and 2
+                                         (Multi-object Capture, CHANGE-0014)
+                                         VERIFIED. Remaining features (Life
+                                         Admin/documents, commitments, Finance
+                                         expansion, agents) each need their own
+                                         spec, ADR and budget (§11.3).
 ```
 
 ### Phase lifecycle status table
@@ -2365,11 +2616,12 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
-| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. Remaining features — multi-object capture, documents, commitments, Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
+| **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. Remaining features — documents/Life Admin, commitments, Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
 
-**Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and phase 3 feature 1 (People) is
-VERIFIED. Everything here is done to the limit of what the agent may decide.
-Nothing is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
+**Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
+(People) and 2 (Multi-object Capture). Everything here is done to the limit of
+what the agent may decide. Nothing is SHIPPED — shipment is the user's decision
+alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

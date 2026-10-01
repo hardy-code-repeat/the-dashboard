@@ -23,12 +23,12 @@ import { api } from "@/convex/_generated/api";
 import { AttentionFeed } from "@/components/AttentionFeed";
 import { CalendarStrip } from "@/components/CalendarStrip";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { AreaPicker, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
 import { FinanceArea } from "@/components/FinanceArea";
 import { useAuth } from "@/hooks/use-auth";
-import { describeDue, parseTaskInput } from "@/lib/nlp";
+import { planCapture } from "@/lib/capture";
+import { describeDue } from "@/lib/nlp";
 import { FEATURE_NAMES } from "@/lib/scorer";
 import { cn } from "@/lib/utils";
 
@@ -61,7 +61,7 @@ export default function Dashboard() {
   const areas = useQuery(api.life.listAreas);
   const [view, setView] = useState<View>("board");
 
-  const addTask = useMutation(api.assistant.addTask);
+  const capture = useMutation(api.assistant.capture);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
   const removeTask = useMutation(api.assistant.removeTask);
   const clearCompleted = useMutation(api.assistant.clearCompleted);
@@ -78,10 +78,19 @@ export default function Dashboard() {
 
   // Parsed locally for an instant preview; the server re-parses on submit so
   // the persisted value is never dependent on the client having run.
+  //
+  // Multi-object capture (phase 3, feature 2): the preview is now a *plan* over
+  // the whole box, so typing a second line shows a second task before either is
+  // saved. `planCapture` is the same function the server runs.
   const preview = useMemo(() => {
     const trimmed = input.trim();
     if (trimmed.length < 2) return null;
-    return parsePreview(trimmed);
+    const segments = capturePreview(trimmed);
+    if (segments.length === 0) return null;
+    return {
+      single: segments.length === 1 ? segments[0] : null,
+      segments,
+    };
   }, [input]);
 
   const tasks = data?.tasks ?? [];
@@ -106,10 +115,34 @@ export default function Dashboard() {
 
     setSaving(true);
     try {
-      await addTask({ input: value });
+      // `capture` rather than `addTask`: the same mutation handles one task or
+      // many, so there is no second code path for the composer to diverge on.
+      const result = await capture({ input: value });
+
+      if (result.refused) {
+        // Refused means nothing was created, and the reason is worth showing
+        // rather than letting the box silently do nothing.
+        toast.error(result.refusalReason ?? "Nothing to capture");
+        return;
+      }
+
       setInput("");
+
+      if (result.created.length > 1) {
+        toast.success(`${result.created.length} tasks captured`);
+      }
+      // Everything Panel chose not to do is reported, never swallowed. A drop
+      // the user cannot see is indistinguishable from a capture that worked.
+      for (const drop of result.dropped) {
+        toast.warning(`Skipped "${drop.text}" — ${drop.reason}`);
+      }
+      if (result.overflow > 0) {
+        toast.warning(
+          `Only the first ${result.created.length} were captured — ${result.overflow} more would not fit`,
+        );
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not add task");
+      toast.error(error instanceof Error ? error.message : "Could not capture");
     } finally {
       setSaving(false);
     }
@@ -415,13 +448,24 @@ export default function Dashboard() {
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row">
-                <Input
+                <Textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="call sam friday re contract"
-                  maxLength={200}
-                  aria-label="Task in plain language"
-                  className="h-12 flex-1 border-2 border-border bg-background px-4 focus-visible:ring-0"
+                  onKeyDown={(e) => {
+                    // Enter captures; Shift+Enter is a new task. The reverse
+                    // would be hostile, because a list is what a person is
+                    // typing when they reach for a second line.
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={"call sam friday re contract\nrenew the passport\nbook the dentist"}
+                  maxLength={400}
+                  rows={2}
+                  aria-label="Tasks in plain language, one per line"
+                  aria-describedby="capture-hint"
+                  className="h-12 flex-1 resize-y border-2 border-border bg-background px-4 py-3 font-mono text-sm focus-visible:ring-0"
                 />
                 <Button
                   type="submit"
@@ -436,6 +480,10 @@ export default function Dashboard() {
                   Add
                 </Button>
               </div>
+              <p id="capture-hint" className="mt-2 text-[10px] uppercase text-muted-foreground">
+                One task per line, or separate with <span className="font-bold">;</span>. Enter
+                captures, Shift+Enter adds a line. A plain “and” stays part of the task.
+              </p>
 
               {/* live parse preview */}
               <AnimatePresence>
@@ -448,39 +496,43 @@ export default function Dashboard() {
                     className="mt-4 border-2 border-dashed border-border bg-background p-3"
                   >
                     <p className="mb-2 text-[10px] font-bold uppercase text-muted-foreground">
-                      Reads as
+                      {preview.segments.length === 1 ? "Reads as" : `Reads as ${preview.segments.length} tasks`}
                     </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm">{preview.title}</span>
-                      <span
-                        className={cn(
-                          "border-2 border-border px-1.5 py-0.5 text-[10px] font-bold uppercase",
-                          PRIORITY[preview.priority].className,
-                        )}
-                      >
-                        {PRIORITY[preview.priority].label}
-                      </span>
-                      {preview.dueLabel && (
-                        <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
-                          <AlarmClock className="size-3" />
-                          {preview.dueLabel}
-                        </span>
-                      )}
-                      {preview.recurrence && (
-                        <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
-                          <Repeat className="size-3" />
-                          {preview.recurrence.replace(":", " · ")}
-                        </span>
-                      )}
-                      {preview.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase"
-                        >
-                          #{tag}
-                        </span>
+                    <ul className="flex flex-col gap-2">
+                      {preview.segments.map((segment, i) => (
+                        <li key={`${i}-${segment.title}`} className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm">{segment.title}</span>
+                          <span
+                            className={cn(
+                              "border-2 border-border px-1.5 py-0.5 text-[10px] font-bold uppercase",
+                              PRIORITY[segment.priority].className,
+                            )}
+                          >
+                            {PRIORITY[segment.priority].label}
+                          </span>
+                          {segment.dueLabel && (
+                            <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                              <AlarmClock className="size-3" />
+                              {segment.dueLabel}
+                            </span>
+                          )}
+                          {segment.recurrence && (
+                            <span className="flex items-center gap-1 border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                              <Repeat className="size-3" />
+                              {segment.recurrence.replace(":", " · ")}
+                            </span>
+                          )}
+                          {segment.tags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="border-2 border-border bg-card px-1.5 py-0.5 text-[10px] font-bold uppercase"
+                            >
+                              #{tag}
+                            </span>
+                          ))}
+                        </li>
                       ))}
-                    </div>
+                    </ul>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -774,17 +826,27 @@ function StatTile({
  * what gets saved. Wrapped defensively — a preview failure must never block
  * capture, since the server parses again on submit regardless.
  */
-function parsePreview(raw: string) {
+/**
+ * The multi-segment preview.
+ *
+ * Uses the **same** `planCapture` the server runs, so the preview cannot
+ * disagree with the commit — the Feature 2 acceptance criterion that "the
+ * server is authoritative" is only meaningful if the client is showing the
+ * server's answer rather than a second guess. The server still re-plans on
+ * submit; this is for the user's eyes, not for the record.
+ */
+function capturePreview(raw: string) {
   try {
-    const parsed = parseTaskInput(raw);
-    return {
-      title: parsed.title,
-      priority: parsed.priority,
-      recurrence: parsed.recurrence,
-      tags: parsed.tags,
-      dueLabel: describeDue(parsed.dueAt),
-    };
+    const plan = planCapture(raw);
+    return plan.segments.map((segment) => ({
+      title: segment.parsed.title,
+      priority: segment.parsed.priority,
+      recurrence: segment.parsed.recurrence,
+      tags: segment.parsed.tags,
+      dueLabel: describeDue(segment.parsed.dueAt),
+      confidence: segment.confidence,
+    }));
   } catch {
-    return null;
+    return [];
   }
 }

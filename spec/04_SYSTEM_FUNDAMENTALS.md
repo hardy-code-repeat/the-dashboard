@@ -72,7 +72,7 @@ architecture.** Target state is §1.2. The difference is §1.3.
 | **What works?** | NL capture; recurrence that respawns exactly once; a tax engine for 5 countries; an attention feed with eight sections, caps, decay, grouping and pins; learned ranking that can only break ties and cannot touch a hard rule; a model with rollback; an integration framework with one real, minimised, idempotent connector. |
 | **What is broken?** | **N2 / Q-001** — a guest who signs up by email silently loses their data. **D32** — this deployment serves no application HTTP routes, so the OAuth redirect cannot be exercised live. Both are open and both need a decision or an environment answer, not code. |
 | **What is partially implemented?** | **Calendar sync** — built, verified live against the database, but the handshake itself is blocked on credentials and on D32. **Health** — still component-local state. **Sharing** — schema and access path exist (0B); there is no UI. |
-| **What is specified but not implemented?** | Everything in phase 3: People as first-class objects with reversible merge, multi-object capture, documents, commitments, Life Admin, Finance expansion, agents, export, account deletion. All specified; **none started.** |
+| **What is specified but not implemented?** | The rest of phase 3: documents, commitments + Waiting On, Life Admin, Finance expansion, agents. Also export and account deletion (P2). Phase 3 features 1 (People) and 2 (Multi-object Capture) are **built and verified**. |
 | **What is planned?** | Phase 3, one feature at a time, each with its own spec section, ADR and budget (§11.3). |
 | **What is unknown?** | Whether this deployment type can serve HTTP routes at all (D32). Every product and business assumption — see PRODUCT_CONTEXT §3.3. |
 
@@ -155,8 +155,8 @@ before Phase 3.**
 | Activity / timeline | **VERIFIED** | `activity` with a closed taxonomy and an idempotency key; the 7-day chart reads it | 0B |
 | Integrations (framework) | **VERIFIED** | Registry, adapter contract, one idempotent writer, credential containment checked by a gate — `conformance-1.5.ts` (35 checks) | 1.5 |
 | Calendar | **PARTIALLY BUILT** | Adapter, sync, minimisation, deletion semantics and the dashboard block are verified live (`conformance-2.ts`, 33 checks). The handshake itself cannot be exercised: no credentials, and D32 | 2 |
-| People | **NOT BUILT** | Still faked as `tasks.title` strings in `PeopleArea` | 3 |
-| Multi-object capture | **NOT BUILT** | Capture produces exactly one task | 3 |
+| People | **VERIFIED** | `src/convex/people.ts`; reversible tombstone merge, no auto-merge ever — `conformance-3.ts` (50 checks) | 3 |
+| Multi-object capture | **VERIFIED** | One capture, many tasks; splits on explicit structure only; server-authoritative — `conformance-4.ts` (51 checks) | 3 |
 | Finance | **PARTIALLY BUILT** | Expenses + tax engine verified. No accounts, transactions, assets, liabilities, investments, subscriptions or goals | 3 |
 | Life Admin | **NOT BUILT** | `home` area renders a generic task list | 3 |
 | Agents | **NOT BUILT** | No cron, no agent modules. `internal*` functions now exist, which was the prerequisite | 3 |
@@ -776,6 +776,75 @@ the first feature.
 | **What the run found** | **D34** — `SOURCE_FIT` (9) and `PEOPLE_FIT` (10) had never received evidence. `recordOutcome` was handed the raw database row, whose fields are `origin` and `personId`, while the feature object is keyed `source` and `person`. Both optional, so nothing threw; the roll-ups silently returned unchanged. The two features were identically 0 at training and at inference, so their weights never took a gradient. Acceptance criterion 5 is what found it. Fixed by deriving the feature object once and passing the *same* object to both halves, so a field rename is now a compile error. Layout untouched: `FEATURE_COUNT` 12, `WEIGHTS_VERSION` 1, indices 0–7 unchanged, nothing migrates. Also **D35** (the name normaliser was being applied to email addresses) and **D36** (a recurring task lost its person on respawn). |
 | **Risks** | R7 (identity resolution) and R19 (agents) are adjacent, not involved. The real risk is scope: "people" invites contacts, threads and social graph, none of which is in the budget. |
 
+#### Phase 3, feature 2 — Multi-object Capture (APPROVED · **VERIFIED**)
+
+> **Status 2026-10-01.** APPROVED as a roadmap line (`Multi-object capture |
+> APPROVED | 3 | Per-kind confidence thresholds` in PRODUCT_CONTEXT §5.2). The
+> line is a *name*, not a specification: it does not say which object kinds
+> are supported, what confidence means, or what happens on ambiguity. Those
+> were product decisions, so this block was written from the established
+> architecture and the evidence in R-004 rather than inferred silently.
+> Built and verified as CHANGE-0013’s successor CHANGE-0014. The one genuinely
+> unresolvable question is isolated as **Q-006** below, and it is
+> non-blocking.
+
+##### The specification gap this had to close
+
+The only prior text was one roadmap line. Three questions were unanswerable
+from it, and each changes what gets built:
+
+1. **Which object kinds may a single capture produce?** Not established.
+2. **What does "confidence" mean, and what follows from it?** Not established.
+3. **What happens when a capture is ambiguous?** Not established.
+
+Answering these from the *existing* architecture rather than from invention:
+
+| Question | Answer, and why it follows |
+|---|---|
+| Which kinds? | **Task only.** Every other kind the roadmap lists for capture — commitment, document, expense, note — is either a *separate approved phase-3 feature* with its own table and budget (commitments, Life Admin/documents), or already has a dedicated, tested create path that NL capture would shadow (`addNote`, `addExpense`). A `commitments` table does not exist; creating it here would spend Feature 3's budget without its spec. **Feature 2 makes one capture produce more than one *task*.** Everything else waits for its own feature. |
+| What is confidence? | **Confidence is about *segmentation*, not comprehension.** The parser already decides *what a task is* with a closed, tested vocabulary. The new uncertainty is only: *did the user mean one thing or several?* So confidence is measured on the split, and it is per-segment. |
+| Ambiguity? | **Split only on explicit structure; never on prose conjunction.** This is the one decision that could damage data, and research settled it (R-004). |
+
+##### 12.0 Scope block — Multi-object Capture
+
+| Field | Value |
+|---|---|
+| **Feature** | Multi-object Capture — one capture can produce several tasks |
+| **Problem it solves** | `parseTaskInput` returns exactly one `ParsedTask`. A user who thinks in lists — "call the dentist, renew the passport, email Raj" — must capture three times, and the first two land in one title with the separators left in it. Capture is the product's front door (principle P5) and it currently makes the user do Panel's segmentation work. |
+| **User outcome** | The user types what is actually in their head, in one go, and gets the right number of correctly-segmented, correctly-dated tasks. Not more objects — **fewer keystrokes and fewer corrections**. |
+| **Supported input** | A single string, up to 400 characters. Segments are separated by **newline**, **semicolon**, or the literal ` and then `. An input with no separator behaves **exactly as it does today** — one task, byte-identical output. |
+| **Supported object types** | **Task only.** No other kind may be created by this feature. |
+| **Extraction behavior** | Reuse `parseTaskInput` per segment, unmodified. The `used`-flag token loop is Do-Not-Touch #7 and is not edited. |
+| **Confidence behavior** | Every segment carries a `confidence` and a `reason` string, both server-computed. Three values: `high` (explicit separator), `medium` (separator present but a segment is a fragment under 3 characters or a bare date cue), `low` (would require prose-conjunction splitting — which never happens, so `low` is reserved for refusal, below). The **server result is authoritative**; the client preview is advisory and may differ. |
+| **Object creation rules** | `high` → create. `medium` → create, and the segment is flagged in the response so the UI can say so. `low` → **create nothing**; the whole capture is refused and the user is told why. |
+| **Relationship rules** | A `personId` may be attached to a created task **only** when the caller passed one explicitly (already supported) or when a segment *begins* with a known person's name and the remainder is non-empty. Never inferred from co-occurrence. People are matched through `resolvedIdentityKeys`; **no merge, ever** (ADR-024, RJD-004). |
+| **Duplicate behavior** | No new deduplication infrastructure. A repeated capture creates repeated tasks — the same as today. The only duplicate rule in scope is the existing person refusal (`createPerson` refuses a probable duplicate), and capture **does not call `createPerson` at all** in this feature. |
+| **Ambiguity behavior** | `"call the dentist and book the dentist"` is **one task**, because `and` alone is not a separator. This is deliberate and is the single most important behaviour in the feature. |
+| **Failure behavior** | Empty segment → dropped, and the drop is reported. All segments invalid → nothing created, one plain-language reason. Over the segment cap → the excess is **not silently dropped**; the count is returned. |
+| **Authorization** | Server-side, from the session only. `personId`, if supplied, is ownership-checked exactly as `addTask` already does. No client-supplied `ownerUserId` or `spaceId` is ever read. |
+| **Ownership / space** | `ensurePersonalSpace` once per capture; every created task carries the same `ownerUserId` + `spaceId`. One capture cannot span two spaces. |
+| **Audit** | One `capture.committed` activity row per accepted capture, carrying the segment count. This kind is **already in the closed taxonomy and has never been written** — see D38. |
+| **Learning implications** | Each created task flows through the **existing** `addTask` path, so `area`, `source` and `person` are set by the same code as today and `SOURCE_FIT`/`PEOPLE_FIT` receive evidence exactly as they do now. **No new feature index.** `FEATURE_COUNT` stays 12, `WEIGHTS_VERSION` stays 1, indices 0–7 untouched. Whether a *multi-object* capture is a good outcome is a learning question with no settled answer — recorded as Q-006, not guessed. |
+| **Acceptance criteria** | (1) One capture with two explicit separators produces three tasks, each parsed independently and correctly dated. (2) An input with **no** separator produces exactly one task, byte-identical to today's output for the same string. (3) `"call the dentist and book the dentist"` produces **one** task, not two. (4) A segment the parser cannot understand is dropped **and reported**, never silently. (5) Every created task is owner-scoped, in the personal space, and invisible to a second account. (6) `capture.committed` is written exactly once per accepted capture, carrying the real segment count. (7) The server is authoritative: a client that lies about its own parse still gets the server's segmentation. (8) Existing capture behaviour is unchanged: the 21 existing `nlp.test.ts` fixtures and the live 0A/0B conformance all still pass, unmodified. |
+| **Out of scope** | commitments · documents · expenses · notes · areas as new objects · any prose-conjunction splitting · fuzzy/embedding matching · creating a person from a capture · an LLM (ADR-001) · a generic object engine · changing the parser's vocabulary · touching `recordOutcome`'s single-writer guarantee (Do-Not-Touch #8) |
+| **Protected areas** | Do-Not-Touch #7 (`nlp.ts` token loop), #6 (scorer maths), #8 (`recordOutcome` as the single weight writer), ADR-010 feature layout, ADR-023/024, ADR-021 identity guarantees, `permissions.can` as the sole access path. |
+| **Dependencies** | Phase 3 feature 1 (VERIFIED) — capture links to real people. Nothing else. |
+| **Blockers** | **Q-006** (below) is not blocking: it governs *feedback*, and the feature can ship with capture feedback deliberately deferred. |
+| **Budget (ADR-016)** | **4 new files · 0 new tables · 0 deps · 1 abstraction** (the segmenter, in `src/lib/capture.ts`). **Used: 2 files · 0 tables · 0 deps · 1 abstraction.** Zero new tables was the load-bearing constraint: a capture feature that needed a new table would be a different feature. |
+| **Verification** | Unit fixtures for the segmenter (pure, injected clock). A live conformance harness asserting all 8 criteria, including cross-user isolation and the byte-identical unchanged-behaviour check. If the capture path touches `recordOutcome`, ADR-022 OCC is re-armed and re-run — **not inherited**. |
+| **Verified how** | **CHANGE-0014, VERIFIED.** 43 unit fixtures (`src/lib/capture.test.ts`) and 51 live invariants (`scripts/conformance-4.ts`, 0 skips). All 8 acceptance criteria pass against a real deployment. The 21 pre-existing `nlp.test.ts` fixtures pass unmodified — Do-Not-Touch #7 was honoured. OCC re-verified as run G (48 mutations, 0 duplicates) because `assistant.ts` changed, even though `capture` demonstrably writes no `assistantState`. |
+| **What the build found** | Three bugs the fixtures caught before review did: the segmenter attributed the wrong separator and missed a mixed one; leading-person matching never fired because the boundary check ran after trimming; and the cue-only drop rule was broad enough to delete real tasks. Also **D39**: the first `captureAudit` draft read `activity` across every space in the deployment and filtered in JavaScript — a table-wide collect, reintroduced one feature after phase 3 feature 1 audited for exactly that (D37). Caught in self-review, not by a test. |
+| **Open, non-blocking** | **Q-006** — whether a multi-object capture should itself be a learning signal. Interim answer shipped and verified live: no. Capture is authorship; only completion is an outcome. |
+
+##### Q-006 — Should a capture that produced several objects be treated as a better or worse outcome?
+
+- **Status:** OPEN. Not blocking Feature 2.
+- **The question.** Today the model learns from *task completion*: a task the user completes teaches Panel they finish things like that. A multi-object capture is a **single act of authorship producing N tasks**, none of which is a signal about any individual task. If Panel treats "created via multi-capture" as a positive training signal, every one of those tasks inherits evidence it never earned. If it is silent, a genuinely useful behaviour stays unlearned.
+- **Options.** (a) No learning signal from capture at all — capture is authorship, not outcome, and only completion is an outcome. (b) A new feature index for "created in a multi-object capture", appended at 12, requiring the ADR-010 governance. (c) Use the existing `origin` field to mark the source and let completion-supplied evidence dominate.
+- **Recommendation (technical only, not a product decision):** **(a)**. It is the smallest option, it cannot leak authorship into outcome evidence, and it is consistent with ADR-004's refusal to learn from something other than an explicit outcome. Option (b) spends a frozen-layout slot on a hypothesis, which is exactly what ADR-010 exists to prevent.
+- **Blocked by:** a human decision. The agent may recommend, not decide.
+- **Interim behaviour:** Feature 2 ships with (a) — created tasks are ordinary `panel`-origin tasks and the capture path adds no training signal. If the user later prefers (b), it is an additive change to the feature layout, not a redesign.
+
 ### 11.3 Scope rules
 
 - Work outside `IN SCOPE` is **not done**, however trivial. It becomes an Open
@@ -833,6 +902,10 @@ it, and how do we know it works?"**
 | REQ-032 | No fabricated integrations or completion | — | all |
 | REQ-033 | A person merge rewrites nothing and is exactly reversible | ADR-023 | 3 |
 | REQ-034 | No automatic person merging; identity evidence is advisory | ADR-024 | 3 |
+| REQ-035 | Capture segments only on explicit structure, never prose conjunction | — | 3 |
+| REQ-036 | Low-confidence capture creates nothing, and says why | — | 3 |
+| REQ-037 | The server's segmentation is authoritative over the client's | — | 3 |
+| REQ-038 | Capture writes no learning signal; authorship is not an outcome | ADR-004 | 3 |
 
 ### 12.2 Full chains
 
@@ -856,6 +929,33 @@ it, and how do we know it works?"**
 | AC-3F-004 | A merged row is a tombstone that no query returns | `conformance-3.ts`, "A4" | PASS, live |
 | AC-3F-005 | `PEOPLE_FIT` reads the person id, so two namesakes do not share evidence | `conformance-3.ts`, "A5" | PASS, live — found D34 |
 | AC-3F-006 | Merge → unmerge leaves the row count and the link count exactly as they were | `conformance-3.ts`, "A6" | PASS, live |
+
+**Phase 3, feature 2 (Multi-object Capture) — VERIFIED**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-035 | — | 3F | TASK-3F-006 | AC-3F-101, AC-3F-103 | TEST-3F-001 (`src/lib/capture.test.ts`, 43 fixtures); TEST-3F-003 (`scripts/conformance-4.ts`) | CHANGE-0014 |
+| REQ-036 | — | 3F | TASK-3F-007 | AC-3F-104 | TEST-3F-003 | CHANGE-0014 |
+| REQ-037 | — | 3F | TASK-3F-008 | AC-3F-107 | TEST-3F-003 | CHANGE-0014 |
+| REQ-038 | ADR-004 | 3F | TASK-3F-009 | AC-3F-108 | TEST-3F-003 | CHANGE-0014 — interim per Q-006 |
+| REQ-032 | ADR-019 | 3F | TASK-3F-010 | AC-3F-106 | TEST-3F-003 — `capture.committed` read back, not assumed | CHANGE-0014 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-011 | AC-3F-105 | TEST-3F-003 (cross-user isolation, foreign personId refused) | CHANGE-0014 |
+| REQ-021 | ADR-019 | 3F | TASK-3F-012 | AC-3F-102 | TEST-3F-003 — compared against the deployed `addTask` | CHANGE-0014 |
+| REQ-016 | ADR-016 | 3F | TASK-3F-013 | AC-3F-109 | TEST-3F-001 | CHANGE-0014 — 2 of 4 files, **0 of 0 tables**, 1 of 1 abstraction |
+
+**Phase 3 feature 2 acceptance criteria → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-101 | One capture with two separators produces three tasks, each parsed independently and correctly dated | `conformance-4.ts` "A1" | PASS, live |
+| AC-3F-102 | Unseparated input is byte-identical to the single-task path | `conformance-4.ts` "A2" | PASS, live — compared against deployed `addTask` |
+| AC-3F-103 | "call the dentist and book the dentist" produces one task | `conformance-4.ts` "A3" | PASS, live |
+| AC-3F-104 | An unusable segment is dropped **and reported** | `conformance-4.ts` "A4" | PASS, live |
+| AC-3F-105 | Every created task is owner-scoped, in the personal space, invisible to a second account | `conformance-4.ts` "A5" | PASS, live |
+| AC-3F-106 | `capture.committed` written once per accepted capture with the real count | `conformance-4.ts` "A6" | PASS, live |
+| AC-3F-107 | The server is authoritative | `conformance-4.ts` "A7" | PASS, live |
+| AC-3F-108 | Existing capture unchanged; the model is untouched by authorship | `conformance-4.ts` "A8" | PASS, live |
+| AC-3F-109 | Budget: 4 files / 0 tables / 0 deps / 1 abstraction | CHANGE-0014 | PASS — 2 / 0 / 0 / 1 |
 
 **Phase 0A (next)**
 
