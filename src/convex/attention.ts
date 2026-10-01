@@ -3,13 +3,23 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { buildAttention, SECTION_BUDGET, type AttentionFeedback } from "../lib/attention/pipeline";
-import { hardRules } from "../lib/attention/rules";
+import { learnedCandidates } from "../lib/attention/ranked";
+import { hardRules, isHardKind } from "../lib/attention/rules";
 import type { ConnectionView, DeadlineView, DocumentView, TaskView } from "../lib/attention/sources";
+import {
+  emptyBehaviour,
+  extractFeatures,
+  initialWeights,
+  learningRateFor,
+  shouldRank,
+  shouldTrainDismissal,
+  trainOne,
+} from "../lib/scorer";
 import { filingYearFor, COUNTRIES, readinessScore } from "../lib/tax";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
-import { requireUserId } from "./assistant";
+import { AUTO_SNAPSHOT_EVERY, MAX_SUPPRESSION_ENTRIES, requireUserId, takeSnapshot } from "./assistant";
 import { ensurePersonalSpace } from "./spaces";
 
 /**
@@ -32,6 +42,21 @@ type StateRow = {
   escalation?: 0 | 1 | 2;
 };
 
+/**
+ * How much each signal is worth (§5.3).
+ *
+ * The numbers are the specification. `snoozed` has no entry and there is no
+ * `null` case: snooze is not a label, and encoding it as one would be the whole
+ * bug. Absence has no entry either, for the same reason (ADR-004).
+ */
+const SIGNAL_WEIGHT = {
+  acted: 1.0,
+  rejected: 1.0,
+  dismissed: 0.25,
+} as const;
+
+type Signal = keyof typeof SIGNAL_WEIGHT;
+
 type AnyCtx = GenericQueryCtx<DataModel> | GenericMutationCtx<DataModel>;
 
 /** Every feedback row for the caller. */
@@ -40,6 +65,50 @@ async function loadFeedback(ctx: AnyCtx, userId: Id<"users">): Promise<StateRow[
     .query("attentionState")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
     .collect();
+}
+
+/** Per-user feature switches. One read, cached for the life of the query. */
+async function loadFlags(ctx: AnyCtx, userId: Id<"users">) {
+  const rows = await ctx.db
+    .query("featureFlags")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+    .collect();
+  const set = new Map(rows.map((r) => [r.key, r.enabled] as const));
+  return {
+    generalisedRanking: set.get("generalisedRanking") ?? true,
+    exploration: set.get("exploration") ?? true,
+    attentionGrouping: set.get("attentionGrouping") ?? true,
+  };
+}
+
+/** The caller's learned model, in the shape the ranker wants. */
+async function loadModelState(ctx: AnyCtx, userId: Id<"users">) {
+  const row = await ctx.db
+    .query("assistantState")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+    .unique();
+
+  const empty = emptyBehaviour();
+  return {
+    weights: row?.weights ?? initialWeights(),
+    samples: row?.samples ?? 0,
+    learningPaused: row?.learningPaused === true,
+    behaviour: {
+      byHour: row?.byHour ?? empty.byHour,
+      byWeekday: row?.byWeekday ?? empty.byWeekday,
+      byTag: row?.byTag ?? {},
+      shortDone: row?.shortDone ?? 0,
+      shortTotal: row?.shortTotal ?? 0,
+      longDone: row?.longDone ?? 0,
+      longTotal: row?.longTotal ?? 0,
+      byArea: row?.byArea ?? {},
+      bySource: row?.bySource ?? {},
+      byPerson: row?.byPerson ?? {},
+      byDueBucket: row?.byDueBucket ?? {},
+    },
+    suppressedKinds: row?.suppressedKinds ?? [],
+    suppressedAreas: row?.suppressedAreas ?? [],
+  };
 }
 
 /**
@@ -95,6 +164,8 @@ export const getAttention = query({
       tags: t.tags ?? [],
       orphanedSource: t.orphanedSource,
       sourceDisconnected: t.sourceDisconnected,
+      createdAt: t.createdAt,
+      source: t.origin,
     }));
 
     const deadlineViews: DeadlineView[] = country.deadlines(taxYear).map((d) => ({
@@ -125,19 +196,46 @@ export const getAttention = query({
       missing: missingLabels,
     }));
 
-    const candidates = hardRules(
-      {
-        tasks: taskViews,
-        deadlines: deadlineViews,
-        connections: connectionViews,
-        documents: documentViews,
-        enabledAreas: areas.map((a) => a.slug),
-        taxYearLabel: country.taxYearLabel(taxYear),
-      },
-      now,
-    );
+    const ruleInput = {
+      tasks: taskViews,
+      deadlines: deadlineViews,
+      connections: connectionViews,
+      documents: documentViews,
+      enabledAreas: areas.map((a) => a.slug),
+      taxYearLabel: country.taxYearLabel(taxYear),
+    };
 
-    const result = buildAttention(candidates, feedback as AttentionFeedback[], now);
+    // The two producers run side by side and never see each other. §5.6: the
+    // hard half is deterministic and immune to learning; the ranked half is
+    // ordinary open work that the model gets to order. Concatenating them is the
+    // only place the two classes meet, and the pipeline treats them differently
+    // on every subsequent step.
+    const state = await loadModelState(ctx, userId);
+    const flags = await loadFlags(ctx, userId);
+
+    // The `generalisedRanking` flag is a real switch, not a label. Turning it
+    // off does not hide ordinary work — it stops the *model* from ordering it,
+    // by feeding the ranker zero evidence so it reproduces the deterministic
+    // prior exactly. A user who does not want a model steering their day still
+    // gets their day, just not personalised.
+    const useLearned = flags.generalisedRanking;
+    const candidates = [
+      ...hardRules(ruleInput, now),
+      ...learnedCandidates(
+        {
+          tasks: taskViews,
+          enabledAreas: ruleInput.enabledAreas,
+          weights: state.weights,
+          behaviour: state.behaviour,
+          samples: useLearned ? state.samples : 0,
+        },
+        now,
+      ),
+    ];
+
+    const result = buildAttention(candidates, feedback as AttentionFeedback[], now, {
+      suppress: { kinds: state.suppressedKinds, areas: state.suppressedAreas },
+    });
 
     return {
       ...result,
@@ -150,6 +248,16 @@ export const getAttention = query({
       // A cap that binds is a fact the UI must show, not hide. A user who is
       // missing three items because two sections are full deserves to know.
       truncated: result.produced > result.items.length,
+      // Whether the model is actually steering anything. Shown rather than
+      // hidden: a ranking the user cannot audit is a ranking they cannot correct.
+      learning: {
+        active: useLearned && shouldRank(state.samples),
+        samples: state.samples,
+        paused: state.learningPaused,
+        enabled: useLearned,
+        suppressedKinds: state.suppressedKinds,
+        suppressedAreas: state.suppressedAreas,
+      },
     };
   },
 });
@@ -206,11 +314,123 @@ async function recordFeedback(
   });
 }
 
+/**
+ * Trains on one piece of feedback, or deliberately does not.
+ *
+ * This is the only place a weight moves in response to attention feedback, and
+ * most of its lines are refusals. Each refusal corresponds to a decision the
+ * specification makes:
+ *
+ *  - a **hard-rule** item is never trained on. It was never scored, so scoring
+ *    it now would teach the model about something it has no opinion on, and
+ *    worse, it would let repeated action on a tax deadline pull other work down.
+ *  - a **paused** model moves nothing at all.
+ *  - a **dismissal** on a cold model is recorded but not trained, below
+ *    `MIN_SAMPLES_TO_TRAIN_DISMISSAL`.
+ *  - **snooze is not a signal.** There is no branch for it, and adding one
+ *    would be the single most damaging change anyone could make to this file.
+ *
+ * `signals` describes the item in the shape `extractFeatures` understands. For a
+ * hard item the caller is trusted only enough that a wrong description cannot
+ * leak data or hide a deadline — the worst outcome of a wrong `kind` is that the
+ * user's own model is trained slightly wrongly, which `resetModel` exists for.
+ */
+async function trainOn(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+  signal: Signal,
+  kind: string,
+  subject: { priority: number; dueAt: number | null; tags: string[]; area?: string; source?: string; person?: string },
+): Promise<void> {
+  if (isHardKind(kind)) return;
+
+  const state = await loadModelState(ctx, userId);
+  if (state.learningPaused) return;
+  if (signal === "dismissed" && !shouldTrainDismissal(state.samples)) return;
+
+  const x = extractFeatures(
+    {
+      priority: subject.priority as 0 | 1 | 2,
+      dueAt: subject.dueAt,
+      createdAt: Date.now(),
+      tags: subject.tags,
+      area: subject.area,
+      source: subject.source,
+      person: subject.person,
+    },
+    state.behaviour,
+    new Date(),
+  );
+
+  const weights = trainOne(
+    state.weights,
+    x,
+    signal === "acted" ? 1 : 0,
+    SIGNAL_WEIGHT[signal] * learningRateFor(state.samples),
+  );
+
+  const row = await ctx.db
+    .query("assistantState")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+    .unique();
+  const spaceId = row?.spaceId ?? (await ensurePersonalSpace(ctx, userId));
+  const samples = state.samples + 1;
+
+  const base = {
+    weights,
+    weightsVersion: row?.weightsVersion ?? 1,
+    modelVersion: row?.modelVersion ?? 0,
+    byHour: state.behaviour.byHour,
+    byWeekday: state.behaviour.byWeekday,
+    byTag: state.behaviour.byTag,
+    byArea: state.behaviour.byArea,
+    bySource: state.behaviour.bySource,
+    byPerson: state.behaviour.byPerson,
+    byDueBucket: state.behaviour.byDueBucket,
+    suppressedKinds: state.suppressedKinds,
+    suppressedAreas: state.suppressedAreas,
+    shortDone: state.behaviour.shortDone,
+    shortTotal: state.behaviour.shortTotal,
+    longDone: state.behaviour.longDone,
+    longTotal: state.behaviour.longTotal,
+    samples,
+    updatedAt: Date.now(),
+  };
+
+  // Read-then-insert under Convex's transactional OCC, exactly as
+  // `recordOutcome` does. Same guarantee, same reasoning — ADR-022.
+  if (row) {
+    await ctx.db.patch(row._id, base);
+    if (samples % AUTO_SNAPSHOT_EVERY === 0) {
+      await takeSnapshot(ctx, { ...row, ...base }, "automatic");
+    }
+  } else {
+    await ctx.db.insert("assistantState", { ownerUserId: userId, spaceId, ...base });
+  }
+}
+
 /** The user did the thing. The strongest positive signal Panel has. */
 export const attentionActed = mutation({
-  args: { fingerprint: v.string(), objectId: v.string(), escalation: v.optional(v.number()) },
+  args: {
+    fingerprint: v.string(),
+    objectId: v.string(),
+    escalation: v.optional(v.number()),
+    kind: v.string(),
+    priority: v.optional(v.number()),
+    dueAt: v.optional(v.nullable(v.number())),
+    tags: v.optional(v.array(v.string())),
+    area: v.optional(v.string()),
+    origin: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
+    await trainOn(ctx, userId, "acted", args.kind, {
+      priority: args.priority ?? 1,
+      dueAt: args.dueAt ?? null,
+      tags: args.tags ?? [],
+      area: args.area,
+      source: args.origin,
+    });
     await recordFeedback(
       ctx,
       userId,
@@ -230,12 +450,28 @@ export const attentionActed = mutation({
  * urgency, and the check has to live on the server to mean anything.
  */
 export const attentionDismissed = mutation({
-  args: { fingerprint: v.string(), objectId: v.string(), escalation: v.number() },
+  args: {
+    fingerprint: v.string(),
+    objectId: v.string(),
+    escalation: v.number(),
+    kind: v.string(),
+    priority: v.optional(v.number()),
+    dueAt: v.optional(v.nullable(v.number())),
+    tags: v.optional(v.array(v.string())),
+    area: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     if (args.escalation >= 2) {
       throw new Error("This one cannot be dismissed — deal with it or snooze it until later.");
     }
+    // A weak negative, and on a cold model nothing at all. `trainOn` decides.
+    await trainOn(ctx, userId, "dismissed", args.kind, {
+      priority: args.priority ?? 1,
+      dueAt: args.dueAt ?? null,
+      tags: args.tags ?? [],
+      area: args.area,
+    });
     await recordFeedback(
       ctx,
       userId,
@@ -251,6 +487,11 @@ export const attentionDismissed = mutation({
  * Snooze. A level-2 item may only be snoozed with a return date — the same
  * rule the pipeline enforces, repeated here because this is the write path and
  * the write path is the one that has to hold.
+ *
+ * **No call to `trainOn`.** Snooze is a timing signal and nothing else
+ * (ADR-005). There is deliberately no label, no weight and no counter here: the
+ * user said "not now", and reading that as "not for me" is how a model learns
+ * to hide the things you keep postponing.
  */
 export const attentionSnoozed = mutation({
   args: {
@@ -285,9 +526,25 @@ export const attentionSnoozed = mutation({
  * (ADR-006, RJD-006). Phase 1.1 adds the category set, still ignored by rules.
  */
 export const attentionRejected = mutation({
-  args: { fingerprint: v.string(), objectId: v.string() },
+  args: {
+    fingerprint: v.string(),
+    objectId: v.string(),
+    /** Needed to write the category set. Ignored for hard-rule items. */
+    kind: v.string(),
+    area: v.optional(v.string()),
+    priority: v.optional(v.number()),
+    dueAt: v.optional(v.nullable(v.number())),
+    tags: v.optional(v.array(v.string())),
+  },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
+    await trainOn(ctx, userId, "rejected", args.kind, {
+      priority: args.priority ?? 1,
+      dueAt: args.dueAt ?? null,
+      tags: args.tags ?? [],
+      area: args.area,
+    });
+    await writeSuppression(ctx, userId, args.kind, args.area);
     await recordFeedback(
       ctx,
       userId,
@@ -298,6 +555,39 @@ export const attentionRejected = mutation({
     );
   },
 });
+
+/**
+ * Writes an explicit "not for me" category preference (RJD-006, §5.5.5).
+ *
+ * Two rules are enforced here rather than in the pipeline, because the pipeline
+ * only sees the finished list:
+ *
+ *  1. **Hard-rule items never enter the set.** A statutory deadline is not a
+ *     category the user has an opinion about; if "deadline.tax" could be
+ *     suppressed, rejecting one deadline once would hide every deadline the
+ *     user has for the next decade. `isHardKind` refuses before anything is
+ *     written.
+ *  2. **The set is bounded.** Oldest entries fall off the end.
+ */
+async function writeSuppression(
+  ctx: GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+  kind: string,
+  area: string | undefined,
+): Promise<void> {
+  if (isHardKind(kind)) return;
+  if (!area) return;
+
+  const row = await ctx.db
+    .query("assistantState")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+    .unique();
+  if (!row) return; // nothing to attach it to; `trainOn` creates the row first
+
+  const kinds = [...(row.suppressedKinds ?? []), kind].slice(-MAX_SUPPRESSION_ENTRIES);
+  const areas = [...(row.suppressedAreas ?? []), area].slice(-MAX_SUPPRESSION_ENTRIES);
+  await ctx.db.patch(row._id, { suppressedKinds: kinds, suppressedAreas: areas, updatedAt: Date.now() });
+}
 
 function clampEscalation(value: number | undefined): 0 | 1 | 2 | undefined {
   if (value == null) return undefined;

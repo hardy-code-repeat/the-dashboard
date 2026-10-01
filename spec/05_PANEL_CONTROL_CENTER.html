@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">9</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">10</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -506,7 +506,7 @@
           <tr><td>Validation</td><td><b>Closed</b> — <code>schemaValidation: true</code>, 10 closed unions</td><td><b>0C</b></td></tr>
           <tr><td>Model safety</td><td><b>Closed</b> — clamp, versioning, rollback, pause, reset</td><td><b>0C</b></td></tr>
           <tr><td>Attention</td><td><b>Closed</b> — eight sections, caps, decay, escalation</td><td><b>1.0</b></td></tr>
-          <tr><td>Attention learning</td><td>Task completion only</td><td><b>1.1</b></td></tr>
+          <tr><td>Attention learning</td><td><b>Closed</b> — two item classes, five signals, exploration</td><td><b>1.1</b></td></tr>
           <tr><td>Integrations</td><td>Stubbed; records intent</td><td><b>1.5</b></td></tr>
           <tr><td>Calendar</td><td>Nothing</td><td><b>2</b></td></tr>
           <tr><td>People / docs / commitments</td><td>Faked as task titles</td><td><b>3</b></td></tr>
@@ -1035,7 +1035,7 @@
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>192 pass, 0 fail</b> across 7 files.
+      <div class="note"><code>bun test</code> — <b>213 pass, 0 fail</b> across 8 files.
         Plus four live conformance harnesses (OCC, 0B, 0C, attention) run against the
         deployed Convex backend.</div>
     </div>
@@ -1149,7 +1149,7 @@
       nots:["the scorer in the hard-rule path","an impressions table","notification delivery","a block/plugin framework"],
       risks:"R3, R10" },
 
-    { id:"1.1", status:"IN PROGRESS",
+    { id:"1.1", status:"VERIFIED",
       obj:"Learned attention ranking, generalised features, and five-signal feedback.",
       deps:"1.0",
       budget:{files:"8",tables:"0–1",deps:"0",abstractions:"1"},
@@ -1157,7 +1157,7 @@
       nots:["negative category features","training from absence","changes to indices 0–7"],
       risks:"R2" },
 
-    { id:"1.5", status:"APPROVED (architecture)",
+    { id:"1.5", status:"IN PROGRESS",
       obj:"Integration framework: registry, adapter contract, applyBatch, OAuth, token security.",
       deps:"1.1",
       budget:{files:"7",tables:"3",deps:"0",abstractions:"1"},

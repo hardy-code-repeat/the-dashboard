@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { DEFAULT_AREA_SLUG, areaBySlug } from "../lib/areas";
 import { nextOccurrence, parseTaskInput } from "../lib/nlp";
 import {
+  dueBucketKey,
   emptyBehaviour,
   extractFeatures,
   initialWeights,
@@ -35,6 +36,17 @@ export const AUTO_SNAPSHOT_EVERY = 25;
 
 /** Snapshots retained per user; the oldest are pruned. */
 export const MAX_SNAPSHOTS = 10;
+
+/**
+ * Cap on each explicit suppression set (RJD-006).
+ *
+ * The sets are written by an explicit "not for me" and are the only way a user
+ * can hide a category, so they have to be bounded: an array grown without limit
+ * inside a mutation is a row with no ceiling on it. The oldest entries are
+ * dropped, because a preference stated months ago is weaker evidence than one
+ * stated today.
+ */
+export const MAX_SUPPRESSION_ENTRIES = 50;
 
 /**
  * Records the current weights as a restore point, then prunes to the newest
@@ -95,8 +107,9 @@ type TaskRow = {
   area: AreaSlug;
 };
 
-/** Shape of a persisted assistant row. */
-type AssistantDoc = {
+/** Shape of a persisted assistant row. Exported so a second training path can
+ *  take a restore point through exactly the same helper. */
+export type AssistantDoc = {
   _id: Id<"assistantState">;
   ownerUserId: Id<"users">;
   spaceId: Id<"spaces">;
@@ -107,6 +120,12 @@ type AssistantDoc = {
   byHour: number[];
   byWeekday: number[];
   byTag: Record<string, { done: number; total: number }>;
+  byArea?: Record<string, { done: number; total: number }>;
+  bySource?: Record<string, { done: number; total: number }>;
+  byPerson?: Record<string, { done: number; total: number }>;
+  byDueBucket?: Record<string, { done: number; total: number }>;
+  suppressedKinds?: string[];
+  suppressedAreas?: string[];
   shortDone: number;
   shortTotal: number;
   longDone: number;
@@ -140,6 +159,10 @@ function toBehaviour(state: AssistantDoc | null): BehaviourStats {
     shortTotal: state.shortTotal ?? 0,
     longDone: state.longDone ?? 0,
     longTotal: state.longTotal ?? 0,
+    byArea: state.byArea ?? {},
+    bySource: state.bySource ?? {},
+    byPerson: state.byPerson ?? {},
+    byDueBucket: state.byDueBucket ?? {},
   };
 }
 
@@ -157,10 +180,11 @@ export const getDashboard = query({
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
 
-    const [tasks, notes, state] = await Promise.all([
+    const [tasks, notes, state, spaces] = await Promise.all([
       ctx.db.query("tasks").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
       ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
       loadState(ctx, userId),
+      ctx.db.query("spaces").withIndex("by_createdBy", (q) => q.eq("createdBy", userId)).collect(),
     ]);
 
     const now = new Date();
@@ -176,7 +200,14 @@ export const getDashboard = query({
       })),
       (task) =>
         extractFeatures(
-          { priority: task.priority as 0 | 1 | 2, dueAt: task.dueAt, createdAt: task.createdAt, tags: task.tags },
+          {
+            priority: task.priority as 0 | 1 | 2,
+            dueAt: task.dueAt,
+            createdAt: task.createdAt,
+            tags: task.tags,
+            area: task.area,
+            source: task.origin,
+          },
           behaviour,
           now,
         ),
@@ -191,12 +222,27 @@ export const getDashboard = query({
     startOfToday.setHours(0, 0, 0, 0);
     const todayStart = startOfToday.getTime();
 
-    const completedToday = completed.filter(
-      (r) => r.task.completedAt != null && r.task.completedAt >= todayStart,
-    ).length;
-    const completedThisWeek = completed.filter(
-      (r) => r.task.completedAt != null && r.task.completedAt >= now.getTime() - 7 * DAY_MS,
-    ).length;
+    // The chart and the counts come from `activity`, not from re-scanning tasks.
+    // Two reasons, and the second is the important one: a task that was
+    // completed and then cleared is a real finished thing that a scan of the
+    // task table cannot see, and "what did I actually do" is what this claims
+    // to answer. Activity is an append-only log, so it is also the one place
+    // that survives the user tidying up after themselves.
+    const personalSpaceId = spaces.find((s) => s.isPersonal)?._id ?? state?.spaceId ?? null;
+    const weekActivity = personalSpaceId
+      ? await ctx.db
+          .query("activity")
+          .withIndex("by_space_at", (q) =>
+            q.eq("spaceId", personalSpaceId).gte("at", todayStart - 6 * DAY_MS),
+          )
+          .collect()
+      : [];
+
+    const completionsIn = (from: number, to: number): number =>
+      weekActivity.filter((a) => a.kind === "task.completed" && a.at >= from && a.at < to).length;
+
+    const completedToday = completionsIn(todayStart, todayStart + DAY_MS);
+    const completedThisWeek = completionsIn(todayStart - 6 * DAY_MS, todayStart + DAY_MS);
 
     const week: { day: string; count: number }[] = [];
     for (let i = 6; i >= 0; i--) {
@@ -204,12 +250,7 @@ export const getDashboard = query({
       const dayEnd = dayStart + DAY_MS;
       week.push({
         day: new Date(dayStart).toLocaleDateString("en-US", { weekday: "narrow" }),
-        count: completed.filter(
-          (r) =>
-            r.task.completedAt != null &&
-            r.task.completedAt >= dayStart &&
-            r.task.completedAt < dayEnd,
-        ).length,
+        count: completionsIn(dayStart, dayEnd),
       });
     }
 
@@ -381,6 +422,8 @@ export const setTaskCompleted = mutation({
           dueAt: task.dueAt ?? null,
           createdAt: task.createdAt,
           tags: task.tags ?? [],
+          area: task.area,
+          source: task.origin,
         },
         behaviour,
         new Date(),
@@ -388,6 +431,18 @@ export const setTaskCompleted = mutation({
 
       await ctx.db.patch(args.id, { featuresAtCompletion: x });
       await recordOutcome(ctx, userId, spaceId, state, x, task, 1, new Date());
+
+      // One append-only row per real completion. This is what the seven-day
+      // chart reads, so it is written on the transition and not derived from the
+      // task's current state — a completion that is later cleared away still
+      // happened, and still counts.
+      await ctx.db.insert("activity", {
+        spaceId,
+        actor: "user",
+        kind: "task.completed",
+        objectId: args.id,
+        at: now,
+      });
 
       // Respawn before returning so the next occurrence exists by the time the
       // client sees the completion. Idempotent — see spawnNextOccurrence.
@@ -439,6 +494,8 @@ export const removeTask = mutation({
           dueAt: task.dueAt ?? null,
           createdAt: task.createdAt,
           tags: task.tags ?? [],
+          area: task.area,
+          source: task.origin,
         },
         behaviour,
         new Date(),
@@ -463,7 +520,14 @@ async function recordOutcome(
   spaceId: Id<"spaces">,
   state: AssistantDoc | null,
   x: number[],
-  task: { priority: number; dueAt?: number | null; tags?: string[] },
+  task: {
+    priority: number;
+    dueAt?: number | null;
+    tags?: string[];
+    area?: string;
+    source?: string;
+    person?: string;
+  },
   label: 0 | 1,
   when: Date,
 ) {
@@ -493,6 +557,25 @@ async function recordOutcome(
     byTag[tag] = { done: prev.done + label, total: prev.total + 1 };
   }
 
+  // Phase 1.1: the same roll-up for the four appended features (8–11). Each
+  // counter is keyed by the same string `extractFeatures` looked it up with, so
+  // a read and a write can never disagree about the key.
+  const rollUp = (
+    stats: Record<string, { done: number; total: number }> | undefined,
+    key: string | undefined,
+  ): Record<string, { done: number; total: number }> => {
+    if (!key) return stats ?? {};
+    const next = { ...(stats ?? {}) };
+    const prev = next[key] ?? { done: 0, total: 0 };
+    next[key] = { done: prev.done + label, total: prev.total + 1 };
+    return next;
+  };
+
+  const byArea = rollUp(behaviour.byArea, task.area);
+  const bySource = rollUp(behaviour.bySource, task.source);
+  const byPerson = rollUp(behaviour.byPerson, task.person);
+  const byDueBucket = rollUp(behaviour.byDueBucket, dueBucketKey(task.dueAt ?? null, when));
+
   // "Long" = a due date more than two days out, matching the scorer's split.
   const isLong = task.dueAt != null && task.dueAt - Date.now() > 2 * DAY_MS;
   const base = {
@@ -502,6 +585,15 @@ async function recordOutcome(
     byHour,
     byWeekday,
     byTag,
+    byArea,
+    bySource,
+    byPerson,
+    byDueBucket,
+    // Suppression is a *decision*, not an outcome, and is written only by an
+    // explicit "not for me" in attention.ts. It is carried through unchanged so
+    // that training on one event can never quietly wipe a stated preference.
+    suppressedKinds: state?.suppressedKinds ?? [],
+    suppressedAreas: state?.suppressedAreas ?? [],
     shortDone: state?.shortDone ?? 0,
     shortTotal: state?.shortTotal ?? 0,
     longDone: state?.longDone ?? 0,

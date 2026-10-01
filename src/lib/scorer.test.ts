@@ -36,6 +36,9 @@ import {
 import type { BehaviourStats } from "./scorer";
 
 const NOW = new Date(2026, 9, 1, 10, 0, 0);
+
+/** The frozen prefix. Everything at or beyond this index was appended in 1.1. */
+const LAYOUT_V1 = 8;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 
@@ -58,7 +61,13 @@ function round2(ws: number[]) {
 
 test("feature layout — FEATURE_NAMES covers every feature index", () => {
   assert.strictEqual(FEATURE_NAMES.length, FEATURE_COUNT);
-  assert.strictEqual(FEATURE_COUNT, 8);
+  assert.strictEqual(FEATURE_COUNT, 12, "8 frozen plus the four phase 1.1 appended");
+  // Indices 0–7 keep their original names verbatim; anything else here would be
+  // a silent renaming of a frozen feature.
+  assert.deepStrictEqual(
+    FEATURE_NAMES.slice(0, LAYOUT_V1),
+    ["baseline", "priority", "deadline", "age", "time-of-day", "weekday", "tags", "task size"],
+  );
 });
 
 test("feature layout — extractFeatures returns exactly one value per feature", () => {
@@ -105,12 +114,16 @@ test("score — is the dot product of features and weights", () => {
 
 test("golden — 200 completions of an urgent near-deadline task", () => {
   const x = extractFeatures(URGENT, emptyBehaviour(), NOW);
-  assert.deepStrictEqual(round2(train(x, 1)), [0.97, 1.76, 1.32, 0.2, 0, 0, 0, 0]);
+  // Indices 0–7 are frozen (ADR-010) and are asserted bit-for-bit forever.
+  // The vector is now 12 long; the appended features start and stay neutral
+  // here because this fixture supplies no area, source, person or due-bucket
+  // history, so there is nothing for them to have an opinion about.
+  assert.deepStrictEqual(round2(train(x, 1)).slice(0, LAYOUT_V1), [0.97, 1.76, 1.32, 0.2, 0, 0, 0, 0]);
 });
 
 test("golden — 200 completions of a someday task inverts the ranking", () => {
   const x = extractFeatures(SOMEDAY, emptyBehaviour(), NOW);
-  assert.deepStrictEqual(round2(train(x, 1)), [1.63, 0.79, 0.27, 1.83, 0, 0, 0, 0]);
+  assert.deepStrictEqual(round2(train(x, 1)).slice(0, LAYOUT_V1), [1.63, 0.79, 0.27, 1.83, 0, 0, 0, 0]);
 });
 
 test("learning — the trained model prefers the shape the user actually completes", () => {

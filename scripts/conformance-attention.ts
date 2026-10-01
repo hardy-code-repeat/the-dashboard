@@ -55,23 +55,27 @@ const ref = {
       produced: number;
     } | null
   >("attention:getAttention"),
-  acted: makeFunctionReference<{ fingerprint: string; objectId: string; escalation: number }, null>(
+  acted: makeFunctionReference<{ fingerprint: string; objectId: string; kind: string; area?: string; escalation: number; dueAt?: number | null }, null>(
     "attention:attentionActed",
   ),
-  dismissed: makeFunctionReference<{ fingerprint: string; objectId: string; escalation: number }, null>(
+  dismissed: makeFunctionReference<{ fingerprint: string; objectId: string; kind: string; area?: string; escalation: number; dueAt?: number | null }, null>(
     "attention:attentionDismissed",
   ),
   snoozed: makeFunctionReference<
     { fingerprint: string; objectId: string; escalation: number; until?: number },
     null
   >("attention:attentionSnoozed"),
-  rejected: makeFunctionReference<{ fingerprint: string; objectId: string }, null>(
+  rejected: makeFunctionReference<{ fingerprint: string; objectId: string; kind: string; area?: string }, null>(
     "attention:attentionRejected",
   ),
   getAttentionStats: makeFunctionReference<
     Empty,
     { tracked: number; acted: number; dismissed: number; rejected: number; snoozed: number } | null
   >("attention:getAttentionStats"),
+  listAreas: makeFunctionReference<{ slug: string; label: string; enabled: boolean }[], null>(
+    "life:listAreas",
+  ),
+  enableArea: makeFunctionReference<{ slug: string }, null>("life:enableArea"),
 };
 
 const EXPECTED_SECTIONS = [
@@ -164,7 +168,7 @@ async function main(): Promise<void> {
   section("the hard rules produced what they should");
   const kinds = new Set(feed.items.map((i) => i.kind));
   check("overdue work is surfaced", kinds.has("task.overdue"), [...kinds]);
-  check("work due today is surfaced", kinds.has("task.due"), [...kinds]);
+  check("work due today is surfaced", kinds.has("task.planned"), [...kinds]);
   check("undated work is surfaced, not promoted", kinds.has("task.someday"), [...kinds]);
   check("statutory deadlines are surfaced", kinds.has("deadline.tax"), [...kinds]);
   check("an unfinished connection is surfaced", kinds.has("connection.unfinished"), [...kinds]);
@@ -193,10 +197,10 @@ async function main(): Promise<void> {
 
   // -- feedback ---------------------------------------------------------------
   section("acting on a task completes it, and the signal is recorded");
-  const target = afterTraining!.items.find((i) => i.kind === "task.due" && i.escalation < 2);
+  const target = afterTraining!.items.find((i) => i.kind === "task.planned" && i.escalation < 2);
   check("there is an ordinary task to act on", !!target, afterTraining!.items.map((i) => [i.kind, i.escalation]));
   if (target) {
-    await client.mutation(ref.acted, { fingerprint: target.fingerprint, objectId: target.sourceId, escalation: target.escalation });
+    await client.mutation(ref.acted, { fingerprint: target.fingerprint, objectId: target.sourceId, kind: target.kind, area: target.area, escalation: target.escalation, dueAt: target.dueAt });
     await client.mutation(ref.setTaskCompleted, { id: target.sourceId, completed: true });
     const after = await client.query(ref.getAttention, {});
     check(
@@ -213,6 +217,8 @@ async function main(): Promise<void> {
     await client.mutation(ref.acted, {
       fingerprint: hardRule.fingerprint,
       objectId: hardRule.sourceId,
+      kind: hardRule.kind,
+      area: hardRule.area,
       escalation: hardRule.escalation,
     });
     const after = await client.query(ref.getAttention, {});
@@ -224,12 +230,14 @@ async function main(): Promise<void> {
 
   section("dismissing an ordinary item records a signal");
   const dismissible = (await client.query(ref.getAttention, {}))!.items.find(
-    (i) => i.escalation < 2 && i.kind === "task.due",
+    (i) => i.escalation < 2 && i.kind === "task.planned",
   );
   if (dismissible) {
     await client.mutation(ref.dismissed, {
       fingerprint: dismissible.fingerprint,
       objectId: dismissible.sourceId,
+      kind: dismissible.kind,
+      area: dismissible.area,
       escalation: dismissible.escalation,
     });
     const stats = await client.query(ref.getAttentionStats, {});
@@ -245,6 +253,8 @@ async function main(): Promise<void> {
       await client.mutation(ref.dismissed, {
         fingerprint: urgent.fingerprint,
         objectId: urgent.sourceId,
+        kind: urgent.kind,
+        area: urgent.area,
         escalation: urgent.escalation,
       });
     } catch {
@@ -283,15 +293,32 @@ async function main(): Promise<void> {
   const rejectable = (await client.query(ref.getAttention, {}))!.items.find(
     (i) => i.kind === "task.someday" || i.section === "upcoming",
   );
+  const rejectableArea = (rejectable as { area?: string } | undefined)?.area;
   if (rejectable) {
-    await client.mutation(ref.rejected, {
-      fingerprint: rejectable.fingerprint,
-      objectId: rejectable.sourceId,
-    });
+    await client.mutation(ref.rejected, { fingerprint: rejectable.fingerprint, objectId: rejectable.sourceId, kind: rejectable.kind, area: rejectable.area });
     const after = await client.query(ref.getAttention, {});
     check("it does not come back", !after!.items.some((i) => i.fingerprint === rejectable.fingerprint));
     const stats = await client.query(ref.getAttentionStats, {});
     check("and the rejection is recorded", (stats?.rejected ?? 0) >= 1, stats);
+
+    // The category the user rejected is now muted for ranked items, which is
+    // what "not for me" is supposed to mean (RJD-006) — a category preference,
+    // not a single-item deletion. Hard-rule items are untouched by it.
+    const afterRejectFeed = await client.query(ref.getAttention, {});
+    if (rejectableArea) {
+      const sameArea = afterRejectFeed!.items.filter(
+        (i) => i.class === "ranked" && i.area === rejectableArea,
+      );
+      check(
+        "and the whole category is muted, not just that one item",
+        !sameArea.some((i) => i.fingerprint !== rejectable.fingerprint),
+        sameArea.map((i) => i.kind),
+      );
+    }
+    check(
+      "a hard-rule item is never muted by a category rejection",
+      afterRejectFeed!.items.filter((i) => i.class === "hard").length > 0,
+    );
   }
 
   // -- determinism and isolation ---------------------------------------------
@@ -318,15 +345,25 @@ async function main(): Promise<void> {
 
   // -- caps bind in real life ------------------------------------------------
   section("the caps bind when a user really does have too much");
-  for (let i = 0; i < 12; i += 1) {
-    const id = await client.mutation(ref.addTask, { input: `flood task ${i}` });
-    await client.mutation(ref.updateTask, { id, dueAt: Date.now() + 8 * HOUR });
+  // Deliberately floods with *overdue* work, which is a hard-rule item. The
+  // rejection above wrote an explicit category suppression, and a category
+  // preference is meant to hide ranked work in every area — so a ranked flood
+  // here would be measuring suppression, not the cap. Overdue work cannot be
+  // suppressed at all, which makes it the honest way to test a cap.
+  await client.mutation(ref.enableArea, { slug: "home" }).catch(() => undefined);
+  for (let i = 0; i < 6; i += 1) {
+    const id = await client.mutation(ref.addTask, { input: `overdue flood ${i}`, area: "home" });
+    await client.mutation(ref.updateTask, { id, dueAt: Date.now() - (i + 1) * HOUR });
   }
   const flooded = await client.query(ref.getAttention, {});
-  const todaySection = flooded!.sections.find((s) => s.section === "today");
-  check("Today is capped at five", (todaySection?.items.length ?? 0) === 5, todaySection?.items.length);
-  check("and the overflow is reported, not silently dropped", (flooded!.hiddenByCap.today ?? 0) > 0, flooded!.hiddenByCap);
+  const nowSection = flooded!.sections.find((s) => s.section === "now");
+  check("Now is capped at three", (nowSection?.items.length ?? 0) === 3, nowSection?.items.length);
+  check("and the overflow is reported, not silently dropped", (flooded!.hiddenByCap.now ?? 0) > 0, flooded!.hiddenByCap);
   check("the whole screen still respects 24", flooded!.items.length <= 24, flooded!.items.length);
+  check(
+    "and nothing that was suppressed came back",
+    flooded!.items.every((i) => !(i.fingerprint === rejectable?.fingerprint)),
+  );
 
   // -- user data untouched ---------------------------------------------------
   section("the feed is computed, not stored");

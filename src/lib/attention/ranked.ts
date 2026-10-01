@@ -52,6 +52,23 @@ const HOUR_MS = 3_600_000;
  */
 export const LEARNED_BAND = 0.25;
 
+/**
+ * Ceiling on the severity a ranked item can be escalated on.
+ *
+ * Found by this phase's own fixture, and worth stating plainly: escalation
+ * level 2 means "you may not dismiss this", and §5.7 reaches it at
+ * `severity >= 0.9`. But a task six hours out scores around 0.93 *for ranking
+ * purposes* — near the top of Today — and that number was being read as
+ * urgency. Without this ceiling, ordinary scheduled work would quietly become
+ * undismissable, which is not what the number means.
+ *
+ * The honest boundary is the one that already exists: the hard rules own the
+ * four-hour urgent window, so a ranked item is never inside it and never earns
+ * level 2 by being scored highly. It can still be escalated to level 1, which
+ * snoozes need a return date for but dismissal remains available.
+ */
+const RANKED_ESCALATION_CEILING = 0.85;
+
 /** Everything the ranker needs, as plain data. */
 export interface RankedInput {
   tasks: TaskView[];
@@ -135,8 +152,9 @@ export function learnedCandidates(input: RankedInput, now: number): AttentionCan
       detail:
         task.area !== "general" ? task.area : dueAt == null ? "No date set" : undefined,
       dueAt,
-      // Clock and data, never the model. See the module comment.
-      escalation: escalate(dueAt, prior, now),
+      // Clock and data, never the model — and never the ranking number.
+      // See RANKED_ESCALATION_CEILING above.
+      escalation: escalate(dueAt, Math.min(prior, RANKED_ESCALATION_CEILING), now),
       reasons: learned ? explain(x, input.weights).slice(0, 2) : [],
       action:
         dueAt == null

@@ -596,6 +596,86 @@ const schema = defineSchema(
       .index("by_owner_modelVersion", ["ownerUserId", "modelVersion"]),
 
     /**
+     * OAuth tokens and refresh tokens.
+     *
+     * **ADR-014 containment.** This table is reachable only from the
+     * `internalMutation` / `internalQuery` functions in
+     * `src/convex/credentials.ts`, which exports no public query. That module
+     * boundary is the mechanism; a comment here is not. `scripts/spec-drift.ts`
+     * greps for any other public function naming this table, so the guarantee is
+     * checked rather than asserted.
+     *
+     * Nothing is ever returned from this table to a client — not masked, not
+     * truncated. There is no field a caller could use to reconstruct the value.
+     */
+    connectionTokens: defineTable({
+      ...ownedBy,
+      /** One row per (space, provider). A second connect replaces, never adds. */
+      provider: providerSlugValidator,
+      /** Provider's encrypted-at-rest blob. Never logged, never returned. */
+      accessToken: v.string(),
+      refreshToken: v.optional(v.string()),
+      /** Provider's own expiry, in ms. Panel does not extend it. */
+      expiresAt: v.optional(v.number()),
+      /** Panel-only fingerprint of the token, for "did it change?" without the token. */
+      fingerprint: v.string(),
+      updatedAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner_provider", ["ownerUserId", "provider"]),
+
+    /**
+     * Where a sync got to.
+     *
+     * The cursor is opaque to everything except the adapter that produced it.
+     * Reset to null on reconnect, which forces a full sweep — that is how a
+     * reconnect avoids silently skipping objects that changed while Panel was
+     * not watching.
+     */
+    syncCursors: defineTable({
+      ...ownedBy,
+      provider: providerSlugValidator,
+      /** Opaque continuation token. Null means "start from the beginning". */
+      cursor: v.optional(v.nullable(v.string())),
+      /** Last successful sync, used for the staleness windows in §7.2. */
+      lastSyncedAt: v.optional(v.number()),
+      /** Increments on every attempted run, successful or not. Observable. */
+      runs: v.number(),
+      /** Stable code only. Never a provider response body (ADR-014). */
+      lastErrorCode: v.optional(v.string()),
+      updatedAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner_provider", ["ownerUserId", "provider"]),
+
+    /**
+     * Single-use OAuth state, with a hashed PKCE verifier.
+     *
+     * The state is a CSRF token; the verifier is what stops an intercepted
+     * authorisation code from being redeemed by anyone else. Both are stored
+     * **hashed** — a stolen database gives an attacker neither. `usedAt` is set
+     * on redemption, and a second callback with the same state is refused,
+     * because authorisation codes are replayable by design and the state is
+     * what makes them single-use on our side.
+     */
+    oauthStates: defineTable({
+      ...ownedBy,
+      provider: providerSlugValidator,
+      /** The CSRF nonce we sent, hashed. */
+      stateHash: v.string(),
+      /** The PKCE verifier, hashed. Required — there is no non-PKCE path. */
+      verifierHash: v.string(),
+      /** Binds the state to the user who started it. */
+      userId: v.id("users"),
+      /** Short expiry. A stale authorisation attempt is not worth honouring. */
+      expiresAt: v.number(),
+      usedAt: v.optional(v.number()),
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_stateHash", ["stateHash"]),
+
+    /**
      * Per-user feature switches. See `featureFlagValidator` for why each flag
      * needs an off-switch. Owner-only, like the model it governs.
      */

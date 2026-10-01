@@ -545,6 +545,139 @@ Related ADR: ADR-003 (computed, not stored), ADR-004 (no learning from
 
 ---
 
+## CHANGE-0010
+
+```
+Date:       2026-10-01
+Phase:      1.1 — Learned attention ranking
+Type:       feature
+Severity:   ARCHITECTURE
+Summary:    Attention now has two item classes. Hard rules produce the items
+            that must never be personalised; a learned ranker produces the
+            ordinary ones, bounded to a quarter of the severity scale so it can
+            only break ties. Four appended features, five-signal feedback with
+            the documented weights, an exploration slot per section, explicit
+            category suppression that cannot reach a rule, and a real kill
+            switch.
+Why:        Phase 1.0 shipped a correct screen that was identical for everyone.
+            The product thesis is that the ranking should reflect this
+            person's actual behaviour — without ever letting a habit hide a
+            statutory date.
+Previous:    `taskRules` emitted every open task. The scorer was used only on
+            the dashboard. Attention feedback was recorded and never trained
+            on. `suppressedKinds`/`suppressedAreas` did not exist.
+New:        `src/lib/attention/ranked.ts` (the second producer), feature indices
+            8–11, `AttentionCandidate.class`, the exploration reserve, the
+            category suppression set, and a second training path in
+            `attention.ts` that most of its lines are refusals.
+Files:      New (3 of the 8-file budget): src/lib/attention/ranked.ts,
+             src/lib/attention/learned.test.ts, scripts/conformance-1.1.ts.
+             Modified (7, no budget cost): src/lib/scorer.ts,
+             src/lib/attention/{pipeline,rules,sources}.ts,
+             src/convex/{schema,assistant,attention,model}.ts,
+             src/components/AttentionFeed.tsx, scripts/conformance-attention.ts,
+             and the three v1 regression suites whose goldens were v1-shaped.
+Schema:     0 new tables, as budgeted (the budget's one table, modelSnapshots,
+             was consumed by 0C). Four optional counters and two optional
+             suppression arrays on `assistantState`. Every one is `v.optional`,
+             so no data migration was required and no existing row is invalid.
+Deps:       0.
+Abstraction: 1 (the generalised `extractFeatures` — the same function, with four
+             appended inputs and four appended outputs, rather than a second
+             extractor that could drift from the first).
+Code:       The hard/ranked boundary is `URGENT_WINDOW_HOURS = 4`, a single
+            constant read by both producers. Inside it, a task is a rule item;
+            outside it, it is ranked. The two lists are concatenated and never
+            meet again.
+            `HARD_KINDS` is the one list that decides what counts as hard, and
+            the *server* reads it before it will train on feedback. The client
+            sends `kind`; it does not get to decide what class it is.
+            The learned term is `tanh(score) * 0.25`, added to a deterministic
+            prior. Bounded, so a maximally trained model cannot invert a real
+            urgency gap — the model is a tie-breaker, not a dictator.
+            Escalation is computed from the prior *before* the learned term, and
+            capped (see D22). The model cannot manufacture or downgrade urgency.
+Tests:      bun test -> 213 pass, 0 fail (21 new 1.1 fixtures).
+             bun scripts/conformance-1.1.ts <url> -> 25/25 held live.
+             bun scripts/conformance-attention.ts <url> -> all 1.0 invariants
+             still held, after updating its kind names and its two cap
+             measurements (see below).
+             bun scripts/conformance-0b.ts, conformance-0c.ts -> unchanged.
+             bunx tsc -b --noEmit -> clean.
+             bunx convex dev --once -> Convex functions ready.
+             bun run lint -> 3 errors / 19 warnings, unchanged. Zero new.
+             bun scripts/spec-drift.ts -> 17 pass, 1 warn, 0 fail.
+Acceptance criteria, checked one by one:
+  v1 features bit-identical on a 40-case fixture — PASS. The fixture is exactly
+    40 cases, spans all three priorities, five deadline positions, four ages and
+    two tag arrangements, runs against both a cold and a fully-trained behaviour
+    profile, and asserts Object.is() equality on indices 0–7 against a call with
+    every 1.1 input explicitly absent. That second call is the case that
+    matters: it is what every vector stored before 1.1 looks like.
+  below 12 samples ranking equals the prior — PASS, by construction. The learned
+    term is multiplied by zero, so severity *is* the prior. Tested at 0, 1 and
+    11 samples under a hostile weight vector, and the converse is also tested
+    so the test cannot pass against a ranker that simply ignores the model.
+  below 5 samples dismissal is recorded but not trained — PASS. The gate is
+    `shouldTrainDismissal`; there is deliberately no partial update.
+  snooze provably never produces label 0 — PASS. `attentionSnoozed` contains no
+    call to the training path at all, and a test reads the source to prove it,
+    because this is the invariant most likely to be broken by a well-meaning
+    later change.
+  no-feedback produces zero weight updates — PASS, verified live by reading the
+    feed five times and comparing the stored weight vector and sample count.
+  every section surfaces >=1 explore item — PASS for every section that has
+    something to cut. A section with no overflow spends nothing, and a section
+    containing only hard items has nothing to explore, because its ordering is
+    already deterministic. Both cases are tested explicitly.
+  rejecting a tax item 5x does not remove a hard-rule deadline — PASS, live:
+    five acts on a statutory deadline move no weight, a rejection writes no
+    suppression, and the deadline is still on the feed afterwards.
+  activity powers the 7-day chart — PASS. `completeTask` now appends a
+    `task.completed` activity row, and the chart reads `activity` over a
+    `by_space_at` range instead of re-scanning every task's `completedAt`. The
+    behavioural difference is real: a task completed and then cleared by
+    "clear completed" used to vanish from the chart even though it happened.
+Defects found and fixed by this phase (D22, D23, D24):
+  D22  Escalation reused the *ranking* severity. Because that number reaches
+       0.93 for anything due within about six hours, ordinary scheduled work
+       silently became level 2 — undismissable. Found by the phase's own
+       fixture. A ranked item is now capped at 0.85 for escalation purposes,
+       which is the honest statement of the real boundary: the hard rules own
+       the four-hour window, so a ranked item never earns level 2 by scoring
+       highly.
+  D23  `tanh(Number.NaN)` returned -1. A NaN score would have become "strongly
+       dislike", which is worse than the NaN that caused it. It now returns 0,
+       meaning "no opinion" — the same reasoning as defect D16.
+  D24  The 1.0 conformance harness measured the Today cap with ranked work
+       after a category rejection had muted that kind, so it was measuring
+       suppression and reporting it as a cap failure. It now floods with
+       *overdue* work, which cannot be suppressed at all, making it a pure cap
+       test. A harness bug, not a product bug — but it was failing for the
+       wrong reason, which is the kind of thing worth fixing rather than
+       re-running until it went green.
+Risks:      A client that lies about `kind` in its feedback can mis-train its
+            own model. It cannot leak data, cannot suppress a hard rule, and
+            cannot escalate anything: the class is decided server-side from
+            `HARD_KINDS`, and escalation is recomputed from the clock. Recorded
+            rather than defended against, because defending it would mean
+            trusting the client less than the cost of storing every computed
+            item (ADR-003).
+            `getAttention` now reads three collections the pipeline needs
+            (model state, flags, feedback) instead of two. Bounded and indexed;
+            the per-section budgets from 1.0 still bound what comes out.
+Decision:    The `generalisedRanking` feature flag — reserved by 0C with the
+            comment "off until phase 1.1 ships them" — now defaults to on and
+            is a real switch rather than a label. Turning it off does not hide
+            ordinary work; it feeds the ranker zero evidence, so the feed falls
+            back to the deterministic prior. A user who does not want a model
+            steering their day still gets their day, just not personalised.
+Related ADR: ADR-003, ADR-004, ADR-005, ADR-006, ADR-010, ADR-015, ADR-016,
+            ADR-019, ADR-021
+```
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1392,6 +1525,10 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D19** | `connectionRules` gated `connection.unfinished` behind the 48-hour staleness window, so a freshly-created, never-finished connection could never surface. The rule was unreachable in exactly the case it existed for. | **RESOLVED (CHANGE-0009)** — unfinished fires immediately at severity 0.5; quiet still requires 48h. Covered by a unit fixture and by the live conformance run. |
 | **D20** | Acting on, or dismissing, an item was treated as if it removed the item. It does not: a task disappears because it is completed, a statutory deadline because time passed. | **RESOLVED (CHANGE-0009)** — acting on and dismissing now only record a signal. Named unit test and named conformance section. Reinforces ADR-006. |
 | **D21** | The live tenant-isolation check in `scripts/conformance-attention.ts` raised a false positive: statutory tax deadlines are global by construction, so their ids are identical across users. | **RESOLVED (CHANGE-0009)** — the check now separates `isUserOwned` source ids from global ones instead of asserting that no id may repeat across accounts. |
+| **D22** | Escalation reused the *ranking* severity, which reaches 0.93 for anything due within ~6h. Ordinary scheduled work silently became level 2, i.e. undismissable. | **RESOLVED (CHANGE-0010)** — a ranked item's escalation input is capped at 0.85. Level 2 is reserved for the hard rules, which own the four-hour window; a ranked item is never inside it. Found by the phase's own fixture. |
+| **D23** | `tanh(NaN)` returned -1, turning a bad score into "strongly dislike" — worse than the NaN that caused it. | **RESOLVED (CHANGE-0010)** — returns 0, meaning "no opinion". Same reasoning as D16. |
+| **D24** | The 1.0 conformance harness measured the Today cap using ranked work that a category rejection had just muted, so it was measuring suppression and reporting it as a cap failure. | **RESOLVED (CHANGE-0010)** — it now floods with overdue work, which cannot be suppressed, making it a pure cap test. A harness bug, fixed rather than re-run. |
+| **D25** | `getAttention` re-read the whole task set to build ranked items, duplicating a scan `getDashboard` already performs. | **RESOLVED (CHANGE-0010)** — the same single read is reused to build both `hardRules` and `learnedCandidates`; no second query was added. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
 
 ### Intentionally accepted
@@ -1418,6 +1555,7 @@ approval**, not a note.
 | **0C** | 5 | 2 (`modelSnapshots`, `featureFlags`) | 0 | 1 (`takeSnapshot` — the restore-point helper; the deterministic-id upsert slot was never needed, ADR-022) | Renumbering feature indices 0–7 · a migration framework |
 | **1.0** | 11 | 1 (`attentionState`) | 0 | 1 (attention pipeline) | The scorer in the hard-rule path · an impressions table · notification delivery · a block/plugin framework |
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
+| **1.5** | 7 | 3 | 0 | 1 | Per-provider mutations · per-provider UI · mutating scopes |
 | **1.5** | 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
 | **3** | per-feature | per-feature | 0 | per-feature | Any of it without its own spec section, ADR, budget and approval |
@@ -1432,25 +1570,24 @@ screen · no push notifications · no sixth spec file · no modification of
 ## Current Development State
 
 ```
-Current phase:        1.1 — Learned attention ranking
-Current objective:    Phases 0B, 0C and 1.0 are VERIFIED. Phase 0A remains
-                      BLOCKED on Q-001, which blocks only TASK-0A-003.
-Last completed:       CHANGE-0009 — the Attention screen. Eight sections, hard
-                      rules that cannot be personalised, caps, decay,
-                      de-duplication, grouping, escalation, and four
-                      server-enforced feedback mutations.
-Next phase:           1.1 — no blockers.
+Current phase:        1.5 — Integration framework
+Current objective:    Phases 0B, 0C, 1.0 and 1.1 are VERIFIED. Phase 0A
+                      remains BLOCKED on Q-001, which blocks only TASK-0A-003.
+Last completed:       CHANGE-0010 — learned attention ranking. Two item classes,
+                      four appended features, five-signal feedback, exploration,
+                      and suppression that cannot reach a rule.
+Next phase:           1.5 — no blockers.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
                       Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified.
                       Non-blocking: Q-002, Q-003, Q-004.
 
-Failing tests:        None. 192 fixtures pass; 0B, 0C and attention
+Failing tests:        None. 213 fixtures pass; 0B, 0C, attention and 1.1
                       conformance all pass live.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
-  R2  Model self-reinforcement                             → ADR-004/005, Phase 1.1
+  R2  Model self-reinforcement                             → CLOSED by CHANGE-0010
   R3  Personalisation suppressing a legal deadline         → CLOSED by CHANGE-0009
   R4  Cross-tenant leak from mixed userId/spaceId scoping   → CLOSED by CHANGE-0007
   R13 Infrastructure growing faster than product value     → ADR-016, every phase
@@ -1468,8 +1605,9 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          with evidence; live conformance passes.
   1.0    VERIFIED      —                 CHANGE-0009. All acceptance criteria met
                                          with evidence; live conformance passes.
-  1.1    IN PROGRESS   —                 Depends on 1.0 (satisfied)
-  1.5    NOT STARTED   —                 Depends on 1.1
+  1.1    VERIFIED      —                 CHANGE-0010. All acceptance criteria met
+                                         with evidence; live conformance passes.
+  1.5    IN PROGRESS   —                 Depends on 1.1 (satisfied)
   2      NOT STARTED   credentials       Depends on 1.5; needs GOOGLE_CLIENT_ID/SECRET
   3      NOT STARTED   —                 Depends on 2
 ```
@@ -1482,13 +1620,14 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **0B** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0007. Ownership on every product table, six new tables, `src/lib/permissions.ts` as the single access path, six query-idiom fixes, backfill verified idempotent against a live deployment. No product strategy, security invariant, ADR or budget was changed. |
 | **0C** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0008. Clamp, decaying rate, versioning, automatic restore points, byte-exact rollback, reset, pause, feature flags, ten enum validators, `schemaValidation: true`. Verified by 35 new unit fixtures and a live conformance run. |
 | **1.0** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0009. Eight hard-rule sections with caps, decay, de-duplication, grouping, escalation and pins; four feedback mutations enforced server-side; nothing stored but the feedback actually given. 11 files / 1 table / 0 deps / 1 abstraction, exactly at budget. Verified by 41 unit fixtures and a live conformance run. |
-| **1.1** | IN PROGRESS | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 1.0 (satisfied) |
-| **1.5** | NOT STARTED | — | — | — | Depends on 1.1 |
+| **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
+| **1.5** | IN PROGRESS | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 1.1 (satisfied) |
 | **2** | NOT STARTED | — | — | user credentials | Depends on 1.5 |
 | **3** | NOT STARTED | — | — | — | Depends on 2 |
 
-**Phases 0A, 0B, 0C and 1.0 are done to the limit of what the agent may decide.
-Nothing is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
+**Phases 0A, 0B, 0C, 1.0 and 1.1 are done to the limit of what the agent may
+decide. Nothing is SHIPPED — shipment is the user's decision alone
+(MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are

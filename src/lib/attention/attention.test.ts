@@ -18,9 +18,11 @@ import {
   type AttentionCandidate,
   type AttentionFeedback,
 } from "./pipeline";
-import { deadlineRules, documentRules, hardRules, taskRules, connectionRules } from "./rules";
+import { deadlineRules, documentRules, hardRules, taskRules, connectionRules, isHardKind } from "./rules";
 import type { RuleInput } from "./rules";
+import { learnedCandidates } from "./ranked";
 import { staleConnections, upcomingDeadlines } from "./sources";
+import { emptyBehaviour, initialWeights } from "../scorer";
 
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -352,26 +354,41 @@ function input(over: Partial<RuleInput> = {}): RuleInput {
 }
 
 test("a task is placed by how far away it is, and only one section", () => {
-  const items = taskRules(
-    input({
-      tasks: [
-        { _id: "overdue", title: "Late", completed: false, area: "general", dueAt: NOW - 2 * HOUR, priority: 1 },
-        { _id: "soon", title: "Soon", completed: false, area: "general", dueAt: NOW + 2 * HOUR, priority: 1 },
-        { _id: "today", title: "Today", completed: false, area: "general", dueAt: NOW + 10 * HOUR, priority: 1 },
-        { _id: "later", title: "Later", completed: false, area: "general", dueAt: NOW + 5 * DAY, priority: 1 },
-        { _id: "someday", title: "Someday", completed: false, area: "general", dueAt: null, priority: 2 },
-      ],
-    }),
+  // Since 1.1 an open task is either a rule item or a ranked item and never
+  // both. This fixture pins the boundary from both sides: the hard producer
+  // stops at the four-hour urgent window, and the ranked producer starts there.
+  const tasks: RuleInput["tasks"] = [
+    { _id: "overdue", title: "Late", completed: false, area: "general", dueAt: NOW - 2 * HOUR, priority: 1 },
+    { _id: "soon", title: "Soon", completed: false, area: "general", dueAt: NOW + 2 * HOUR, priority: 1 },
+    { _id: "today", title: "Today", completed: false, area: "general", dueAt: NOW + 10 * HOUR, priority: 1 },
+    { _id: "later", title: "Later", completed: false, area: "general", dueAt: NOW + 5 * DAY, priority: 1 },
+    { _id: "someday", title: "Someday", completed: false, area: "general", dueAt: null, priority: 2 },
+  ];
+  const data = input({ tasks });
+
+  const hard = taskRules(data, NOW);
+  const ranked = learnedCandidates(
+    { tasks, enabledAreas: data.enabledAreas, weights: initialWeights(), behaviour: emptyBehaviour(), samples: 0 },
     NOW,
   );
 
-  const byId = new Map(items.map((i) => [i.sourceId, i] as const));
-  assert.equal(byId.get("overdue")?.section, "now");
-  assert.equal(byId.get("soon")?.section, "now");
-  assert.equal(byId.get("today")?.section, "today");
-  assert.equal(byId.get("later")?.section, "upcoming");
-  assert.equal(byId.get("someday")?.section, "upcoming");
-  assert.equal(new Set(items.map((i) => i.sourceId)).size, items.length, "no task appears twice");
+  const hardById = new Map(hard.map((i) => [i.sourceId, i] as const));
+  assert.equal(hardById.get("overdue")?.section, "now");
+  assert.equal(hardById.get("soon")?.section, "now");
+  assert.equal(hardById.get("today"), undefined, "10 hours out is not an urgent-window rule");
+  assert.equal(hardById.get("later"), undefined);
+  assert.equal(hardById.get("someday"), undefined);
+
+  const rankedById = new Map(ranked.map((i) => [i.sourceId, i] as const));
+  assert.equal(rankedById.get("today")?.section, "today");
+  assert.equal(rankedById.get("later")?.section, "upcoming");
+  assert.equal(rankedById.get("someday")?.section, "upcoming");
+  assert.equal(rankedById.get("overdue"), undefined, "a rule item is never also ranked");
+  assert.equal(rankedById.get("soon"), undefined);
+
+  // Exactly one section each, and no task produced by both producers.
+  const both = [...hard, ...ranked].map((i) => i.sourceId);
+  assert.equal(new Set(both).size, both.length, "no task appears twice");
 });
 
 test("completed tasks are never attention", () => {
@@ -561,8 +578,10 @@ test("hardRules returns every rule's output", () => {
   assert.equal(all.length, 4);
   assert.deepEqual(
     new Set(all.map((i) => i.kind)),
-    new Set(["task.due", "deadline.tax", "connection.stale", "document.incomplete"]),
+    new Set(["task.imminent", "deadline.tax", "connection.stale", "document.incomplete"]),
   );
+  assert.ok(all.every((i) => i.class === "hard"), "everything a rule emits is a hard item");
+  assert.ok(all.every((i) => isHardKind(i.kind)), "and every kind is on the server-side list");
 });
 
 test("the pipeline is deterministic: the same input always renders the same screen", () => {

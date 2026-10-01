@@ -301,6 +301,7 @@ export function sigmoid(z: number): number {
  * the shortcut keeps a large-magnitude score from producing a `-0`.
  */
 export function tanh(z: number): number {
+  if (Number.isNaN(z)) return 0; // no opinion, rather than a poisoned weight
   if (!Number.isFinite(z)) return z > 0 ? 1 : -1;
   if (z > 20) return 1;
   if (z < -20) return -1;

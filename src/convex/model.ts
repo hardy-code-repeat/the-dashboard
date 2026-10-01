@@ -214,7 +214,7 @@ export const listFeatureFlags = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) return { generalisedRanking: false, exploration: true, attentionGrouping: true };
+    if (!userId) return { generalisedRanking: true, exploration: true, attentionGrouping: true };
 
     const rows = await ctx.db
       .query("featureFlags")
@@ -223,9 +223,10 @@ export const listFeatureFlags = query({
 
     const set = new Map(rows.map((r) => [r.key, r.enabled] as const));
     return {
-      // Off until phase 1.1 ships them: a flag that turns on a feature the user
-      // has not been shown yet would be a switch to nowhere.
-      generalisedRanking: set.get("generalisedRanking") ?? false,
+      // Phase 1.1 shipped, so this is on by default. It stays a per-user switch
+      // because a model that orders someone's day needs to be something they
+      // can turn off, not just something they can reset.
+      generalisedRanking: set.get("generalisedRanking") ?? true,
       exploration: set.get("exploration") ?? true,
       attentionGrouping: set.get("attentionGrouping") ?? true,
     };
@@ -291,7 +292,7 @@ export const getModelControls = query({
       autoSnapshotEvery: AUTO_SNAPSHOT_EVERY,
       snapshotCount: snapshots.length,
       flags: {
-        generalisedRanking: flagMap.get("generalisedRanking") ?? false,
+        generalisedRanking: flagMap.get("generalisedRanking") ?? true,
         exploration: flagMap.get("exploration") ?? true,
         attentionGrouping: flagMap.get("attentionGrouping") ?? true,
       },

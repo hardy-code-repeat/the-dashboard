@@ -21,6 +21,8 @@ export type AttentionItemView = {
   kind: string;
   sourceId: string;
   section: string;
+  class: "hard" | "ranked";
+  area?: string;
   severity: number;
   title: string;
   detail?: string;
@@ -31,7 +33,9 @@ export type AttentionItemView = {
   grouped: boolean;
   seenCount: number;
   snoozedUntil: number | null;
+  explore: boolean;
   score: number;
+  reasons?: { label: string; contribution: number }[];
   /** Stable identity used to record feedback. */
   fingerprint: string;
   action?: { label: string; kind: string };
@@ -54,6 +58,14 @@ type FeedView = {
   hiddenByTotalCap: number;
   produced: number;
   truncated: boolean;
+  learning: {
+    active: boolean;
+    samples: number;
+    paused: boolean;
+    enabled: boolean;
+    suppressedKinds: string[];
+    suppressedAreas: string[];
+  };
 };
 
 const ESCALATION_MARK: Record<number, string> = {
@@ -102,10 +114,10 @@ export function AttentionFeed() {
 
   async function onAct(item: AttentionItemView) {
     await run(item.fingerprint, async () => {
-      await acted({ fingerprint: item.fingerprint, objectId: item.sourceId, escalation: item.escalation });
+      await acted(describe(item));
       // Acting on a task means doing it. A "Done" that does not tick the box
       // would be the kind of lie that makes the rest of the app untrustworthy.
-      if (item.kind === "task.overdue" || item.kind === "task.due" || item.kind === "task.someday") {
+      if (TASK_KINDS.has(item.kind)) {
         await setCompleted({ id: item.sourceId as never, completed: true });
       }
     });
@@ -118,8 +130,9 @@ export function AttentionFeed() {
         <p className="text-sm text-muted-foreground">
           {total === 0
             ? "Nothing right now. That is a real answer, not a loading state."
-            : `${total} item${total === 1 ? "" : "s"}, ranked by rules rather than by a model that might be wrong.`}
+            : `${total} item${total === 1 ? "" : "s"}. Overdue work and fixed dates come from rules and never from the model.`}
         </p>
+        <LearningNote learning={attention.learning} />
         {hidden > 0 && (
           <p className="text-xs text-muted-foreground" role="status">
             {hidden} more item{hidden === 1 ? " is" : "s are"} hidden by the section limits. Each
@@ -136,9 +149,69 @@ export function AttentionFeed() {
   );
 }
 
-type AttentionArgs = { fingerprint: string; objectId: string; escalation: 0 | 1 | 2 };
-type SnoozeArgs = AttentionArgs & { until?: number };
-type RejectArgs = { fingerprint: string; objectId: string };
+/** Task kinds whose "Done" button can honestly tick the underlying task. */
+const TASK_KINDS = new Set([
+  "task.overdue",
+  "task.imminent",
+  "task.planned",
+  "task.due",
+  "task.someday",
+]);
+
+/**
+ * The feedback payload for an item.
+ *
+ * `kind` travels with the feedback so the server can decide, from its own list,
+ * whether this is a hard-rule item. The client is not trusted to classify it —
+ * a client that lied could only mis-train the user's own model, never leak data
+ * and never hide a deadline.
+ */
+function describe(item: AttentionItemView) {
+  return {
+    fingerprint: item.fingerprint,
+    objectId: item.sourceId,
+    kind: item.kind,
+    area: item.area,
+    dueAt: item.dueAt,
+    escalation: item.escalation,
+  };
+}
+
+/**
+ * Says out loud whether the model is steering the list.
+ *
+ * A ranking that explains itself is one the user can correct, and a user who
+ * cannot tell when learning is off has no way to know the screen is not
+ * personal to them. Silence here would be the dishonest option.
+ */
+function LearningNote({ learning }: { learning: FeedView["learning"] }) {
+  if (learning.paused || !learning.enabled) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Learning is paused, so this list is not personalised. Rules still apply.
+      </p>
+    );
+  }
+  if (!learning.active) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Ordering by your own history starts after 12 signals. Until then this is a plain
+        priority order.
+      </p>
+    );
+  }
+  const hidden = learning.suppressedKinds.length + learning.suppressedAreas.length;
+  return (
+    <p className="text-xs text-muted-foreground">
+      Ordered by what you actually finish
+      {hidden > 0 ? ` · ${hidden} categories muted by you` : ""}.
+    </p>
+  );
+}
+
+type AttentionArgs = ReturnType<typeof describe>;
+type SnoozeArgs = Omit<AttentionArgs, "kind" | "area" | "dueAt"> & { until?: number };
+type RejectArgs = Omit<AttentionArgs, "escalation" | "dueAt">;
 
 function AttentionSection({
   section,
@@ -192,12 +265,25 @@ function AttentionSection({
                 )}
               >
                 <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-sm font-medium">{item.title}</span>
+                  <span className="truncate text-sm font-medium">
+                    {item.explore ? (
+                      <span
+                        className="mr-1.5 rounded border border-dashed border-muted-foreground/60 px-1 align-middle text-[10px] font-normal uppercase tracking-wide text-muted-foreground"
+                        title="Shown because the ranking has not proved itself yet, not because it scored highly."
+                      >
+                        exploring
+                      </span>
+                    ) : null}
+                    {item.title}
+                  </span>
                   <span className="truncate text-xs text-muted-foreground">
                     {item.pinned ? <Pin className="mr-1 inline size-3" aria-hidden /> : null}
                     {ESCALATION_MARK[item.escalation] ? `${ESCALATION_MARK[item.escalation]} · ` : ""}
                     {item.detail ? `${item.detail} · ` : ""}
                     {item.dueAt ? <DueLabel dueAt={item.dueAt} now={now} /> : "No date"}
+                    {item.reasons && item.reasons.length > 0
+                      ? ` · ${item.reasons.map((r) => r.label).join(", ")}`
+                      : ""}
                   </span>
                 </div>
 
@@ -240,14 +326,7 @@ function AttentionSection({
                       size="sm"
                       variant="ghost"
                       disabled={busy === item.fingerprint}
-                      onClick={() =>
-                        void onRun(item.fingerprint, () =>
-                          dismissed({
-                            fingerprint: item.fingerprint,
-                            objectId: item.sourceId,
-                            escalation: item.escalation,
-                          }),
-                        )
+                      onClick={() =>void onRun(item.fingerprint, () => dismissed(describe(item)))
                       }
                     >
                       <X className="size-3.5" aria-hidden />
@@ -262,7 +341,7 @@ function AttentionSection({
                       disabled={busy === item.fingerprint}
                       onClick={() =>
                         void onRun(item.fingerprint, () =>
-                          rejected({ fingerprint: item.fingerprint, objectId: item.sourceId }),
+                          rejected(describe(item) as never),
                         )
                       }
                       title="Not for me"
