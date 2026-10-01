@@ -3,6 +3,7 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { buildAttention, SECTION_BUDGET, type AttentionFeedback } from "../lib/attention/pipeline";
+import { describeCommitment } from "../lib/commitments";
 import { describeDocument } from "../lib/documents";
 import { allIntegrations } from "../lib/integrations/registry";
 import { learnedCandidates } from "../lib/attention/ranked";
@@ -10,6 +11,7 @@ import { hardRules, isHardKind } from "../lib/attention/rules";
 import {
   calendarSuppressed,
   type CalendarView,
+  type CommitmentAttentionView,
   type ConnectionView,
   type DeadlineView,
   type DocumentView,
@@ -31,6 +33,7 @@ import type { DataModel, Id } from "./_generated/dataModel";
 import { pickRenewal, renewalRef } from "./documents";
 import { mutation, query } from "./_generated/server";
 import { AUTO_SNAPSHOT_EVERY, MAX_SUPPRESSION_ENTRIES, requireUserId, takeSnapshot } from "./assistant";
+import { peopleById, resolvePersonName } from "./people";
 import { ensurePersonalSpace } from "./spaces";
 
 /**
@@ -272,6 +275,57 @@ export const getAttention = query({
       });
     }
 
+    // --- commitments + waits (phase 3, feature 4) ---------------------------
+    //
+    // **Two extra indexed reads, not one per commitment.** The `by_owner_open`
+    // range holds exactly `{completed: false, expectedAt <= now}` — and since
+    // Convex drops a document from an index when an indexed field is absent, an
+    // undated commitment is not in it either, and an undated one can never be
+    // overdue. The database does the filtering; there is no collect-everything
+    // and discard.
+    //
+    // The second read is the caller's people, so the counterparty's name and the
+    // tombstone chain resolve in memory. Resolving it inside the loop would be
+    // D41 again: an N+1 on the single hottest query in the product, which every
+    // subscribed dashboard re-runs on every write.
+    //
+    // **Follow-up tasks are deliberately not read here.** Nothing the attention
+    // rule shows depends on whether a chase task exists — not the severity, not
+    // the section, not the copy — so loading `by_owner_commitment` on every feed
+    // load would be a third read bought for nothing. `listCommitments` reads
+    // them for the surface that actually shows them.
+    const [commitmentRows, people] = await Promise.all([
+      ctx.db
+        .query("commitments")
+        .withIndex("by_owner_open", (q) =>
+          q.eq("ownerUserId", userId).eq("completed", false).lte("expectedAt", now),
+        )
+        .collect(),
+      peopleById(ctx, userId),
+    ]);
+
+    const commitmentViews: CommitmentAttentionView[] = [];
+    for (const row of commitmentRows) {
+      // A dangling counterparty degrades to silence rather than to a broken
+      // line: there is nobody to name, and a sentence without its subject is
+      // worse than no sentence.
+      const person = resolvePersonName(people, row.personId);
+      if (!person) continue;
+      const state = describeCommitment(row, person.name, null, now);
+      if (!state.attention) continue;
+      commitmentViews.push({
+        id: row._id,
+        title: row.title,
+        direction: row.direction,
+        personId: person._id,
+        attention: true,
+        severity: state.severity,
+        section: state.section === "waitingOn" ? "waitingOn" : "people",
+        expectedAt: row.expectedAt ?? null,
+        detail: state.detail,
+      });
+    }
+
     /**
      * Meetings, unless the calendar is too old to trust.
      *
@@ -305,6 +359,7 @@ export const getAttention = query({
       connections: connectionViews,
       documents: documentViews,
       expiring: expiryViews,
+      commitments: commitmentViews,
       calendar: calendarViews,
       enabledAreas: areas.map((a) => a.slug),
       taxYearLabel: country.taxYearLabel(taxYear),

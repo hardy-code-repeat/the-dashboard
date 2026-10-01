@@ -121,6 +121,9 @@ export const ACTIVITY_KINDS = [
   "document.renewal_started",
   "document.renewed",
   "commitment.made",
+  "commitment.fulfilled",
+  "commitment.cancelled",
+  "commitment.followed_up",
   "attention.acted",
   "attention.dismissed",
   "attention.snoozed",
@@ -159,6 +162,12 @@ export const activityKindValidator = v.union(
   v.literal("document.renewal_started"),
   v.literal("document.renewed"),
   v.literal("commitment.made"),
+  // Phase 3 feature 4. `commitment.made` was declared here since phase 0B and
+  // never written by anything (D38); this feature makes the declaration true
+  // and adds the three events that actually happen.
+  v.literal("commitment.fulfilled"),
+  v.literal("commitment.cancelled"),
+  v.literal("commitment.followed_up"),
   v.literal("attention.acted"),
   v.literal("attention.dismissed"),
   v.literal("attention.snoozed"),
@@ -215,6 +224,14 @@ export const scalarMetaValidator = v.record(
 
 /** Matches `Priority` in src/lib/nlp.ts: 0 = NOW, 1 = SOON, 2 = LATER. */
 export const priorityValidator = v.union(v.literal(0), v.literal(1), v.literal(2));
+
+/**
+ * Which way a commitment runs (phase 3, feature 4, ADR-027).
+ *
+ * Mirrored in `src/lib/commitments.ts` and asserted against it by
+ * `schema-vocab.test.ts`.
+ */
+export const commitmentDirectionValidator = v.union(v.literal("owed"), v.literal("owedTo"));
 
 /** The life-area catalogue in src/lib/areas.ts. */
 export const areaSlugValidator = v.union(
@@ -555,6 +572,19 @@ const schema = defineSchema(
        * deleting user data as a side effect of another action.
        */
       documentId: v.optional(v.id("documents")),
+
+      /**
+       * Phase 3 feature 4: the waiting item this follow-up chases.
+       *
+       * Set **only** by `commitments:followUp`, and only when the user pressed
+       * the button. Panel never creates a task for a commitment on its own,
+       * because inventing work is how a system becomes a nag.
+       *
+       * Completing this task does **not** settle the commitment: chasing
+       * someone is not receiving from them, and conflating the two would be a
+       * lie about another person's behaviour (ADR-027).
+       */
+      commitmentId: v.optional(v.id("commitments")),
     })
       .index("by_space", ["spaceId"])
       .index("by_owner", ["ownerUserId"])
@@ -588,7 +618,16 @@ const schema = defineSchema(
        * renewal?" would be a full scan of the user's tasks — on a reactively
        * subscribed query, which is the shape of D37 and D39.
        */
-      .index("by_owner_document", ["ownerUserId", "documentId"]),
+      .index("by_owner_document", ["ownerUserId", "documentId"])
+
+      /**
+       * Phase 3 feature 3/4: follow-up tasks, and nothing else.
+       *
+       * Same reasoning as `by_owner_document`: Convex omits a document from an
+       * index when the indexed field is absent, so this range holds only the
+       * tasks that chase a waiting item.
+       */
+      .index("by_owner_commitment", ["ownerUserId", "commitmentId"]),
 
     /**
      * A person (phase 3, feature 1).
@@ -1073,6 +1112,92 @@ const schema = defineSchema(
        * (D37, D39).
        */
       .index("by_owner_expiry", ["ownerUserId", "expiresAt"]),
+
+    /**
+     * A commitment, or a wait (phase 3, feature 4).
+     *
+     * **One object, two directions.** A row is an expectation between the user
+     * and one person: `owed` is something the user promised, `owedTo` is
+     * something the user is waiting for. They share a shape and a lifecycle and
+     * differ by one field — who holds the next move (ADR-027, R-008).
+     *
+     * **Why `owedTo` cannot be a task.** `taskRules` emits `task.overdue` for
+     * any open dated task. A delegation stored as a task would therefore be
+     * reported overdue — about something the user is physically unable to do,
+     * which is worse than silence because it teaches the reader to ignore the
+     * feed. Every published definition of GTD's Waiting For list keeps it
+     * *outside* the action list for the same reason.
+     *
+     * **No status column.** Four states are derived from `(expectedAt,
+     * completed, now)` by `src/lib/commitments.ts`. A stored status would be a
+     * copy of two other fields, and a copy is where they disagree silently —
+     * ADR-025.
+     *
+     * **`completed` is always the user's assertion.** For `owed` they did the
+     * thing and Panel knows. For `owedTo` nobody in the system observed
+     * anything, so the surface must say "you marked this received" and never
+     * "Raj sent this". The wording carries that honesty; no column can.
+     */
+    commitments: defineTable({
+      ...ownedBy,
+
+      /**
+       * The counterparty. **Required, not optional** — a commitment to nobody
+       * is just a task, and making it optional would let the feature quietly
+       * become a second task list.
+       *
+       * May point at a **tombstone**, deliberately: a merge rewrites nothing
+       * (ADR-023), so a commitment keeps pointing at exactly the row the user
+       * chose, unmerging restores it without touching a single row, and reads
+       * resolve through `mergedIntoId`.
+       */
+      personId: v.id("people"),
+
+      /** What was promised, or what is expected. The only free text; 1-160. */
+      title: v.string(),
+
+      /** Which way the obligation runs. Closed: see ADR-027. */
+      direction: commitmentDirectionValidator,
+
+      /**
+       * When the user said it would happen. **Optional**: plenty of promises
+       * have no date, and inventing one would be a lie about what they said.
+       * For `owedTo` this is the date the user would tell the other person.
+       */
+      expectedAt: v.optional(v.number()),
+
+      /** The user's own assertion that it is settled. Never an observation. */
+      completed: v.boolean(),
+      completedAt: v.optional(v.union(v.null(), v.number())),
+
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      /**
+       * **The only range Attention ever needs**, and the reason this table has
+       * three indexes rather than one.
+       *
+       * Only a commitment that is unsettled *and* dated *and* past its date can
+       * produce an attention item — the derived machine says so, and the other
+       * three states are silent. That is precisely an index range on
+       * `(completed, expectedAt)`, so the hot query filters in the database
+       * instead of collecting every commitment the user has ever made and
+       * discarding most of them in JavaScript.
+       *
+       * Convex omits a document from an index when an indexed field is absent,
+       * so an **undated** commitment never appears here — and an undated one
+       * can never be overdue. The index is not a filter somebody has to
+       * re-check afterwards; it *is* the candidate set.
+       *
+       * This is the `by_owner_expiry` argument from feature 3 applied a second
+       * time, and it corrects the original scope block, which declined to add
+       * any index beyond `by_owner` on the grounds that a single owner-scoped
+       * read was enough. It is not enough on the query that re-runs on every
+       * dashboard write — which is the D37/D39/D41 lesson arriving one feature
+       * late rather than three.
+       */
+      .index("by_owner_open", ["ownerUserId", "completed", "expectedAt"]),
 
     // ---------- integrations ----------------------------------------------
 

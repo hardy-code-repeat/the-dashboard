@@ -389,7 +389,18 @@ async function owned(ctx: Ctx, id: Id<"people">, userId: Id<"users">) {
 }
 
 /** Follows `mergedIntoId` to the live person, cycle-guarded. */
-function resolveThroughTombstone(
+/**
+ * Follows a `mergedIntoId` chain to the live person at the end of it.
+ *
+ * **Exported** so anything holding a `personId` resolves it the same way —
+ * `commitments.ts` needs this, and two copies of a tombstone walk is how one of
+ * them ends up with a subtly different hop limit and quietly losing a row.
+ *
+ * The hop limit and the `seen` set are not decoration: they are what make a
+ * cycle (which a merge bug or a hand-edited row could produce) terminate
+ * instead of hanging a query.
+ */
+export function resolveThroughTombstone(
   byId: Map<Id<"people">, { _id: Id<"people">; mergedIntoId?: Id<"people"> }>,
   start: Id<"people">,
 ): Id<"people"> | null {
@@ -404,6 +415,47 @@ function resolveThroughTombstone(
     current = row.mergedIntoId;
   }
   return null;
+}
+
+/**
+ * Every person the caller owns, including tombstones, keyed by id.
+ *
+ * One read for the whole set, because a tombstone walk needs the whole chain in
+ * memory: resolving row-by-row would be one query per hop, which is the N+1
+ * shape D37/D41 were recorded for. Owner-scoped and index-scoped, which is what
+ * makes the bound real rather than aspirational.
+ *
+ * **Exported** so anything that holds a `personId` resolves it identically —
+ * `commitments.ts` and `attention.ts` both need the name behind a counterparty,
+ * and a second tombstone walk is a second thing to get wrong.
+ */
+export async function peopleById(
+  ctx: GenericQueryCtx<DataModel> | GenericMutationCtx<DataModel>,
+  userId: Id<"users">,
+): Promise<Map<Id<"people">, { _id: Id<"people">; name: string; mergedIntoId?: Id<"people"> }>> {
+  const rows = await ctx.db
+    .query("people")
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+    .collect();
+  return new Map(rows.map((r) => [r._id, r]));
+}
+
+/**
+ * The live person behind a `personId`, following tombstones.
+ *
+ * Returns `null` rather than throwing when the chain dangles or the target is
+ * not in the map. A row pointing at somebody who has since been removed degrades
+ * to "no counterparty" instead of making an entire list unreadable — and a list
+ * that cannot be read is a much worse failure than a missing name.
+ */
+export function resolvePersonName(
+  byId: Map<Id<"people">, { _id: Id<"people">; name: string }>,
+  personId: Id<"people">,
+): { _id: Id<"people">; name: string } | null {
+  const target = resolveThroughTombstone(byId, personId);
+  if (!target) return null;
+  const row = byId.get(target);
+  return row ? { _id: row._id, name: row.name } : null;
 }
 
 /** The first other live person sharing a key with `keys`, if any. */

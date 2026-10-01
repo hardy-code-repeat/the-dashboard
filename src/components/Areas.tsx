@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Circle,
   GitMerge,
+  Handshake,
   HeartPulse,
   Home,
   Info,
@@ -236,11 +237,14 @@ function PersonCard({
   others,
   open,
   onToggle,
+  commitments,
 }: {
   person: PersonSummary;
   others: { id: Id<"people">; name: string }[];
   open: boolean;
   onToggle: () => void;
+  /** Open obligations with this person, from the one list read above. */
+  commitments?: { owed: number; owedTo: number };
 }) {
   const detail = useQuery(api.people.getPerson, { id: person.id });
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
@@ -316,6 +320,8 @@ function PersonCard({
           <p className="truncate text-sm font-bold uppercase">{person.name}</p>
           <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">
             {person.openTasks === 0 ? "Nothing open" : `${person.openTasks} open`}
+            {commitments && commitments.owed > 0 ? ` · you owe ${commitments.owed}` : ""}
+            {commitments && commitments.owedTo > 0 ? ` · waiting ${commitments.owedTo}` : ""}
             {person.hasEmail ? " · has email" : ""}
             {mergedFrom.length > 0 ? ` · ${mergedFrom.length} merged in` : ""}
           </p>
@@ -490,8 +496,428 @@ function PersonCard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Commitments + Waiting On (phase 3, feature 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the row looks like once the state machine has seen it.
+ *
+ * Declared here rather than imported from the generated API so the shape is
+ * stated once in the file that renders it, and so a field that stops being
+ * written becomes a type error rather than an `undefined` in a template
+ * literal.
+ */
+type CommitmentRowView = {
+  id: Id<"commitments">;
+  title: string;
+  direction: "owed" | "owedTo";
+  personId: Id<"people">;
+  personName: string;
+  expectedAt: number | null;
+  completed: boolean;
+  state: "open" | "due" | "overdue" | "kept";
+  daysAway: number | null;
+  attention: boolean;
+  detail: string;
+  followingUp: boolean;
+};
+
+/**
+ * End of the day the user typed, in UTC.
+ *
+ * UTC for the same reason the Life Admin surface does it: a calendar day must
+ * not shift under the reader. End of day because "by Friday" means Friday, not
+ * Friday at midnight.
+ */
+function commitmentEndOfDay(date: string): number | null {
+  const parsed = Date.parse(`${date}T23:59:59Z`);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** The inverse, for seeding the date input back out of a stored timestamp. */
+function toDateInput(at: number | null): string {
+  return at === null ? "" : new Date(at).toISOString().slice(0, 10);
+}
+
+/**
+ * Obligations and waits.
+ *
+ * **Inside the Relationships area, not a new tab.** A commitment has no life
+ * outside the person it is with, so a seventh area would have been a place to
+ * look at people rather than a place to be.
+ *
+ * Every button here does something the server actually stores. There is no
+ * decorative control: "Received" records the user's assertion and is worded as
+ * one, and "Follow up" is the only way a chase task is ever created.
+ */
+function Commitments({ people }: { people: { id: Id<"people">; name: string }[] }) {
+  const data = useQuery(api.commitments.listCommitments);
+  const create = useMutation(api.commitments.createCommitment);
+  const update = useMutation(api.commitments.updateCommitment);
+  const complete = useMutation(api.commitments.completeCommitment);
+  const cancel = useMutation(api.commitments.cancelCommitment);
+  const reopen = useMutation(api.commitments.reopenCommitment);
+  const followUp = useMutation(api.commitments.followUp);
+  const remove = useMutation(api.commitments.deleteCommitment);
+
+  const [title, setTitle] = useState("");
+  const [personId, setPersonId] = useState<Id<"people"> | "">("");
+  const [direction, setDirection] = useState<"owed" | "owedTo">("owed");
+  const [expectedAt, setExpectedAt] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const owed = data?.owed ?? [];
+  const owedTo = data?.owedTo ?? [];
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const what = title.trim();
+    if (!what || !personId || busy) return;
+    setBusy("add");
+    try {
+      await create({
+        title: what,
+        personId,
+        direction,
+        expectedAt: expectedAt ? (commitmentEndOfDay(expectedAt) ?? undefined) : undefined,
+      });
+      setTitle("");
+      setExpectedAt("");
+      toast.success(direction === "owed" ? "Promise recorded" : "Wait recorded");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not record that");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** One wrapper so every mutation reports its own failure instead of a blank toast. */
+  const run = async (
+    key: string,
+    fn: () => Promise<unknown>,
+    ok: string | ((result: unknown) => string),
+  ) => {
+    setBusy(key);
+    try {
+      const result = await fn();
+      toast.success(typeof ok === "function" ? ok(result) : ok);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "That did not work");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="brutal-flat bg-card p-4">
+        <p className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase text-muted-foreground">
+          <Handshake size={4} />
+          Promises and waits
+        </p>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          A task is something to do. A promise is something you already said you would do, and a
+          wait is something somebody else owes you. Panel never guesses which one you meant, and
+          it never says somebody did something it has no evidence for — when a wait is settled it
+          records that <em>you</em> marked it received.
+        </p>
+      </div>
+
+      <form onSubmit={(e) => void submit(e)} className="brutal-flat bg-card p-4">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={direction === "owed" ? "What you said you'd do" : "What you're waiting for"}
+            aria-label="What was promised, or what is expected"
+            maxLength={160}
+            className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+          />
+          <select
+            value={personId}
+            onChange={(e) => setPersonId(e.target.value as Id<"people">)}
+            aria-label="Who it is with"
+            className={selectClass}
+          >
+            <option value="">With…</option>
+            {people.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={direction}
+            onChange={(e) => setDirection(e.target.value as "owed" | "owedTo")}
+            aria-label="Which way it runs"
+            className={selectClass}
+          >
+            <option value="owed">I owe them</option>
+            <option value="owedTo">They owe me</option>
+          </select>
+          <Input
+            type="date"
+            value={expectedAt}
+            onChange={(e) => setExpectedAt(e.target.value)}
+            aria-label="Expected by"
+            className="h-11 w-full border-2 border-border bg-background focus-visible:ring-0 sm:w-40"
+          />
+          <Button
+            type="submit"
+            disabled={!title.trim() || !personId || busy === "add" || people.length === 0}
+            className="brutal h-11 gap-2 bg-primary px-5 font-bold uppercase"
+          >
+            {busy === "add" ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+            Record
+          </Button>
+        </div>
+        {people.length === 0 && (
+          <p className="mt-2 text-[10px] uppercase text-muted-foreground">
+            Add someone first — a promise to nobody is just a task.
+          </p>
+        )}
+      </form>
+
+      {data === undefined ? (
+        <div className="brutal-flat bg-card p-6 text-center text-xs uppercase text-muted-foreground">
+          <Loader2 className="mx-auto mb-2 size-4 animate-spin" />
+          Reading your promises…
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          <CommitmentColumn
+            heading="You said you would"
+            blurb="Promises you made. Panel keeps them until you settle them."
+            rows={owed}
+            settleLabel="Done it"
+            dropLabel="Cancel"
+            empty="Nothing promised to anybody."
+            busy={busy}
+            onSettle={(row) =>
+              void run(row.id, () => complete({ id: row.id }), "Marked as kept")
+            }
+            onFollowUp={null}
+            onDrop={(row) =>
+              void run(row.id, () => cancel({ id: row.id }), "Promise withdrawn")
+            }
+            onReopen={(row) => void run(row.id, () => reopen({ id: row.id }), "Back on the list")}
+            onMoveDate={(row, at) =>
+              void run(row.id, () => update({ id: row.id, expectedAt: at }), "Date moved")
+            }
+            onRemove={(row) =>
+              void run(
+                row.id,
+                () => remove({ id: row.id }),
+                (result) => {
+                  const { detached } = result as { detached: number };
+                  return detached > 0
+                    ? `Removed · ${detached} follow-up ${detached === 1 ? "task kept" : "tasks kept"}`
+                    : "Removed";
+                },
+              )
+            }
+          />
+          <CommitmentColumn
+            heading="You are waiting on"
+            blurb="Things other people owe you. Panel cannot check whether they did it — only you can."
+            rows={owedTo}
+            settleLabel="Mark received"
+            dropLabel="Not coming"
+            empty="Nobody owes you anything you have chased."
+            busy={busy}
+            onSettle={(row) =>
+              void run(row.id, () => complete({ id: row.id }), "Marked as received")
+            }
+            onFollowUp={(row) =>
+              void run(
+                row.id,
+                () => followUp({ id: row.id }),
+                (result) =>
+                  (result as { created: boolean }).created
+                    ? "Chase added to your tasks"
+                    : "You already have a chase open for this",
+              )
+            }
+            onDrop={(row) =>
+              void run(row.id, () => cancel({ id: row.id }), "Closed as not coming")
+            }
+            onReopen={(row) => void run(row.id, () => reopen({ id: row.id }), "Back on the list")}
+            onMoveDate={(row, at) =>
+              void run(row.id, () => update({ id: row.id, expectedAt: at }), "Date moved")
+            }
+            onRemove={(row) =>
+              void run(
+                row.id,
+                () => remove({ id: row.id }),
+                (result) => {
+                  const { detached } = result as { detached: number };
+                  return detached > 0
+                    ? `Removed · ${detached} follow-up ${detached === 1 ? "task kept" : "tasks kept"}`
+                    : "Removed";
+                },
+              )
+            }
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One direction's list. Identical mechanics, different wording and verbs. */
+function CommitmentColumn({
+  heading,
+  blurb,
+  rows,
+  settleLabel,
+  dropLabel,
+  empty,
+  busy,
+  onSettle,
+  onFollowUp,
+  onDrop,
+  onReopen,
+  onRemove,
+  onMoveDate,
+}: {
+  heading: string;
+  blurb: string;
+  rows: CommitmentRowView[];
+  settleLabel: string;
+  dropLabel: string;
+  empty: string;
+  busy: string | null;
+  onSettle: (row: CommitmentRowView) => void;
+  onFollowUp: ((row: CommitmentRowView) => void) | null;
+  onDrop: (row: CommitmentRowView) => void;
+  onReopen: (row: CommitmentRowView) => void;
+  onRemove: (row: CommitmentRowView) => void;
+  onMoveDate: (row: CommitmentRowView, at: number) => void;
+}) {
+  return (
+    <section className="flex flex-col gap-2">
+      <div>
+        <h3 className="text-[11px] font-bold uppercase">{heading}</h3>
+        <p className="text-[10px] uppercase text-muted-foreground">{blurb}</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="border-2 border-dashed border-border p-4 text-[10px] uppercase text-muted-foreground">
+          {empty}
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {rows.map((row) => (
+            <li
+              key={row.id}
+              className={cn(
+                "border-2 border-border bg-card p-3",
+                row.completed && "opacity-60",
+                row.attention && "border-destructive/60",
+              )}
+            >
+              <p className="text-sm font-bold">{row.title}</p>
+              <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">
+                {row.personName} · {row.state}
+              </p>
+              <p className="mt-1 text-[11px] leading-snug">{row.detail}</p>
+              {row.followingUp && (
+                <p className="mt-1 text-[10px] uppercase text-muted-foreground">
+                  Chasing — a task, not a receipt
+                </p>
+              )}
+              {/* The date is editable, because a date the user got wrong would
+                  otherwise keep shouting, and the only other way out would be to
+                  delete the row and lose its history and its chase task. */}
+              {!row.completed && (
+                <div className="mt-2">
+                  <label
+                    htmlFor={`cm-date-${row.id}`}
+                    className="mb-1 block text-[9px] font-bold uppercase text-muted-foreground"
+                  >
+                    Expected by
+                  </label>
+                  <Input
+                    id={`cm-date-${row.id}`}
+                    type="date"
+                    defaultValue={toDateInput(row.expectedAt)}
+                    disabled={busy === row.id}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!next) return;
+                      const at = commitmentEndOfDay(next);
+                      if (at === null || at === row.expectedAt) return;
+                      onMoveDate(row, at);
+                    }}
+                    className="h-8 w-full border-2 border-border bg-background text-[10px] focus-visible:ring-0"
+                  />
+                </div>
+              )}
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {row.completed ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy === row.id}
+                    onClick={() => onReopen(row)}
+                    className="brutal-flat h-8 border-2 border-border bg-background px-2.5 text-[9px] font-bold uppercase hover:bg-muted"
+                  >
+                    Undo
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      disabled={busy === row.id}
+                      onClick={() => onSettle(row)}
+                      className="brutal h-8 bg-primary px-2.5 text-[9px] font-bold uppercase"
+                    >
+                      {settleLabel}
+                    </Button>
+                    {onFollowUp && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={busy === row.id}
+                        onClick={() => onFollowUp(row)}
+                        className="brutal-flat h-8 border-2 border-border bg-background px-2.5 text-[9px] font-bold uppercase hover:bg-muted"
+                      >
+                        Follow up
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={busy === row.id}
+                      onClick={() => onDrop(row)}
+                      className="brutal-flat h-8 border-2 border-border bg-background px-2.5 text-[9px] font-bold uppercase hover:bg-muted"
+                    >
+                      {dropLabel}
+                    </Button>
+                  </>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy === row.id}
+                  onClick={() => onRemove(row)}
+                  aria-label={`Remove ${row.title}`}
+                  className="brutal-flat h-8 border-2 border-border bg-background px-2.5 hover:bg-muted"
+                >
+                  <Trash2 className="size-3" />
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export function PeopleArea() {
   const list = useQuery(api.people.listPeople);
+  const commitments = useQuery(api.commitments.listCommitments);
   const create = useMutation(api.people.createPerson);
 
   const [name, setName] = useState("");
@@ -535,6 +961,26 @@ export function PeopleArea() {
   const people = list?.people ?? [];
   const others = people.map((p) => ({ id: p.id, name: p.name }));
   const loading = list === undefined;
+
+  /**
+   * Open obligations per person, counted from the single list read this area
+   * already has.
+   *
+   * Not a query per card — `getPersonCommitmentCounts` exists on the server for
+   * callers that need the numbers alone, but a card that fetched its own counts
+   * would be the N+1 shape D41 was recorded for, on the screen users open most.
+   */
+  const countsByPerson = new Map<string, { owed: number; owedTo: number }>();
+  for (const row of commitments?.owed ?? []) {
+    const entry = countsByPerson.get(row.personId) ?? { owed: 0, owedTo: 0 };
+    entry.owed += 1;
+    countsByPerson.set(row.personId, entry);
+  }
+  for (const row of commitments?.owedTo ?? []) {
+    const entry = countsByPerson.get(row.personId) ?? { owed: 0, owedTo: 0 };
+    entry.owedTo += 1;
+    countsByPerson.set(row.personId, entry);
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -603,6 +1049,8 @@ export function PeopleArea() {
         )}
       </form>
 
+      {!loading && people.length > 0 && <Commitments people={people} />}
+
       {list && list.mergedCount > 0 && (
         <p className="border-2 border-dashed border-border p-2.5 text-[10px] uppercase text-muted-foreground">
           {list.mergedCount} {list.mergedCount === 1 ? "person" : "people"} merged and
@@ -630,6 +1078,7 @@ export function PeopleArea() {
               key={p.id}
               person={p}
               others={others.filter((o) => o.id !== p.id)}
+              commitments={countsByPerson.get(p.id)}
               open={openId === p.id}
               onToggle={() => setOpenId(openId === p.id ? null : p.id)}
             />

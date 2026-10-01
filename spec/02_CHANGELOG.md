@@ -1719,6 +1719,39 @@ to the feature layout, not a redesign.
 
 **Blocked by:** a human decision.
 
+### Q-007 — Should capture infer that something is a commitment, and in which direction?
+
+- **Status:** OPEN. Not blocking Feature 4. Recorded 2026-10-01.
+- **The question.** Feature 2 established that a capture may split on explicit
+  structure only and never on prose (R-004), and it creates **tasks only**.
+  Feature 4 adds commitments. Should a capture ever produce one?
+- **Why it is not a small question.** The two directions are separated by a
+  pronoun and nothing else. "I'll send Raj the file tomorrow" is an obligation;
+  "Raj will send me the file tomorrow" is a wait; "I need to send Raj the file
+  tomorrow" is a task; and "Raj and I talked about sending the file tomorrow" is
+  none of the above. All four are ordinary sentences a person types, they share
+  most of their tokens, and the difference is *who the sentence is about from the
+  speaker's point of view*.
+- **Why it was not decided here.** Extracting this needs new grammar in a closed
+  parser under Do-Not-Touch #7, and R-004 already established the asymmetry
+  that governs such decisions: a wrong commitment is a social claim the user did
+  not make, attached to a real person, and the user cannot see the error from
+  the capture that appeared to succeed. Direction-by-pronoun is the hardest
+  version of the extraction problem, not the easiest.
+- **Options.** (a) No capture for commitments; commitments are created by
+  explicit action in the Relationships area. (b) Explicit structure only, as in
+  Feature 2 — some user-typed marker that states both the fact and the
+  direction. (c) Natural-language direction inference.
+- **Recommendation (technical only, not a product decision):** **(a) now, (b)
+  later if asked.** It is the smallest option, it cannot manufacture a social
+  claim, and it is consistent with the rule Feature 2 already follows. Option
+  (c) is the one R-004 warns about and should not be built without evidence
+  nobody has yet produced.
+- **Blocked by:** a human decision. The agent may recommend, not decide.
+- **Interim behaviour:** Feature 4 ships with (a). Capture is unchanged and still
+  creates tasks only; a commitment is created by pressing a button in the
+  Relationships area, with a direction chosen there.
+
 ---
 
 ## Architecture Decisions
@@ -2701,6 +2734,90 @@ it is the reason the feature fits its budget at all.
 outlive the task — an application number, a fee paid, a reference — that is
 fields on the task, not a new table, until the fields stop being about an act
 the user is doing.
+
+### ADR-027 — A commitment is an expectation with a direction, and an inbound wait is not a task
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 4 (CHANGE-0016).
+Extends ADR-008, ADR-009, ADR-023, ADR-026; evidence in R-008 and R-009.
+
+**Decision.** One `commitments` table with a closed `direction` of `owed` or
+`owedTo`. A row is an expectation between the user and one person: a title, a
+counterparty, an optional expected date, and the user's own assertion that it is
+settled. **Panel never creates a task for a commitment**; a task appears only
+when the user presses Follow up, and following up does not settle the
+commitment. Four lifecycle states, all derived, no status column.
+
+**Context.** The roadmap line reads "Commitments + Waiting On", which reads like
+two features. The audit found that one of them *cannot* be a task and the other
+only barely can.
+
+The decisive fact is mechanical. `taskRules` emits `task.overdue` and
+`task.imminent` for any open dated task. If "waiting for Raj to send the
+contract" were stored as a task, Panel would say it is overdue — about something
+the user is physically unable to do. That is worse than silence, because it
+teaches the reader to ignore the feed. Every published definition of GTD's
+Waiting For list puts it *outside* the action list for exactly this reason.
+
+A commitment is a weaker case but still a real one. `tasks.personId` already
+carries "an obligation to Raj", and honestly that is most of it. What a task
+cannot say is that the user has **already spoken for it**. The obligation is a
+fact about a relationship, not about a chore, and the difference is worth one
+row — not worth a second task system.
+
+The second half of the decision is a refusal. Panel **records the user's
+assertion**; it does not know what Raj did. For `owed` the user did the thing
+and Panel knows. For `owedTo` nobody in the system observed anything, so the
+surface says *"you marked this received"* and never *"Raj sent this"*. A
+product that says otherwise is making a claim about a third party it has no
+evidence for, and that is the line this whole project has refused to cross since
+ADR-013 stored a private calendar event as the literal string `"Busy"`.
+
+**Alternatives considered.**
+- *Two tables, `commitments` and `waits`.* Rejected: identical schema, identical
+  lifecycle, identical surface, differing by one field. Two tables is the shape
+  a feature takes before it has decided what it is.
+- *Model waiting as a task with an assignee.* Rejected above, and it is the one
+  option that produces actively wrong advice.
+- *No table; store an inbound wait as an undated task.* Rejected: undated tasks
+  are ranked by the scorer and never become attention, so a delegation would be
+  invisible forever — a silent failure of exactly the D38 shape.
+- *Use `links` with the existing `waitingOn` / `owedBy` relations.* Rejected:
+  ADR-008 is explicit that `links` holds relationships only and that anything
+  needing to be **queried by** must be a typed indexed column. "Which
+  commitments do I owe?" is a query.
+- *Derive `owed` entirely from tasks with a `personId`.* Rejected: it cannot
+  distinguish "I told Raj I'd send it" from "I might send Raj something", and it
+  leaves the promise with no place to record that the user spoke for it.
+- *Train the model on kept commitments.* Rejected, and this one matters. For
+  `owedTo`, "completed" is an **assertion**, not an observation. Training on it
+  would teach the model that things work out — which is not a preference the
+  model can act on, and would be a D34-shaped signal that is always subtly
+  wrong rather than obviously empty.
+
+**Why chosen.** One table serves both directions, the state machine is one pure
+function, and the single discriminator is the thing that actually differs: who
+holds the next move. That discriminator is also what selects the attention
+section — `people` for what the user owes, `waitingOn` for what they wait on —
+so both sections were designed for this and neither is new.
+
+**Consequences.**
+- The `waitingOn` attention section, built in phase 1.0 with a budget, a
+  half-life and a counterparty grouping dimension, finally has a producer.
+- A completion means two different things depending on direction, so **the
+  wording carries the honesty**, not the code: "you marked this received" versus
+  "you told Raj". A fixture asserts the exact strings.
+- Deleting a person **detaches** their commitments rather than deleting them, and
+  reports how many — Do-Not-Touch #9, and the same rule `deleteDocument` uses.
+- A merge rewrites nothing, exactly as ADR-023 established for tasks, so unmerge
+  is exact and a merged-away person still resolves.
+- No feature index is spent. The follow-up task is an ordinary task and trains
+  through the existing path; nothing new enters the frozen layout.
+
+**Conditions for revisiting.** Revisit if Panel ever gains a source that can
+*observe* a delivery — an inbox thread that actually arrived, a payment that
+actually settled. At that point `owedTo` completion stops being an assertion and
+becomes evidence, and the whole no-learning decision above would need reopening.
+That is a security-shaped question, not an engineering one, and it is not close.
 
 ---
 

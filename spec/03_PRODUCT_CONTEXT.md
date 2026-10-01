@@ -762,3 +762,96 @@ where it is architectural, an ADR.
   instinct is to add `status: "expired"`).
 - **Status:** **Decision**, recorded as ADR-025 and scoped in
   SYSTEM_FUNDAMENTALS §11.2.
+
+### R-008 — What is a commitment that a task is not, and what is waiting-on that a task cannot be?
+
+- **Date:** 2026-10-01 · **Sources:** David Allen's GTD *Waiting For* definition
+  as published by Todoist, ClickUp, Facilethings and Zen Habits; the GTD forum's
+  practitioner threads on how the list is reviewed; Panel's own task model
+  (`src/convex/schema.ts`, `src/lib/nlp.ts`, `src/lib/attention/rules.ts`) ·
+  **Confidence:** High for the structural conclusion; Medium for the exact
+  attention policy, which is a product judgement
+- **Question:** The roadmap line is "Commitments + Waiting On". Panel already
+  has tasks, people, a `personId` on every task, an open `waitingOn` attention
+  section, and a `commitment` link relation that nothing uses. Does this feature
+  need a new table, two, or none?
+- **Evidence:**
+  1. **GTD keeps "Waiting For" out of the action list, and that is the whole
+     point.** Every published definition is the same: Waiting For holds *"items
+     that have been delegated or are awaiting action by someone else"*. It is a
+     **separate list from Next Actions** precisely because **the user cannot do
+     the item**. Panel already has a mechanical consequence for this: `taskRules`
+     emits `task.overdue` and `task.imminent` for any open dated task. Model a
+     delegation as a task and Panel starts telling someone to do a task they are
+     physically unable to do — which is worse than saying nothing, because it
+     teaches them to ignore the feed.
+  2. **A commitment and a task differ by their counterparty, and only there.**
+     "Call Raj" and "I told Raj I'd send the document Friday" both become
+     something to do on Friday. The second has a person the user is *obliged*
+     to, which `tasks.personId` can already carry. What a task cannot carry is
+     that the user has **already spoken for it** — and nothing in the current
+     attention or scoring path behaves differently for a promise than for a
+     chore.
+  3. **"Marked done" has two meanings, and only one is a fact.** For `owed`, the
+     user did the thing — Panel knows. For `owedTo`, nobody in the system has
+     observed anything; the user is *asserting* that Raj delivered. Panel must
+     not restate that as a fact about Raj, and the difference is one the model
+     cannot enforce and the wording must.
+  4. **The existing affordances are real and empty.** `waitingOn` is an attention
+     section with a budget of 3, a 24h half-life and a counterparty grouping
+     dimension, and **no rule has ever emitted into it** — the same shape as
+     D38. `commitment` is an `objectKind`, a `LinkRel` family (`waitingOn`,
+     `owedBy`) and an activity kind, none of which has a producer.
+- **Finding:** **One object, two directions.** A commitment is *an expectation
+  between the user and one person, with a direction and an optional expected
+  date*. `owed` is what the user promised; `owedTo` is what they are waiting
+  for. They share a shape, a lifecycle and a surface, and they differ only in
+  who holds the next move — which is the single field that changes the meaning
+  of "completed", the attention section, and the wording.
+- **Affected area:** Relationships area, People, Attention, tasks.
+- **Implication:** The decisive architectural argument is the one nobody can
+  argue with: **an inbound wait is not a task, so it cannot be stored as one.**
+  Everything else follows from that, including why the feature needs its own
+  table rather than a `personId` on `tasks`.
+- **Status:** **Decision**, ADR-027, scoped in SYSTEM_FUNDAMENTALS §11.2. The
+  residual question — whether capture can infer direction from phrasing — is
+  **Q-007**, open and non-blocking.
+
+### R-009 — Should Panel nag about something the user cannot do?
+
+- **Date:** 2026-10-01 · **Source:** GTD practitioner consensus on the Waiting
+  For list (GTD forum, r/gdt, Zen Habits' GTD FAQ, Facilethings' weekly-review
+  guide), read 2026-10-01; Panel's own §5.7 attention budget · **Confidence:**
+  High
+- **Question:** An inbound wait that has passed its expected date — what should
+  Panel do?
+- **Evidence:**
+  1. **The canonical answer is a weekly review, not a daily reminder.** Across
+     the sources the same sentence appears in different words: Waiting For *"is
+     a category which gets reviewed at least every week, during the weekly
+     review"*. Continuous notification is not the design.
+  2. **The failure mode is rot, not nagging.** Every source that discusses
+     maintaining the list names the same disease: lists that are not reviewed
+     go stale, and a stale system is one the user stops trusting. The weekly
+     review itself is described as *"the hardest habit to achieve and the main
+     reason why people no longer stay organized"*.
+  3. **The date on a waiting item is partly social.** One source puts it
+     plainly: the date *"commands attention, and it's a way to get the other
+     person moving on the Waiting For item without being pushy"*. So the date is
+     the thing the user tells Raj, not a deadline Panel enforces on Raj's
+     behalf.
+  4. **Panel already has the budget for it.** `waitingOn` caps at 3 with a 24h
+     half-life, and the pipeline discloses how many items the caps hid. Overflow
+     is never silent.
+- **Finding:** **Do not nag, and never demand.** An inbound wait fires
+  attention **only after** its expected date has passed — never as it
+  approaches — at a low severity, capped by the section's existing budget of 3,
+  and its action is **"Follow up"**, which offers to create a task the user can
+  actually perform. The feed must never imply the user can resolve the wait
+  themselves; the only thing they can do is chase it or let it go.
+- **Affected area:** Attention, task creation.
+- **Implication:** Following up creates an ordinary `tasks` row carrying
+  `personId` **and** `commitmentId`. The commitment is not completed by the
+  follow-up — chasing someone is not receiving from them, and conflating the
+  two would be a lie about someone else's behaviour.
+- **Status:** **Decision**, scoped in SYSTEM_FUNDAMENTALS §11.2.

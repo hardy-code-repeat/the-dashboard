@@ -18,7 +18,7 @@ import {
   type AttentionCandidate,
   type AttentionFeedback,
 } from "./pipeline";
-import { deadlineRules, documentRules, hardRules, taskRules, connectionRules, isHardKind } from "./rules";
+import { deadlineRules, documentRules, hardRules, taskRules, connectionRules, commitmentRules, isHardKind } from "./rules";
 import type { RuleInput } from "./rules";
 import { learnedCandidates } from "./ranked";
 import { staleConnections, upcomingDeadlines } from "./sources";
@@ -572,16 +572,171 @@ test("hardRules returns every rule's output", () => {
       deadlines: [{ id: "d", label: "D", date: "2026-03-11", note: "", source: "S", country: "US" }],
       connections: [{ _id: "c", provider: "p", label: "C", status: "connected", connectedAt: NOW - 10 * DAY }],
       documents: [{ requirementId: "w2", label: "W-2", readiness: 0.9, missing: ["x"] }],
+      commitments: [commitment({ direction: "owedTo", section: "waitingOn", severity: 0.6 })],
     }),
     NOW,
   );
-  assert.equal(all.length, 4);
+  assert.equal(all.length, 5);
   assert.deepEqual(
     new Set(all.map((i) => i.kind)),
-    new Set(["task.imminent", "deadline.tax", "connection.stale", "document.incomplete"]),
+    new Set(["task.imminent", "deadline.tax", "connection.stale", "document.incomplete", "commitment.waiting"]),
   );
   assert.ok(all.every((i) => i.class === "hard"), "everything a rule emits is a hard item");
   assert.ok(all.every((i) => isHardKind(i.kind)), "and every kind is on the server-side list");
+});
+
+// ---------------------------------------------------------------------------
+// commitments + waits (phase 3, feature 4)
+// ---------------------------------------------------------------------------
+
+type CommitmentInput = NonNullable<RuleInput["commitments"]>[number];
+
+function commitment(over: Partial<CommitmentInput> = {}): CommitmentInput {
+  return {
+    id: "cm",
+    title: "Send the contract",
+    direction: "owed" as const,
+    personId: "p1",
+    attention: true,
+    severity: 0.85,
+    section: "people" as const,
+    expectedAt: NOW - 3 * DAY,
+    detail: "You told Raj you would, and it is 3 days overdue",
+    ...over,
+  };
+}
+
+test("an overdue promise and an overdue wait land in two different existing sections", () => {
+  const items = commitmentRules(
+    input({
+      commitments: [
+        commitment(),
+        commitment({
+          id: "cm2",
+          direction: "owedTo",
+          section: "waitingOn",
+          severity: 0.6,
+          detail: "Waiting on Raj since 7 Mar 2026",
+        }),
+      ],
+    }),
+    NOW,
+  );
+
+  assert.equal(items.length, 2);
+  const mine = items.find((i) => i.sourceId === "cm");
+  const theirs = items.find((i) => i.sourceId === "cm2");
+
+  assert.equal(mine?.kind, "commitment.overdue");
+  assert.equal(mine?.section, "people");
+  assert.equal(mine?.class, "hard");
+
+  assert.equal(theirs?.kind, "commitment.waiting");
+  assert.equal(theirs?.section, "waitingOn");
+  assert.equal(theirs?.class, "hard");
+
+  for (const item of items) assert.ok(isHardKind(item.kind), `${item.kind} must be on the server list`);
+});
+
+test("only items the state machine marked get in — the rule does no state arithmetic", () => {
+  const items = commitmentRules(
+    input({
+      commitments: [
+        commitment({ id: "a", attention: false }),
+        commitment({ id: "b", severity: 0 }),
+        commitment({ id: "c" }),
+      ],
+    }),
+    NOW,
+  );
+  assert.deepEqual(items.map((i) => i.sourceId), ["c"]);
+});
+
+test("the rule never re-authors the copy it was given", () => {
+  // `detail` is authored in `src/lib/commitments.ts` because it is
+  // direction-aware and carries a rule this file must not be able to soften.
+  const detail = "Waiting on Raj since 7 Mar 2026";
+  const items = commitmentRules(
+    input({ commitments: [commitment({ direction: "owedTo", section: "waitingOn", detail })] }),
+    NOW,
+  );
+  assert.equal(items[0].detail, detail);
+});
+
+test("the action on a wait is to follow up, never to do it", () => {
+  const items = commitmentRules(
+    input({
+      commitments: [
+        commitment({ direction: "owedTo", section: "waitingOn", severity: 0.6 }),
+        commitment(),
+      ],
+    }),
+    NOW,
+  );
+
+  const waiting = items.find((i) => i.kind === "commitment.waiting");
+  const promise = items.find((i) => i.kind === "commitment.overdue");
+
+  assert.equal(waiting?.action?.kind, "commitment.follow_up");
+  assert.equal(waiting?.action?.label, "Follow up");
+  assert.equal(promise?.action?.kind, "commitment.settle");
+});
+
+test("commitments group by the person they are about, and each section keeps three", () => {
+  const build = (commitments: CommitmentInput[], now = NOW) =>
+    buildAttention(commitmentRules(input({ commitments }), now), [], now);
+
+  // Five promises to five different people: no group forms, and the section's
+  // existing budget of three is what does the limiting.
+  const spread = Array.from({ length: 5 }, (_, i) =>
+    commitment({ id: `p${i}`, personId: `person-${i}`, expectedAt: NOW - i * DAY }),
+  );
+  const capped = build(spread);
+  const people = capped.bySection.find((s) => s.section === "people");
+  assert.equal(people?.items.length, 3, "the people section keeps its existing budget of three");
+  assert.equal(capped.hiddenByCap.people ?? 0, 2, "and the pipeline discloses what the cap hid");
+
+  const waitingSpread = spread.map((c) => ({ ...c, direction: "owedTo" as const, section: "waitingOn" as const }));
+  assert.equal(
+    build(waitingSpread).bySection.find((s) => s.section === "waitingOn")?.items.length,
+    3,
+    "and the waiting section keeps its own three",
+  );
+
+  // Five promises about one person collapse into a single line, so the whole
+  // relationship reads as one thing rather than five interruptions.
+  const together = Array.from({ length: 5 }, (_, i) =>
+    commitment({ id: `t${i}`, personId: "same", expectedAt: NOW - i * DAY }),
+  );
+  const collapsed = build(together).bySection.find((s) => s.section === "people");
+  assert.equal(collapsed?.items.length, 1);
+  assert.equal(collapsed?.items[0].grouped, true);
+  assert.equal(collapsed?.items[0].groupSize, 5);
+});
+
+test("a commitment past its date is undeclineable, exactly like an overdue task", () => {
+  const items = commitmentRules(input({ commitments: [commitment()] }), NOW);
+  assert.equal(items[0].escalation, 2);
+  assert.ok(!dismissAllowed(items[0]), "which is why the honest resolution is to edit or settle it");
+});
+
+test("an overdue wait is soft enough that the section half-life sinks it", () => {
+  const waiting = (expectedAt: number, now: number) =>
+    buildAttention(
+      commitmentRules(
+        input({ commitments: [commitment({ direction: "owedTo", section: "waitingOn", severity: 0.6, expectedAt })] }),
+        now,
+      ),
+      [],
+      now,
+    );
+
+  const fresh = waiting(NOW - DAY, NOW);
+  const old = waiting(NOW - 21 * DAY, NOW + 21 * DAY);
+
+  const score = (r: typeof fresh) =>
+    r.bySection.find((s) => s.section === "waitingOn")?.items[0]?.score ?? 0;
+  assert.ok(score(old) < score(fresh) / 100, "three weeks of waiting should not still be shouting");
 });
 
 test("the pipeline is deterministic: the same input always renders the same screen", () => {

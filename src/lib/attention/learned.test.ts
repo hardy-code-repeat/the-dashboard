@@ -394,6 +394,33 @@ test("ADR-006 — the server's hard-kind list covers exactly what the rules emit
       { _id: "e1", title: "Standup", startsAt: NOW + HOUR, endsAt: NOW + 2 * HOUR },
       { _id: "e2", title: "Later", startsAt: NOW + 30 * HOUR, endsAt: NOW + 31 * HOUR },
     ],
+    // Phase 3 feature 4. One of each direction, both past their date, so both
+    // commitment kinds are reachable from this fixture. Same reason as
+    // `expiring` above: a hard kind nothing can emit is a suppression bypass.
+    commitments: [
+      {
+        id: "cm1",
+        title: "Send Raj the contract",
+        direction: "owed",
+        personId: "p1",
+        attention: true,
+        severity: 0.85,
+        section: "people",
+        expectedAt: NOW - 3 * DAY,
+        detail: "You told Raj you would, and it is 3 days late",
+      },
+      {
+        id: "cm2",
+        title: "Send Raj the signed copy",
+        direction: "owedTo",
+        personId: "p1",
+        attention: true,
+        severity: 0.6,
+        section: "waitingOn",
+        expectedAt: NOW - 3 * DAY,
+        detail: "Waiting on Raj since 1 Jan 2026",
+      },
+    ],
     enabledAreas: ["general"],
   };
   const emitted = new Set(hardRules(input, NOW).map((i) => i.kind));

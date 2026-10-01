@@ -27,6 +27,7 @@ import {
   upcomingDeadlines,
   upcomingEvents,
   type CalendarView,
+  type CommitmentAttentionView,
   type ConnectionView,
   type DeadlineView,
   type DocumentView,
@@ -49,6 +50,12 @@ export interface RuleInput {
    * "none" rather than an accident.
    */
   expiring?: ExpiryView[];
+  /**
+   * Commitments and waits that are past their expected date (phase 3, feature 4).
+   * Optional for the same reason `expiring` is: a caller with none must keep
+   * compiling, and "none" has to be a real answer rather than an omission.
+   */
+  commitments?: CommitmentAttentionView[];
   /** Meetings from a connected calendar. Empty when nothing is connected. */
   calendar?: CalendarView[];
   /** Areas the user has switched on, so a task in a disabled area stays quiet. */
@@ -85,6 +92,17 @@ export const HARD_KINDS: readonly string[] = [
   // eventually do so, and "I am in a meeting in twenty minutes" is not a
   // preference.
   "calendar.imminent",
+  // A promise the user made that has passed (phase 3, feature 4). Hard for the
+  // same reason `deadline.tax` is: it is a date the user gave somebody else, not
+  // a preference. A model that learns to bury "you told Raj and it is three
+  // days late" has learned the worst thing this product could teach it.
+  "commitment.overdue",
+  // A wait that has passed. Hard too, but for the opposite reason to everything
+  // else in this list: the user **cannot** resolve it alone, so there is nothing
+  // for the ranker to be wrong about. What stops it nagging is not this entry —
+  // it is that it fires only after the date passes, its severity is capped low,
+  // and the `waitingOn` budget is three.
+  "commitment.waiting",
 ];
 
 const HARD_KIND_SET = new Set(HARD_KINDS);
@@ -366,6 +384,65 @@ export function expiryRules(input: RuleInput, now: number): AttentionCandidate[]
 }
 
 /**
+ * Commitments that have passed the date the user gave somebody.
+ *
+ * **Two kinds, two existing sections, no new machinery** — the whole design is
+ * that both halves already existed and one of them had no producer at all
+ * (`waitingOn`, since phase 1.0). Adding a section or a prioritiser for this
+ * would have been the failure, not the feature.
+ *
+ * Everything this rule needs is *decided* upstream by
+ * `src/lib/commitments.ts` and arrives as flags: whether the item wants
+ * attention at all, how severe it is, and which section it belongs in. The rule
+ * does no state arithmetic of its own, so it cannot disagree with the
+ * Relationships surface about what state a commitment is in.
+ *
+ * Both are hard (ADR-006), and both are non-dismissable once the date has
+ * passed, because `escalate` reads any past date as level 2 — the same rule that
+ * makes an overdue task undeclineable. A wait the user no longer expects is
+ * resolved by marking it not-happening, which is an honest edit, rather than by
+ * dismissing it.
+ */
+export function commitmentRules(input: RuleInput, now: number): AttentionCandidate[] {
+  const out: AttentionCandidate[] = [];
+
+  for (const c of input.commitments ?? []) {
+    if (!c.attention) continue;
+    const severity = clamp01(c.severity ?? 0);
+    if (severity <= 0) continue;
+
+    // Inbound is the wait; outbound is the user's own broken promise. Two kinds
+    // rather than one, because they are different obligations with different
+    // remedies, and collapsing them would make the feed say "do it" about
+    // something the user cannot do.
+    const inbound = c.direction === "owedTo";
+    out.push({
+      kind: inbound ? "commitment.waiting" : "commitment.overdue",
+      sourceId: c.id,
+      section: c.section,
+      class: "hard",
+      severity,
+      title: c.title,
+      detail: c.detail,
+      dueAt: c.expectedAt,
+      escalation: escalate(c.expectedAt, severity, now),
+      // `people` groups by person and `waitingOn` by counterparty. They happen
+      // to be the same key, and saying so once here is clearer than two
+      // near-identical lines that can drift.
+      groupKey: c.personId,
+      // Following up is the only action a wait can honestly offer, and the
+      // button that offers it creates the chase task — it never settles the
+      // wait, because chasing someone is not receiving from them.
+      action: inbound
+        ? { label: "Follow up", kind: "commitment.follow_up" }
+        : { label: "Done it", kind: "commitment.settle" },
+    });
+  }
+
+  return out;
+}
+
+/**
  * Every hard rule, in one call.
  *
  * The order here is the order rules are listed for a human, and it is also the
@@ -380,6 +457,7 @@ export function hardRules(input: RuleInput, now: number): AttentionCandidate[] {
     ...connectionRules(input, now),
     ...documentRules(input, now),
     ...expiryRules(input, now),
+    ...commitmentRules(input, now),
   ];
 }
 

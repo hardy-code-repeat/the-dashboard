@@ -83,6 +83,8 @@ export function AttentionFeed() {
   const rejected = useMutation(api.attention.attentionRejected);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
   const startRenewal = useMutation(api.documents.startRenewal);
+  const followUpCommitment = useMutation(api.commitments.followUp);
+  const settleCommitment = useMutation(api.commitments.completeCommitment);
   const [busy, setBusy] = useState<string | null>(null);
 
   if (attention === undefined) {
@@ -129,6 +131,19 @@ export function AttentionFeed() {
       if (item.kind === START_RENEWAL) {
         await startRenewal({ id: item.sourceId as Id<"documents"> });
       }
+      // Same rule, same reason, two more kinds (phase 3, feature 4).
+      //
+      // "Done it" on a promise settles it — the user did what they said, and the
+      // item should stop shouting. "Follow up" on a wait creates the chase task
+      // and **does not** settle the wait: chasing somebody is not receiving from
+      // them, and a button that conflated the two would be Panel asserting a
+      // fact about a third party it never observed.
+      if (item.kind === FOLLOW_UP_COMMITMENT) {
+        await followUpCommitment({ id: item.sourceId as Id<"commitments"> });
+      }
+      if (item.kind === SETTLE_COMMITMENT) {
+        await settleCommitment({ id: item.sourceId as Id<"commitments"> });
+      }
     });
   }
 
@@ -169,6 +184,12 @@ const TASK_KINDS = new Set([
 
 /** Attention kinds whose action is to *start* something rather than finish it. */
 const START_RENEWAL = "document.expiring";
+
+/** A wait: the button creates the chase task and settles nothing. */
+const FOLLOW_UP_COMMITMENT = "commitment.waiting";
+
+/** A promise: the button records that the user kept it. */
+const SETTLE_COMMITMENT = "commitment.overdue";
 
 /**
  * The feedback payload for an item.

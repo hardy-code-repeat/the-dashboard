@@ -1040,6 +1040,143 @@ and the state machine will correctly report `expired`.
 | **What the build found** | **D40** — the `stale` rule was too narrow. It fired only when the document had *already expired*, so the ordinary case went unreported: renewing early (exactly what R-006 tells people to do), ticking the task off, and the expiry never moving read as ordinary progress. Found by the **live harness**, not the unit suite — every unit fixture for `stale` used an expired document, so the tests were satisfied by a rule that missed what users actually do. A second defect surfaced in self-review rather than under any test: `listDocuments`, `getExpiring` and the attention query each resolved renewal tasks **once per document**, an N+1 worth up to 200 queries on a reactively-subscribed query — D37/D39 wearing a new hat. Fixed with one owner-scoped `by_owner_document` read grouped in JavaScript. |
 | **A boundary this feature does not cross** | An **early** renewal whose expiry never moved is *not* reported as `stale`, and cannot be: from `(expiresAt, completed task)` alone there is no way to distinguish it from a real early renewal to a document valid for two years. Detecting it would mean storing the previous expiry, which ADR-025 rules out precisely so no second copy of the date exists to disagree. The user instead sees the completed renewal and the expiry side by side, so a forgotten date is visible to whoever can fix it. Recorded here rather than left as a surprise. |
 
+#### Phase 3, feature 4 — Commitments + Waiting On (APPROVED · IN PROGRESS)
+
+> **Status 2026-10-01.** APPROVED as a roadmap line (`Commitments + Waiting On
+> | APPROVED | 3`, PRODUCT_CONTEXT §5.2). As with Features 2 and 3, the line is
+> a *name*, not a specification. This block was written before any code, from
+> R-008 and R-009 and against the repository as it stands.
+
+##### The audit that had to happen first
+
+| Question | What the repository actually does |
+|---|---|
+| Is there a commitments table? | **No.** `commitment` exists as an `objectKind` literal, a `LinkRel` family (`waitingOn`, `owedBy`) and an activity kind `commitment.made` — **none of which has ever been written or read.** |
+| Does an attention section exist for it? | **Yes, and it has no producer.** `waitingOn` is a section with budget 3, a 24h half-life and a counterparty grouping dimension (§5.7), and **no rule in `rules.ts` has ever emitted into it** — the same shape as D38. |
+| Can `tasks` hold it? | `tasks.personId` exists and resolves through person tombstones. It can express *an obligation to Raj*. It **cannot** express *waiting on Raj*: `taskRules` emits `task.overdue` for any open dated task, so a delegation stored as a task produces "this is overdue" about something the user physically cannot do (R-008). |
+| Is there a second person representation? | **No**, and none may be created. `people` with `identityKeys` and merge-as-tombstone (ADR-023/024) is the only one, and a commitment references it by id. |
+| Where does it live in the UI? | The **Relationships** area, which already exists, already renders People, and already has the person cards a commitment would sit under. **No new tab, no second page system, no new area slug.** |
+| What else needs building? | `tasks.commitmentId` + `by_owner_commitment`, for the follow-up link (ADR-026's shape). Two attention kinds, both landing in **sections that already exist**. |
+
+##### The specification gap, and how it was closed
+
+| Question | Answer |
+|---|---|
+| Task vs commitment | A task is something to do. A commitment additionally has a **counterparty the user has already spoken to**. Not every task is a commitment, and nothing is inferred. |
+| Commitment vs waiting-on | **One object, two directions.** `owed` is what the user promised; `owedTo` is what they are waiting for. Same shape, same lifecycle, one field apart — and that one field changes what "completed" means, which attention section it lands in, and every word of copy. |
+| Ownership | The **user owns the row either way**. Raj never owns anything in Panel. For `owedTo`, Raj is the *holder of the next move*; for `owed`, the user is. Panel records **the user's assertion**, never a fact about another person (R-009). |
+| State | **Derived, never stored** (ADR-025's lesson, applied). Four states from `(expectedAt, completed, now)`. No status column. |
+| Attention | Two hard kinds into **two existing sections**: `commitment.overdue` into `people`, `commitment.waiting` into `waitingOn`. No new section, no new budget, no second prioritiser. |
+| Capture | **Out of scope.** The parser is a closed vocabulary under Do-Not-Touch #7, and R-004 settled that ambiguous extraction is where user data gets damaged. Recorded as **Q-007**. |
+| Learning | **No new feature index and no new signal.** Creating a commitment is authorship. Completing a *follow-up task* is an ordinary outcome and already trains. |
+
+##### 12.0 Scope block — Commitments + Waiting On
+
+| Field | Value |
+|---|---|
+| **Feature** | Commitments + Waiting On — what the user owes, and what they are waiting for |
+| **Problem it solves** | Panel can hold a task and a person, but cannot hold **an obligation**. "I told Raj I'd send the contract Friday" is a task with a date and a name attached, which means it is indistinguishable from "buy milk", it carries no idea that someone is relying on it, and it never surfaces as the social thing it is. The mirror image is worse: **"waiting for Raj to send the contract" cannot be a task at all**, and if it were, `taskRules` would tell the user it is overdue — about something they cannot do. GTD keeps Waiting For out of the action list for exactly this reason (R-008). |
+| **User outcome** | See, at a glance, the things other people are relying on and the things other people have not delivered. And be able to act on the first and chase the second. |
+| **IN SCOPE** | A `commitments` table with a closed `direction` (`owed` \| `owedTo`); a derived four-state lifecycle in `src/lib/commitments.ts`; a `tasks.commitmentId` link used **only** for user-requested follow-ups; two hard attention kinds landing in the **existing** `people` and `waitingOn` sections; a Commitments block inside the existing Relationships area; `commitment.made` / `.fulfilled` / `.cancelled` / `.followed_up` activity kinds, all written and read back; per-person commitment counts on the existing People cards. |
+| **OUT OF SCOPE** | Any new person representation · any second task list, queue or completion UI · a new area slug or a new Page · a second attention section or prioritiser · capture that infers a commitment or a direction (Q-007) · automatic messages, emails or nudges to anyone · **any claim about what another person has or has not done** · a `status` column · promises/debts between two *other* people · money owed (that is Finance) · merging two commitments · bulk import. |
+| **DO NOT TOUCH** | `src/lib/nlp.ts` token loop (#7) · scorer maths (#6) · `recordOutcome` as the single weight-mutation point (#8) · ADR-010 feature layout (`FEATURE_COUNT` 12, `WEIGHTS_VERSION` 1) · ADR-023/024 people identity guarantees · `permissions.can` as the sole access path · the §5.7 section budgets (3 for `people`, 3 for `waitingOn`) · the `home` / `finance` / `health` areas · `taxDocuments` and `toggleDocument` · everything in feature 3 (ADR-025/026, R-006, R-007). |
+| **Terminology** | **Task** — something the user needs to do. **Commitment (`owed`)** — something the user has promised to a named person. **Waiting (`owedTo`)** — something a named person is expected to do. **Counterparty** — the `people` row on the commitment. **Follow-up** — an ordinary task the user explicitly asks Panel to create for a waiting item. |
+
+##### The model, and why it is this small
+
+**`commitments`** — seven columns:
+
+| Column | Type | Why it exists |
+|---|---|---|
+| `ownerUserId`, `spaceId` | ids | ADR-009 |
+| `personId` | `v.id("people")` | **The counterparty. Required, not optional** — a commitment to nobody is a task. May point at a tombstone; reads resolve through `mergedIntoId` (ADR-023), and nothing is rewritten on merge. |
+| `title` | `string` (1–160, trimmed) | What was promised, or what is expected. The only free text. |
+| `direction` | `"owed" \| "owedTo"` | **The whole of the feature.** Who holds the next move. |
+| `expectedAt` | `number?` | The date the user said. Optional — plenty of promises have no date, and inventing one would be a lie. For `owedTo` this is the date the user would tell the other person (R-009). |
+| `completed`, `completedAt` | `boolean`, `number?` | The user's **assertion**. Never a fact about another person. |
+| `createdAt` | `number` | Ordering. |
+
+Indexes: `by_space`, `by_owner`, and **`by_owner_open`**
+(`["ownerUserId", "completed", "expectedAt"]`).
+
+> **Spec correction, CHANGE-0016.** This block originally said a
+> `by_owner_person` index was "**not** added", because a person's commitments
+> are read once for the whole list and grouped in JavaScript. That reasoning was
+> right about `by_owner_person` and wrong about the read that actually matters.
+> Attention can only ever want `{completed: false, expectedAt <= now}`, which is
+> exactly an index range — so the hot query filters in the database instead of
+> collecting every commitment the user has ever made and discarding the 99% that
+> cannot be attention. Convex omits a document from an index when an indexed
+> field is absent, so an **undated** commitment is not in the range either, and
+> an undated one can never be overdue: the range *is* the candidate set, not a
+> filter somebody has to re-check. `by_owner_person` still was not added, because
+> nothing needs it. This is the `by_owner_expiry` argument from feature 3 applied
+> a second time — see D42.
+
+**`tasks.commitmentId`** + `by_owner_commitment`, mirroring ADR-026 exactly: the
+task points at the commitment, the commitment holds no reference back. One
+writer, one purpose — it exists so the Relationships surface can show *which*
+follow-up belongs to which waiting item without matching on titles.
+
+**What is deliberately NOT stored:** a `status` field, a `promisedAt` timestamp,
+a `note`, a separate `overdue` flag, or a `lastActivityAt`. Each is either
+derivable or unused. See ADR-025 for why a status column is the dangerous one.
+
+> **Spec correction, CHANGE-0016 — AC-10.** The original criterion read "Deleting
+> a person detaches their commitments without deleting them, and reports the
+> count". **Panel has no delete-person path, and that is deliberate:** ADR-024
+> makes a person either a tombstone (a merge, which rewrites nothing) or their
+> own row, never a deletion, so there is nothing for the criterion to attach to.
+> Writing a delete mutation to satisfy a criterion would have been adding an
+> out-of-scope capability to satisfy a sentence. The criterion was corrected to
+> the guarantee that actually holds and is actually load-bearing: **no people
+> mutation ever removes a commitment**, and the one deletion this feature does
+> have — `deleteCommitment` — detaches its follow-up tasks and reports the
+> count. A wrong sentence in a spec is a defect; a missing criterion is worse.
+
+##### Lifecycle, ownership, attention, learning
+
+Four states, **all derived** from `(expectedAt, completed, now)` (ADR-025's
+lesson, applied a second time):
+
+| State | Condition | Attention | Copy discipline |
+|---|---|---|---|
+| `open` | not completed, and no date or the date is far off | no | — |
+| `due` | not completed, `expectedAt` within `DEFAULT_DUE_WINDOW_DAYS` | `owed` only | “You said you would…” |
+| `overdue` | not completed, `expectedAt` passed | **both** directions | `owed`: “You told Raj…”. `owedTo`: “You are waiting on Raj…” — **never** “Raj did not…” |
+| `kept` | completed | no | For `owedTo` this reads **“You marked this received”**, never “Raj sent this”. Panel has observed nothing (R-008). |
+
+| Field | Value |
+|---|---|
+| **Ownership** | The user owns every row. There is no path by which a commitment belongs to another person, and no `granteeUserId`. |
+| **Who owes the action** | `owed` → the user. `owedTo` → the counterparty. Panel *records* this; it never infers or asserts it happened. |
+| **Who is affected** | Always the counterparty, and only as a reference. Deleting a person **detaches** commitments rather than deleting them, exactly as `deleteDocument` detaches tasks (Do-Not-Touch #9). |
+| **People integration** | `personId` references the existing `people` row. Reads resolve through tombstones via the same helper `people.ts` uses. A merge must not move, rewrite or break a commitment, and unmerge must restore it — **the ADR-023 guarantee extends unchanged**, which is only true because nothing is rewritten. No person data is duplicated onto the commitment. |
+| **Task integration** | Panel **never** creates a task for a commitment. A task appears only when the user presses **Follow up** on a waiting item. Following up does **not** complete the commitment — chasing someone is not receiving from them, and conflating the two would be a lie about someone else's behaviour. |
+| **Attention — outbound** | `commitment.overdue`, **hard**, section **`people`** (budget 3, 72h half-life, grouped by person — “things that are about someone rather than about a task”). Hard for ADR-006's reason: a model that learns to bury “you promised Raj and it is three days late” has learned the wrong thing. Fires on `overdue` only; `due` is deliberately **not** attention, because nagging a week early is how a feed gets muted. |
+| **Attention — inbound** | `commitment.waiting`, **hard**, section **`waitingOn`** (budget 3, 24h half-life, grouped by counterparty) — the section that has existed since phase 1.0 with **no producer** (D42). Fires on `overdue` **only**: never as the date approaches (R-009). Severity is capped low on purpose, and its action is **Follow up**, never “Do it”. |
+| **Anti-spam** | Two sections, two existing budgets of 3, and the pipeline already discloses what the caps hid. An item disappears from Attention the moment it is completed or the expected date is moved — and the **Relationships surface has a date field for exactly that**, because a date the user got wrong would otherwise keep shouting with no way out but deleting the row and losing its history and its chase task. Both states are escalation 2 (any past date reads as level 2, the same rule that makes an overdue task undeclineable), so a stale wait can be **snoozed with a return date** or resolved honestly by marking it "not coming" — never silently dismissed, and never with Panel claiming the other person did anything. |
+| **Learning implications** | **No new feature index, no new signal, nothing added to the frozen layout.** Creating a commitment is authorship (the Q-006 rule, applied again). Completing a commitment is a real outcome but Panel **cannot** use it as evidence about a person, because for `owedTo` completion is an *assertion* by the user rather than an observation — training on it would teach the model that things “work out”, which is not a preference the model can act on. Completing a **follow-up task** is an ordinary task completion and already trains through `recordOutcome` with no new plumbing. |
+| **Capture behavior** | **None. Out of scope.** Recognising “I'll send Raj the file” needs new grammar in a closed parser under Do-Not-Touch #7, and inferring *direction* from pronouns is precisely the ambiguous extraction R-004 warns about. Recorded as **Q-007**, open and non-blocking. |
+| **Authorization** | `requireUserId` on every write; `ownerUserId !== userId` → throw on every write; every read owner-scoped by index. `personId` is ownership-checked exactly as `addTask` and `createDocument` do. **No mutation accepts `ownerUserId` or `spaceId`.** |
+| **Privacy** | A promise is relationship data. Panel stores a title, a person id and a date — the minimum that makes the obligation real. No message content, no thread, no contact history, nothing imported. `commitment.*` activity rows name the counterparty id only, never their email. |
+
+##### Audit, performance, budget, acceptance
+
+| Field | Value |
+|---|---|
+| **Audit** | Four kinds — `commitment.made`, `commitment.fulfilled`, `commitment.cancelled`, `commitment.followed_up` — **all written on their own path** and read back by `commitments:commitmentAudit`. `commitment.made` is **already in the closed taxonomy and has never been written** (D38); this feature makes the declaration true rather than deleting it. |
+| **Performance** | List read: `by_owner` with an explicit `.take(200)` — the bound is on the read, not on a slice afterwards, so a long history cannot grow the scan. Tombstones and names: **one** `by_owner` read on `people`, resolved in memory; no per-person query, which is D41 all over again. Follow-up lookup: `by_owner_commitment`. Attention: the `by_owner_open` range, which is narrow by construction, plus the same one people read. The audit read is `by_space_at` **with** a range and a `.take(LIMIT)` — the D39 shape done correctly. **No `.collect()` anywhere without an owner prefix**, and no `.collect()` anywhere that could be an index range. |
+| **Input bounds** | `title` trimmed, 1–160. `expectedAt` must be finite (the N5 lesson). `personId` required and ownership-checked. `commitmentId` on a task ownership-checked. A completed commitment keeps its `completedAt`; re-completing is idempotent. |
+| **Dependencies** | Phase 3 Features 1, 2 and 3 (all VERIFIED) — People, capture, Life Admin. Phases 0B/0C for ownership and validation. Nothing else. |
+| **Blockers** | **None.** Q-001 and Q-006 are untouched and not waited on. Q-007 is recorded by this feature and is non-blocking. |
+| **Complexity budget (ADR-016)** | **4 new files · 1 new table · 0 deps · 1 abstraction** (the derived commitment state machine, `src/lib/commitments.ts`). |
+| **Why one table and not two** | The roadmap names two concepts; they share a shape, a lifecycle and a surface, and differ by a single field that changes who holds the next move. Two tables would duplicate the schema, the queries, the UI and the state machine for the sake of one discriminator. Two tables is the shape a feature takes when it has not decided what it is. |
+| **Why not free text on tasks** | `tasks.personId` can say *an obligation to Raj*. It cannot say *the user has already spoken for it*, and — decisively — it cannot express waiting at all without Panel telling the user to do something they cannot do. |
+| **ACCEPTANCE CRITERIA** | (1) A commitment with a person and a past date is `overdue` and produces exactly one `commitment.overdue` item in `people`. (2) A waiting item with a past date produces exactly one `commitment.waiting` item in `waitingOn` — the section that previously had no producer. (3) A commitment with no date, or with a distant date, produces **no** attention item at all; a `due` one does not either; and moving the expected date takes an existing item straight out of Attention. (4) Panel never creates a task without the user asking; `followUp` creates exactly one, carrying both `personId` and `commitmentId`, dated today. (5) Completing a follow-up does **not** complete the commitment. (6) A commitment is `kept` after completion and its attention item disappears. (7) Copy for `owedTo` never asserts what the other person did — verified against the exact strings. (8) Merging a person leaves every commitment pointing at the row it already pointed at; unmerging restores it; a merged-away person still resolves. (9) Every read and write is owner-scoped: a second account sees nothing and a foreign id is refused on **all seven** write paths. (10) **No people mutation removes a commitment**, and `deleteCommitment` detaches its follow-up tasks rather than deleting them, reporting the count. (11) All four `commitment.*` activity kinds are written and read back. (12) Nothing regresses: tax, capture, Life Admin, People merge/unmerge and the areas are unchanged — and capture still infers **no** commitment in either direction (Q-007). (13) `FEATURE_COUNT` 12, `weightsVersion` 1, no weight movement from a commitment, measured **in isolation** from the task completions that do train. (14) Budget: 4 files / 1 table / 0 deps / 1 abstraction. |
+| **Verification** | Unit fixtures for the state machine (pure, injected clock) covering all four states, both directions and every boundary, plus seven rule-level fixtures. A live harness deciding all 14 criteria, including cross-user isolation, the person merge/unmerge case and the exact copy strings. `assistant.ts` is **not** touched by the feature — the follow-up task is inserted, not completed — so OCC was not required to be re-armed; it was re-armed and re-run anyway, so the claim is backed by a live run in this session rather than an inherited one (run I, 48 mutations, 0 duplicates), and the temporary fixture was reverted afterwards. |
+| **Risk** | Product drift toward a CRM: contacts, threads, history, reminders. The defences are the one-table budget, the OUT OF SCOPE list, and the fact that a commitment here is a single obligation with a person and a date — which is what the roadmap line actually promised. |
+
 ### 11.3 Scope rules
 
 - Work outside `IN SCOPE` is **not done**, however trivial. It becomes an Open
@@ -1109,6 +1246,12 @@ it, and how do we know it works?"**
 | REQ-044 | Creating a document is authorship and writes no learning signal | ADR-004 | 3 |
 | REQ-045 | A completed renewal whose date never moved is detected and stated | ADR-025 | 3 |
 | REQ-046 | Deleting a document never deletes the user's own tasks | ADR-009 | 3 |
+| REQ-047 | A promise and a wait are one object with a direction, not two systems | ADR-027 | 3 |
+| REQ-048 | A commitment's lifecycle is derived, never stored as a status field | ADR-025 | 3 |
+| REQ-049 | Panel never asserts what another person did; the user records it | ADR-027 | 3 |
+| REQ-050 | Panel creates no task for a commitment without the user asking | ADR-027 | 3 |
+| REQ-051 | An overdue promise and an overdue wait are both hard attention, in existing sections | ADR-006 | 3 |
+| REQ-052 | Capture infers neither a commitment nor a direction | — | 3 (Q-007) |
 
 ### 12.2 Full chains
 
@@ -1193,6 +1336,44 @@ it, and how do we know it works?"**
 | AC-3F-210 | An undated document never reaches the expiring read | `conformance-3f.ts` "A10" | PASS, live |
 | AC-3F-211 | `FEATURE_COUNT` is 12, `weightsVersion` is 1, and no table other than `documents` gained a column | `conformance-3f.ts` "A11" | PASS, live |
 | AC-3F-212 | Budget: 4 files / 1 table / 0 deps / 1 abstraction | CHANGE-0015 | PASS — 4 / 1 / 0 / 1 |
+
+**Phase 3, feature 4 (Commitments + Waiting On) — VERIFIED**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-047 | ADR-027 | 3F | TASK-3F-026 | AC-3F-301, AC-3F-303 | TEST-3F-007 (`src/lib/commitments.test.ts`, 30 fixtures); TEST-3F-008 (`scripts/conformance-4f.ts`) | CHANGE-0016 |
+| REQ-048 | ADR-025 | 3F | TASK-3F-027 | AC-3F-302 | TEST-3F-007 — the exhaustive 36-combination table | CHANGE-0016 |
+| REQ-049 | ADR-027 | 3F | TASK-3F-028 | AC-3F-306 | TEST-3F-007 — asserted as a property over every inbound string, not a sample; TEST-3F-008 "A7" | CHANGE-0016 |
+| REQ-050 | ADR-027 | 3F | TASK-3F-029 | AC-3F-304, AC-3F-305 | TEST-3F-008 "A4", "A5" | CHANGE-0016 |
+| REQ-051 | ADR-006 | 3F | TASK-3F-030 | AC-3F-301, AC-3F-302, AC-3F-303 | TEST-3F-008 "A1", "A2", "A3"; seven rule fixtures in `attention.test.ts` | CHANGE-0016 — the ADR-006 hard-kind coverage fixture extended deliberately |
+| REQ-033 | ADR-023 | 3F | TASK-3F-031 | AC-3F-308 | TEST-3F-008 "A8" — merge, list resolution, unmerge | CHANGE-0016 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-032 | AC-3F-309 | TEST-3F-008 (cross-user isolation; foreign-id refusal on all seven write paths; foreign `personId` refused) | CHANGE-0016 |
+| REQ-046 | ADR-009 | 3F | TASK-3F-033 | AC-3F-310 | TEST-3F-008 "A10" | CHANGE-0016 |
+| REQ-032 | ADR-019 | 3F | TASK-3F-034 | AC-3F-311 | TEST-3F-008 — the four `commitment.*` kinds read back, not assumed | CHANGE-0016 |
+| REQ-052 | — | 3F | TASK-3F-035 | AC-3F-312 | TEST-3F-008 "A12" — capture creates zero commitments in either direction (Q-007 interim) | CHANGE-0016 |
+| REQ-015 | ADR-010 | 3F | TASK-3F-036 | AC-3F-313 | TEST-3F-008 "A13" — measured **in isolation**, because earlier sections complete tasks on purpose | CHANGE-0016 |
+| REQ-023 | ADR-009 | 3F | TASK-3F-037 | AC-3F-314 | TEST-3F-008 — the `by_owner_open` range and the explicit `.take` | CHANGE-0016 — **this check found D42** |
+| REQ-016 | ADR-016 | 3F | TASK-3F-038 | AC-3F-315 | CHANGE-0016 budget audit | CHANGE-0016 — 4 of 4 files, 1 of 1 table, 0 deps, 1 abstraction |
+
+**Phase 3 feature 4 acceptance criteria → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-301 | A past-dated promise is `overdue` and produces exactly one hard `commitment.overdue` item in `people` | `conformance-4f.ts` "A1" | PASS, live — state, section, class, `dueAt` and the exact detail string |
+| AC-3F-302 | A past-dated wait produces exactly one `commitment.waiting` item in `waitingOn`, quieter than a broken promise | `conformance-4f.ts` "A2" | PASS, live — 0.6 vs 0.85, action is `Follow up` |
+| AC-3F-303 | No date, or a distant date, produces **no** item; `due` does not either; moving the date removes the item | `conformance-4f.ts` "A3" | PASS, live — plus direction is immutable at the validator |
+| AC-3F-304 | Panel creates no task unasked; `followUp` creates exactly one with `personId`, `commitmentId` and today's date | `conformance-4f.ts` "A4" | PASS, live — idempotent on a second press |
+| AC-3F-305 | Completing the follow-up does not complete the commitment | `conformance-4f.ts` "A5" | PASS, live |
+| AC-3F-306 | A settled commitment is `kept` and leaves Attention; the copy attributes it to the user | `conformance-4f.ts` "A6", "A7" | PASS, live — re-settling is idempotent; reopen restores it |
+| AC-3F-307 | No inbound string asserts anything about the other person | `commitments.test.ts`; `conformance-4f.ts` "A7" | PASS — asserted as a property over every inbound string, and over the whole live list |
+| AC-3F-308 | Merge rewrites nothing, unmerge restores, a merged-away person still resolves | `conformance-4f.ts` "A8" | PASS, live — stored pointer unchanged, resolved name changes |
+| AC-3F-309 | Every read and write is owner-scoped; a foreign id is refused | `conformance-4f.ts` "A9" | PASS, live — all seven write paths, plus a foreign `personId` |
+| AC-3F-310 | No people mutation removes a commitment; `deleteCommitment` detaches and reports | `conformance-4f.ts` "A10" | PASS, live — chase task survived and is detached |
+| AC-3F-311 | All four `commitment.*` activity kinds are written and read back with real values | `conformance-4f.ts` "A11" | PASS, live |
+| AC-3F-312 | Nothing regresses, and capture infers no commitment in either direction | `conformance-4f.ts` "A12" | PASS, live — area catalogue is exactly the six areas from features 0–3 |
+| AC-3F-313 | `FEATURE_COUNT` 12, `weightsVersion` 1, and a commitment moves no weight | `conformance-4f.ts` "A13" | PASS, live — four commitment mutations, zero samples, zero weight movement; and the follow-up task it created **did** train |
+| AC-3F-314 | Every read is index-scoped, owner-prefixed and bounded | `conformance-4f.ts` "A14" + the D42 correction | PASS — `by_owner_open` range, explicit `.take(200)` |
+| AC-3F-315 | Budget: 4 files / 1 table / 0 deps / 1 abstraction | CHANGE-0016 | PASS — 4 / 1 / 0 / 1 |
 
 **Phase 0A (next)**
 

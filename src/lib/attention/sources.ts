@@ -82,6 +82,38 @@ export interface ExpiryView {
 }
 
 /**
+ * One commitment, as the rules are allowed to see it (phase 3, feature 4).
+ *
+ * The same shape `ExpiryView` has and for the same reason: the lifecycle state
+ * is computed once by `src/lib/commitments.ts` and arrives here as a **decision**
+ * (`attention`, `severity`, `section`), so the rule cannot re-derive it and
+ * disagree with the Relationships surface about what state a commitment is in.
+ *
+ * `detail` travels rather than being written here because the copy is
+ * direction-aware and has a rule the whole feature rests on: nothing in this
+ * surface may assert what another person did. Re-authoring that sentence in the
+ * rule file is precisely how it would eventually get softened into a lie.
+ */
+export interface CommitmentAttentionView {
+  id: string;
+  title: string;
+  /** Which way the obligation runs. `owedTo` is the inbound wait. */
+  direction: "owed" | "owedTo";
+  /** The counterparty's id — the grouping key for both sections. */
+  personId: string;
+  /** True only for the `overdue` state, in either direction. */
+  attention: boolean;
+  /** 0..1, or null when `attention` is false. */
+  severity: number | null;
+  /** Where it belongs. `owed` to `people`, `owedTo` to `waitingOn`. */
+  section: "people" | "waitingOn";
+  /** The expected date. Drives escalation and the fingerprint's due bucket. */
+  expectedAt: number | null;
+  /** The one-line explanation, authored by `src/lib/commitments.ts`. */
+  detail: string;
+}
+
+/**
  * One meeting, as the rules are allowed to see it.
  *
  * Five fields. There is no description, no attendee and no location here,
