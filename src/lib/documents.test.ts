@@ -153,6 +153,52 @@ test("a renewal ticked off generically after the expiry leaves the document stal
   assert.equal(v.severity, 1);
 });
 
+test("renewing early without moving the date is NOT reported as stale — a known boundary", () => {
+  // Recorded rather than papered over. The live conformance run asserted the
+  // opposite and was wrong: from `(expiresAt, completed task)` alone there is
+  // no way to tell an early renewal whose date moved to +2 years from one
+  // whose date stayed at +10 days, because both look identical. Detecting it
+  // would mean storing the previous expiry, which ADR-025 rules out precisely
+  // so that no second copy of the date exists to disagree.
+  //
+  // What the user gets instead is both facts on screen at once — the renewal
+  // task marked done, and the expiry date beside it — so a date that was
+  // forgotten is visible to the person who can fix it. That is a weaker
+  // guarantee than a state, and it is the honest one available here.
+  const v = describeDocument(
+    { label: "Passport", expiresAt: NOW + days(10), leadDays: 30 },
+    done(NOW - days(1)),
+    NOW,
+  );
+
+  assert.equal(v.state, "due");
+  // And the surface still carries the completed renewal, so the two facts sit
+  // next to each other rather than one hiding the other.
+  assert.equal(v.renewing, false);
+});
+
+test("the stale rule is exactly `expiry is not later than the completion`", () => {
+  const cases: { expiresAt: number; completedAt: number; stale: boolean }[] = [
+    // expiry well after the completion — a real renewal
+    { expiresAt: NOW + days(365), completedAt: NOW, stale: false },
+    // expiry after, but the renewal was completed before that expiry
+    { expiresAt: NOW + days(200), completedAt: NOW - days(5), stale: false },
+    // expiry exactly at the completion
+    { expiresAt: NOW, completedAt: NOW, stale: true },
+    // expiry before the completion — renewed late, date never moved
+    { expiresAt: NOW - days(1), completedAt: NOW, stale: true },
+  ];
+
+  for (const c of cases) {
+    const v = describeDocument(
+      { label: "P", expiresAt: c.expiresAt },
+      done(c.completedAt),
+      NOW,
+    );
+    assert.equal(v.state === "stale", c.stale, `${c.expiresAt - c.completedAt}: got ${v.state}`);
+  }
+});
+
 test("a properly completed renewal is not stale — the date moved past the completion", () => {
   const v = describeDocument(
     { label: "Passport", expiresAt: NOW + days(3650), leadDays: 30 },

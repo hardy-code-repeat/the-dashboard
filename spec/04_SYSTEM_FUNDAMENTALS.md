@@ -1036,6 +1036,9 @@ and the state machine will correctly report `expired`.
 | **ACCEPTANCE CRITERIA** | (1) A document with an expiry inside its lead window and no renewal produces exactly one `document.expiring` hard item, in `deadlines`, with `dueAt = expiresAt − leadDays`. (2) The same document with an **open** renewal task produces **no** document item, and the task produces its own — one renewal, one item. (3) `startRenewal` creates a task with `documentId` set and `dueAt` equal to the computed deadline, and `by_owner_document` returns it. (4) `completeRenewal` sets the new expiry, completes the task, and the document returns to `valid`; the **old expiry is gone**, not retained as history on the row. (5) Completing the renewal task through the **generic** `setTaskCompleted` leaves the document `stale`, and `stale` is visible and stated. (6) Every read and write is owner-scoped: a second account sees zero documents, and a foreign document id is refused on all five write paths. (7) `deleteDocument` detaches the document from its tasks without deleting them, and reports the count. (8) The audit read returns a real row for each of the four `document.*` kinds with the real counts — written, not assumed. (9) Nothing regresses: the 21 `nlp.test.ts` fixtures, the 34 `tax.test.ts` fixtures, the tax checklist (`toggleDocument` → `getFinance` → `document.incomplete`) and the existing capture behaviour are all byte-for-byte unchanged. (10) Budget: 4 files / 1 table / 0 deps / 1 abstraction. (11) `FEATURE_COUNT` is 12, `WEIGHTS_VERSION` is 1, and no table other than `documents` gained a column. |
 | **Verification** | Unit fixtures for the state machine (pure, injected clock — every state reachable from a fixture, including the boundaries). A live harness deciding all eleven criteria, including cross-user isolation, the byte-identical tax regression, and the read-back audit. **If `assistant.ts` is touched at all, ADR-022 OCC is re-armed and re-run — not inherited.** |
 | **Risk** | The real risk is drift toward a document manager. The defences are the file/table budget, the OUT OF SCOPE list, and the fact that the feature is honestly complete without storage: the expiry chain is finished when the new date is recorded, and there is nothing else to build. |
+| **Verified how** | **CHANGE-0015, VERIFIED.** 37 unit fixtures (`src/lib/documents.test.ts`) and 93 live invariants (`scripts/conformance-3f.ts`, 0 skips). All 11 acceptance criteria pass against a real deployment. `assistant.ts` changed (the completion transition was extracted into `completeTask`), so ADR-022 OCC was **re-armed and re-run rather than inherited**: run H, 3 rounds x 8 concurrent mutations, 48 mutations, 0 duplicates. |
+| **What the build found** | **D40** — the `stale` rule was too narrow. It fired only when the document had *already expired*, so the ordinary case went unreported: renewing early (exactly what R-006 tells people to do), ticking the task off, and the expiry never moving read as ordinary progress. Found by the **live harness**, not the unit suite — every unit fixture for `stale` used an expired document, so the tests were satisfied by a rule that missed what users actually do. A second defect surfaced in self-review rather than under any test: `listDocuments`, `getExpiring` and the attention query each resolved renewal tasks **once per document**, an N+1 worth up to 200 queries on a reactively-subscribed query — D37/D39 wearing a new hat. Fixed with one owner-scoped `by_owner_document` read grouped in JavaScript. |
+| **A boundary this feature does not cross** | An **early** renewal whose expiry never moved is *not* reported as `stale`, and cannot be: from `(expiresAt, completed task)` alone there is no way to distinguish it from a real early renewal to a document valid for two years. Detecting it would mean storing the previous expiry, which ADR-025 rules out precisely so no second copy of the date exists to disagree. The user instead sees the completed renewal and the expiry side by side, so a forgotten date is visible to whoever can fix it. Recorded here rather than left as a surprise. |
 
 ### 11.3 Scope rules
 
@@ -1098,6 +1101,14 @@ it, and how do we know it works?"**
 | REQ-036 | Low-confidence capture creates nothing, and says why | — | 3 |
 | REQ-037 | The server's segmentation is authoritative over the client's | — | 3 |
 | REQ-038 | Capture writes no learning signal; authorship is not an outcome | ADR-004 | 3 |
+| REQ-039 | A life-admin document is metadata only; no file content is ever stored | ADR-025 | 3 |
+| REQ-040 | A document's lifecycle is derived, never stored as a status field | ADR-025 | 3 |
+| REQ-041 | The renewal deadline is the expiry minus a lead time, not the expiry | ADR-025 | 3 |
+| REQ-042 | The renewal is an ordinary task pointing at the document, not a sub-record | ADR-026 | 3 |
+| REQ-043 | Document expiry is a hard attention rule, immune to the learned ranker | ADR-006 | 3 |
+| REQ-044 | Creating a document is authorship and writes no learning signal | ADR-004 | 3 |
+| REQ-045 | A completed renewal whose date never moved is detected and stated | ADR-025 | 3 |
+| REQ-046 | Deleting a document never deletes the user's own tasks | ADR-009 | 3 |
 
 ### 12.2 Full chains
 
@@ -1148,6 +1159,40 @@ it, and how do we know it works?"**
 | AC-3F-107 | The server is authoritative | `conformance-4.ts` "A7" | PASS, live |
 | AC-3F-108 | Existing capture unchanged; the model is untouched by authorship | `conformance-4.ts` "A8" | PASS, live |
 | AC-3F-109 | Budget: 4 files / 0 tables / 0 deps / 1 abstraction | CHANGE-0014 | PASS — 2 / 0 / 0 / 1 |
+
+**Phase 3, feature 3 (Life Admin / expiry → renewal) — VERIFIED**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-041 | ADR-025 | 3F | TASK-3F-014 | AC-3F-201, AC-3F-203 | TEST-3F-004 (`src/lib/documents.test.ts`, 37 fixtures); TEST-3F-005 (`scripts/conformance-3f.ts`) | CHANGE-0015 |
+| REQ-043 | ADR-006 | 3F | TASK-3F-015 | AC-3F-201, AC-3F-202 | TEST-3F-005 | CHANGE-0015 |
+| REQ-042 | ADR-026 | 3F | TASK-3F-016 | AC-3F-203, AC-3F-204 | TEST-3F-005 — `by_owner_document` read, not the mutation return | CHANGE-0015 |
+| REQ-045 | ADR-025 | 3F | TASK-3F-017 | AC-3F-204, AC-3F-205 | TEST-3F-005 — **this check found D40** | CHANGE-0015 |
+| REQ-039 | ADR-025 | 3F | TASK-3F-018 | AC-3F-206 | TEST-3F-005 — no file field exists to leak | CHANGE-0015 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-019 | AC-3F-206 | TEST-3F-005 (cross-user isolation; foreign-id refusal on all five write paths) | CHANGE-0015 |
+| REQ-046 | ADR-009 | 3F | TASK-3F-020 | AC-3F-207 | TEST-3F-005 | CHANGE-0015 |
+| REQ-032 | ADR-019 | 3F | TASK-3F-021 | AC-3F-208 | TEST-3F-005 — the four `document.*` kinds read back | CHANGE-0015 |
+| REQ-031 | ADR-021 | 3F | TASK-3F-022 | AC-3F-209 | TEST-3F-005 — tax checklist toggled and restored | CHANGE-0015 |
+| REQ-015 | ADR-010 | 3F | TASK-3F-023 | AC-3F-211 | TEST-3F-005 — `FEATURE_COUNT` 12, `weightsVersion` 1 | CHANGE-0015 |
+| REQ-023 | ADR-009 | 3F | TASK-3F-024 | AC-3F-210 | TEST-3F-005 — the N+1 fixed; every collect index-scoped | CHANGE-0015 |
+| REQ-016 | ADR-016 | 3F | TASK-3F-025 | AC-3F-212 | TEST-3F-006 (budget audit of the feature's own file set) | CHANGE-0015 — 4 of 4 files, 1 of 1 table, 0 deps, 1 abstraction |
+
+**Phase 3 feature 3 acceptance criteria → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-201 | A document inside its lead window produces exactly one hard `document.expiring` item in `deadlines`, due at `expiresAt − leadDays` | `conformance-3f.ts` "A1" | PASS, live |
+| AC-3F-202 | With an open renewal the document produces **no** item — the task speaks, so one renewal is never two items | `conformance-3f.ts` "A2" | PASS, live |
+| AC-3F-203 | `startRenewal` creates a task with `documentId` set and `dueAt` equal to the computed deadline | `conformance-3f.ts` "A3" | PASS, live — read back via `by_owner_document`, and idempotent on a second press |
+| AC-3F-204 | `completeRenewal` sets the new expiry, completes the task, and the document returns to `valid`; the old expiry is gone | `conformance-3f.ts` "A4" | PASS, live — a non-advancing date is refused and changes nothing |
+| AC-3F-205 | Completing the renewal through the **generic** path leaves the document `stale`, and stale is visible | `conformance-3f.ts` "A5" | PASS, live — **this check found D40** |
+| AC-3F-206 | Every read and write is owner-scoped; a second account sees nothing and a foreign id is refused | `conformance-3f.ts` "A6" | PASS, live — all five write paths, plus a foreign `personId` |
+| AC-3F-207 | `deleteDocument` detaches the document from its tasks without deleting them, and reports the count | `conformance-3f.ts` "A7" | PASS, live |
+| AC-3F-208 | The four `document.*` activity kinds are written and read back with real values | `conformance-3f.ts` "A8" | PASS, live |
+| AC-3F-209 | Nothing regresses: the tax checklist, capture and the areas are unchanged | `conformance-3f.ts` "A9" | PASS, live — `toggleDocument` flipped and restored, tax deadlines still fire, capture still creates no document |
+| AC-3F-210 | An undated document never reaches the expiring read | `conformance-3f.ts` "A10" | PASS, live |
+| AC-3F-211 | `FEATURE_COUNT` is 12, `weightsVersion` is 1, and no table other than `documents` gained a column | `conformance-3f.ts` "A11" | PASS, live |
+| AC-3F-212 | Budget: 4 files / 1 table / 0 deps / 1 abstraction | CHANGE-0015 | PASS — 4 / 1 / 0 / 1 |
 
 **Phase 0A (next)**
 

@@ -237,15 +237,29 @@ export const getAttention = query({
       .withIndex("by_owner_expiry", (q) => q.eq("ownerUserId", userId))
       .collect();
 
+    // Every renewal task the user owns, in **one** indexed read. Querying per
+    // document would be an N+1 on the hottest query in the product, and this
+    // query runs reactively on every Attention load. The range holds only tasks
+    // carrying a `documentId`, so it is already narrow.
+    const renewalRows = await ctx.db
+      .query("tasks")
+      .withIndex("by_owner_document", (q) => q.eq("ownerUserId", userId))
+      .collect();
+    const renewalsByDoc = new Map<string, typeof renewalRows>();
+    for (const row of renewalRows) {
+      const key = String(row.documentId);
+      const bucket = renewalsByDoc.get(key);
+      if (bucket) bucket.push(row);
+      else renewalsByDoc.set(key, [row]);
+    }
+
     const expiryViews: ExpiryView[] = [];
     for (const doc of expiringDocs) {
-      const renewalRows = await ctx.db
-        .query("tasks")
-        .withIndex("by_owner_document", (q) =>
-          q.eq("ownerUserId", userId).eq("documentId", doc._id),
-        )
-        .collect();
-      const state = describeDocument(doc, renewalRef(pickRenewal(renewalRows)), now);
+      const state = describeDocument(
+        doc,
+        renewalRef(pickRenewal(renewalsByDoc.get(String(doc._id)) ?? [])),
+        now,
+      );
       if (!state.attention) continue;
       expiryViews.push({
         id: doc._id,

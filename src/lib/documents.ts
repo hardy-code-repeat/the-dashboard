@@ -211,14 +211,27 @@ export function describeDocument(
   // --- the renewal was ticked off generically and the date never moved ----
   //
   // Checked before the open-renewal branches, because it can only be true when
-  // the renewal is *not* open, and it is the one case that would otherwise
-  // look like ordinary progress.
+  // the renewal is *not* open, and it is the one case that would otherwise look
+  // like ordinary progress.
+  //
+  // The test is `expiresAt <= completedAt`, and that is the whole rule: the
+  // expiry must be later than the moment you said you renewed.
+  //
+  // **A known boundary, stated rather than papered over.** This detects a
+  // renewal completed *at or after* the date — the case that does real harm,
+  // because the document is genuinely invalid and nothing records that it was
+  // dealt with. It deliberately does NOT detect an *early* renewal whose date
+  // never moved, because `(expiresAt, completed task)` cannot distinguish that
+  // from a real early renewal to a document valid for two years: both look
+  // identical. Detecting it would mean storing the previous expiry, and ADR-025
+  // rules that out precisely so no second copy of the date exists to disagree.
+  // The user instead sees the completed renewal and the expiry side by side.
   const stale =
     !!renewal &&
     renewal.completed === true &&
     typeof renewal.completedAt === "number" &&
     Number.isFinite(renewal.completedAt) &&
-    renewal.completedAt > doc.expiresAt;
+    doc.expiresAt <= renewal.completedAt;
 
   if (stale) {
     return {

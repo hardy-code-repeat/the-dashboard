@@ -32,7 +32,6 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import {
-  DAY_MS,
   DEFAULT_LEAD_DAYS,
   describeDocument,
   leadDaysFor,
@@ -105,6 +104,38 @@ async function renewalsOf(
 }
 
 /**
+ * Every renewal task the caller owns, grouped by document, in **one** read.
+ *
+ * The first version of `listDocuments` called `renewalsOf` once per document —
+ * an N+1 that would have meant up to two hundred queries on a reactively
+ * subscribed query, which is the shape of D37 and D39 wearing a new hat.
+ *
+ * `by_owner_document` with only the owner prefix is already the narrow read we
+ * want: Convex omits a row from an index when the indexed field is absent, so
+ * this range holds *only* tasks that are renewals — not every task the user
+ * has. Grouping in JavaScript is safe precisely because the database has
+ * already scoped the set.
+ */
+async function renewalsByDocument(
+  ctx: Ctx,
+  userId: Id<"users">,
+): Promise<Map<Id<"documents">, RenewalTask[]>> {
+  const rows = await ctx.db
+    .query("tasks")
+    .withIndex("by_owner_document", (q) => q.eq("ownerUserId", userId))
+    .collect();
+
+  const grouped = new Map<Id<"documents">, RenewalTask[]>();
+  for (const row of rows) {
+    const key = row.documentId as Id<"documents">;
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(row);
+    else grouped.set(key, [row]);
+  }
+  return grouped;
+}
+
+/**
  * The renewal a surface should talk about: the newest one that is still open,
  * else the newest one at all.
  *
@@ -136,14 +167,8 @@ export function renewalRef(task: RenewalTask | null): RenewalRef | null {
   };
 }
 
-/** Projects one row plus its renewal into everything the surface needs. */
-async function view(
-  ctx: Ctx,
-  doc: DocumentRow,
-  userId: Id<"users">,
-  now: number,
-) {
-  const rows = await renewalsOf(ctx, doc._id, userId);
+/** Projects one row plus its renewals into everything the surface needs. */
+function view(doc: DocumentRow, rows: RenewalTask[], now: number) {
   const renewal = pickRenewal(rows);
   const state = describeDocument(doc, renewalRef(renewal), now);
   return {
@@ -197,11 +222,12 @@ export const listDocuments = query({
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
       .collect();
 
+    // One read for every renewal this user owns, not one per document.
+    const renewals = await renewalsByDocument(ctx, userId);
     const now = Date.now();
-    const views = [];
-    for (const doc of rows.slice(0, MAX_DOCUMENTS)) {
-      views.push(await view(ctx, doc, userId, now));
-    }
+    const views = rows
+      .slice(0, MAX_DOCUMENTS)
+      .map((doc) => view(doc, renewals.get(doc._id) ?? [], now));
 
     views.sort((a, b) => {
       // Urgent first: whatever wants attention, then soonest, then the rest.
@@ -232,7 +258,8 @@ export const getDocument = query({
     const row = await ctx.db.get(args.id);
     if (!row || row.ownerUserId !== userId) return null;
 
-    return await view(ctx, row, userId, Date.now());
+    const rows = await renewalsOf(ctx, row._id, userId);
+    return view(row, rows, Date.now());
   },
 });
 
@@ -256,10 +283,12 @@ export const getExpiring = query({
       .withIndex("by_owner_expiry", (q) => q.eq("ownerUserId", userId))
       .collect();
 
+    // One read for the renewals, not one per document (see `renewalsByDocument`).
+    const renewals = await renewalsByDocument(ctx, userId);
     const now = Date.now();
     const out = [];
     for (const doc of rows) {
-      const v = await view(ctx, doc, userId, now);
+      const v = view(doc, renewals.get(doc._id) ?? [], now);
       if (v.attention) out.push(v);
     }
     return out;
@@ -601,6 +630,3 @@ export const completeRenewal = mutation({
     return { renewed: true, expiresAt: newExpiresAt };
   },
 });
-
-/** Exposed so the attention module and the surface share one source of truth. */
-export { DAY_MS };

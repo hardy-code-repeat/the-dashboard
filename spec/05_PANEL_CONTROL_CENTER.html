@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">26</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">14</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">15</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -485,7 +485,7 @@
           <dt>Unknown</dt><dd>Every product and business assumption. <code>.env</code> contents are unreadable to the agent. No analytics exists, so no defined metric is measurable.</dd>
         </dl>
         <p class="sub" style="margin-top:10px">Everything marked "works" above is covered by
-          <b>321 unit fixtures</b> plus nine live conformance harnesses run against the real
+          <b>358 unit fixtures</b> plus nine live conformance harnesses run against the real
           deployment — evidence level 3, not level 1–2. That is a claim with a command
           attached, not an assertion.</p>
       </div>
@@ -494,7 +494,7 @@
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td><b>Closed</b> — 321 fixtures + 9 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 358 fixtures + 9 live harnesses</td><td><b>0A</b></td></tr>
           <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
           <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
           <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
@@ -1037,7 +1037,7 @@
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>321 pass, 0 fail</b> across 12 files.
+      <div class="note"><code>bun test</code> — <b>358 pass, 0 fail</b> across 13 files.
         Plus nine live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2, 3, 4)
         run against the deployed Convex backend. The phase-3 harnesses report
         <b>0 skips</b>; phase 2's reports one section as SKIP (D32).</div>
@@ -1177,10 +1177,10 @@
       risks:"R8" },
 
     { id:"3", status:"IN PROGRESS",
-      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Features 1 (People) and 2 (Multi-object Capture) built and verified.",
+      obj:"People, multi-object capture, Life Admin, commitments, Finance expansion, agents. Features 1 (People), 2 (Multi-object Capture) and 3 (Life Admin) built and verified.",
       deps:"2",
-      budget:{files:"per-feature — f1 used 4 of 6, f2 used 2 of 4",tables:"per-feature — f1 used 1, f2 used 0",deps:"0",abstractions:"per-feature — f1 used 1, f2 used 1"},
-      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","One capture produces several tasks, each parsed independently — PASS, live (CHANGE-0014)","Unseparated capture is byte-identical to the single-task path — PASS, live","A bare \"and\" is never a separator; \"and then\" is — PASS, live","An unusable segment is dropped AND reported, never silently — PASS, live","The server's segmentation is authoritative over the client's — PASS, live","Documents drive expiry → renewal → task — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
+      budget:{files:"per-feature — f1 used 4 of 6, f2 used 2 of 4, f3 used 4 of 4",tables:"per-feature — f1 used 1, f2 used 0, f3 used 1",deps:"0",abstractions:"per-feature — f1 used 1, f2 used 1, f3 used 1"},
+      criteria:["People first-class with reversible merge (tombstone + identityKeys) — PASS, live (CHANGE-0013)","Two rows sharing a normalised name stay separate until the user merges them — PASS, live","Merge → unmerge leaves row count, identities, links and keys identical — PASS, live","A merged row is a tombstone no query returns — PASS, live","PEOPLE_FIT keyed by person id, so two namesakes never share evidence — PASS, live (this check found D34)","Cross-user isolation and foreign-id refusal on all four write paths — PASS, live","One capture produces several tasks, each parsed independently — PASS, live (CHANGE-0014)","Unseparated capture is byte-identical to the single-task path — PASS, live","A bare \"and\" is never a separator; \"and then\" is — PASS, live","An unusable segment is dropped AND reported, never silently — PASS, live","The server's segmentation is authoritative over the client's — PASS, live","Documents drive expiry → renewal → task — PASS, live (CHANGE-0015)","A document is metadata only: label, expiry, lead time — never the document itself — PASS, live","The deadline is expiresAt minus a lead time, not the expiry — PASS, live","No status column: seven states all derived from (expiresAt, renewal task, now) — PASS, live (ADR-025)","The renewal is an ordinary task with documentId; the document holds no back-reference — PASS, live (ADR-026)","An open renewal produces no document item, so one renewal is never two — PASS, live","Completing the renewal generically leaves it `stale`, and stale is stated — PASS, live (this check found D40)","completeRenewal is atomic: a non-advancing new expiry is refused and changes nothing — PASS, live","deleteDocument detaches tasks rather than deleting them, and reports the count — PASS, live","All four document.* activity kinds are written and read back — PASS, live","The tax checklist, capture and the area catalogue are unchanged — PASS, live","Commitments support inbound and outbound — NOT STARTED","Commitments support inbound and outbound — NOT STARTED","Each agent has fixtures for fire / non-fire / double-run — NOT STARTED","Agent proposals are capped and counted, never silently truncated — NOT STARTED"],
       nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing","prose-conjunction splitting in capture","fuzzy or embedding matching","creating a person from a capture"],
       risks:"R7, R19" }
   ];
