@@ -159,7 +159,7 @@
       <div class="stamps">
         <span class="tag t-ink">Spec version 1.0</span>
         <span class="tag t-b"><span id="spec-adr-count">22</span> ADRs</span>
-        <span class="tag t-y"><span id="spec-change-count">11</span> changes</span>
+        <span class="tag t-y"><span id="spec-change-count">12</span> changes</span>
         <span class="tag t-w">Read-only view</span>
       </div>
     </div>
@@ -494,7 +494,7 @@
       <table>
         <thead><tr><th>System</th><th>Gap</th><th>Phase</th></tr></thead>
         <tbody>
-          <tr><td>Testing</td><td><b>Closed</b> — 234 fixtures + 6 live harnesses</td><td><b>0A</b></td></tr>
+          <tr><td>Testing</td><td><b>Closed</b> — 250 fixtures + 7 live harnesses</td><td><b>0A</b></td></tr>
           <tr><td>Model state</td><td><b>Closed</b> — transactional OCC (ADR-022)</td><td><b>0A</b></td></tr>
           <tr><td>Accounts</td><td><b>OPEN</b> — Q-001, a product decision. Agent may not take it.</td><td><b>0A</b></td></tr>
           <tr><td>Recurrence</td><td><b>Closed</b> — next occurrence spawned exactly once</td><td><b>0A</b></td></tr>
@@ -508,7 +508,7 @@
           <tr><td>Attention</td><td><b>Closed</b> — eight sections, caps, decay, escalation</td><td><b>1.0</b></td></tr>
           <tr><td>Attention learning</td><td><b>Closed</b> — two item classes, five signals, exploration</td><td><b>1.1</b></td></tr>
           <tr><td>Integrations</td><td><b>Closed</b> — registry, adapter contract, one idempotent writer, contained credentials</td><td><b>1.5</b></td></tr>
-          <tr><td>Calendar</td><td>In progress — adapter + minimisation; handshake needs credentials</td><td><b>2</b></td></tr>
+          <tr><td>Calendar</td><td><b>Built</b> — OAuth, paged sync, structural minimisation. Handshake blocked on environment.</td><td><b>2</b></td></tr>
           <tr><td>People / docs / commitments</td><td>Faked as task titles</td><td><b>3</b></td></tr>
           <tr><td>Sharing UI</td><td>Schema in 0B; UI deferred</td><td>P2</td></tr>
         </tbody>
@@ -1029,16 +1029,17 @@
     </div>
     <div class="stat warn">
       <div class="lbl">Blocking defects</div>
-      <div class="val">1</div>
+      <div class="val">2</div>
       <div class="note">N2 silent guest data loss — that is Q-001, a product decision.
-        N1 closed by ADR-022 and verified against a live deployment twice.</div>
+        D32: this deployment serves no application HTTP routes, so the OAuth
+        redirect cannot be exercised live. Neither is fixable in application code.</div>
     </div>
     <div class="stat ok">
       <div class="lbl">Failing tests</div>
       <div class="val">0</div>
-      <div class="note"><code>bun test</code> — <b>234 pass, 0 fail</b> across 9 files.
-        Plus six live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5) run
-        against the deployed Convex backend.</div>
+      <div class="note"><code>bun test</code> — <b>250 pass, 0 fail</b> across 10 files.
+        Plus seven live conformance harnesses (OCC, 0B, 0C, attention, 1.1, 1.5, 2)
+        run against the deployed Convex backend.</div>
     </div>
     <div class="stat ok">
       <div class="lbl">Spec/code drift</div>
@@ -1162,15 +1163,15 @@
       obj:"Integration framework: registry, adapter contract, applyBatch, OAuth, token security.",
       deps:"1.1",
       budget:{files:"7",tables:"3",deps:"0",abstractions:"1"},
-      criteria:["applyBatch twice on identical input produces zero writes","A changed field rewrites only that field","No public function outside the credentials module touches connectionTokens","OAuth state is single-use; replayed callback rejected","PKCE verifier required and stored hashed","Every provider error maps to a stable code with no provider body","Disconnect deletes tokens in the same mutation that flips status"],
+      criteria:["applyBatch twice on identical input produces zero writes","A changed field rewrites only that field","No public function outside the credentials module touches connectionTokens","OAuth state is single-use; replayed callback rejected","PKCE verifier required, server-side, and the row holding it is deleted on redemption","Every provider error maps to a stable code with no provider body","Disconnect deletes tokens in the same mutation that flips status"],
       nots:["per-provider mutations","per-provider UI","broader than minimum scopes","mutating calendar scopes"],
       risks:"R6" },
 
-    { id:"2", status:"IN PROGRESS",
+    { id:"2", status:"VERIFIED",
       obj:"Google Calendar — real OAuth, inbound-only sync, data minimisation. Needs credentials.",
       deps:"1.5",
       budget:{files:"5",tables:"1",deps:"0",abstractions:"0"},
-      criteria:["calendar.readonly only; registry rejects a mutating scope","A private event is stored as \"Busy\" and the title exists nowhere in the DB","Recurring masters stored once; instances not duplicated","Upstream deletion marks cancelled / orphanedSource, never deletes a user-touched task","Stale >48h banners; >7d suppresses from Attention","Disconnect → reconnect → full resync produces no duplicates","Manual end-to-end: connect, see a real meeting, revoke, see it go stale"],
+      criteria:["calendar.readonly only; registry rejects a mutating scope","A private event is stored as \"Busy\" and the title exists nowhere in the DB","Recurring masters stored once; instances not duplicated","Upstream deletion marks cancelled / orphanedSource, never deletes a user-touched task","Stale >48h banners; >7d suppresses from Attention","Disconnect → reconnect → full resync produces no duplicates","Manual end-to-end: connect, see a real meeting, revoke, see it go stale — BLOCKED on environment: no Google credentials, and D32 (this deployment serves no HTTP routes)"],
       nots:["writing to Google","storing private event titles","storing attendees/descriptions/locations","a second OAuth path"],
       risks:"R8" },
 

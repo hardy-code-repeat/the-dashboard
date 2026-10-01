@@ -363,16 +363,20 @@ const CODE_SET = new Set([
 // 6 + 7. containment, checked rather than asserted
 // ---------------------------------------------------------------------------
 
+/** Every Convex module that touches or could touch a credential. */
+const CONVEX_MODULES = [
+  "src/convex/integrations.ts",
+  "src/convex/assistant.ts",
+  "src/convex/attention.ts",
+  "src/convex/calendar.ts",
+  "src/convex/life.ts",
+  "src/convex/model.ts",
+  "src/convex/spaces.ts",
+];
+
 test("ADR-014 — no module outside credentials.ts can name the token tables", () => {
   const offenders: string[] = [];
-  const files = [
-    "src/convex/integrations.ts",
-    "src/convex/assistant.ts",
-    "src/convex/attention.ts",
-    "src/convex/life.ts",
-    "src/convex/model.ts",
-    "src/convex/spaces.ts",
-  ];
+  const files = CONVEX_MODULES;
   for (const file of files) {
     let source: string;
     try {
@@ -396,20 +400,69 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 
-test("ADR-014 — credentials.ts publishes no Convex endpoint", () => {
+test("ADR-014 — credentials.ts publishes no *public* Convex endpoint", () => {
   const source = readFileSync("src/convex/credentials.ts", "utf8");
   for (const kw of ["export const", "query(", "mutation(", "action("]) {
     if (kw === "export const") continue; // plain helpers are fine
     assert.ok(!source.includes(`export const`) || !source.includes(" = query("), `${kw} is exported`);
   }
-  assert.ok(!/export const \w+ = (query|mutation|action)\(/.test(source), "no public endpoint");
-  assert.ok(!/export const \w+ = internal(Mutation|Query)\(/.test(source), "not even an internal endpoint");
+  assert.ok(!/export const \w+ = (query|mutation|action|httpAction)\(/.test(source), "no public endpoint");
+
+  // Internal endpoints ARE permitted, and phase 2 needs three of them: a sync
+  // action has to read a token and cannot read a table, and the OAuth callback
+  // has to redeem a state and store a token. `internal*` is a server-to-server
+  // call, so none of them is reachable from a browser — which is the property
+  // this module actually has to keep.
+  const internals = [...source.matchAll(/export const (internal\w+) = internal(Mutation|Query)\(/g)];
+  assert.ok(internals.length > 0, "the internal endpoints phase 2 needs still exist");
+
+  // ...and no public query or mutation anywhere may *reach* one, because those
+  // return their result straight to a browser. An action or httpAction is
+  // different: it runs on the server, and the sync genuinely has to use a token
+  // — what matters there is that its return value carries none, asserted below.
+  // `httpAction` is excluded on purpose: it returns a Response, not data. The
+  // callback must read the state to redeem it; what protects it is that the
+  // redirect it builds carries no credential, asserted in the next test.
+  const publicReturning = /export const (\w+)(\s*:\s*\w+)? = (query|mutation)\(/;
+  for (const [, name] of internals) {
+    const offenders: string[] = [];
+    for (const file of CONVEX_MODULES.filter((f) => f !== "src/convex/credentials.ts")) {
+      let code: string;
+      try {
+        code = stripComments(readFileSync(file, "utf8"));
+      } catch {
+        continue;
+      }
+      const re = new RegExp(publicReturning.source, "g");
+      for (let m = re.exec(code); m; m = re.exec(code)) {
+        const next = code.indexOf("export const ", m.index + 1);
+        const block = code.slice(m.index, next === -1 ? undefined : next);
+        if (block.includes(name)) offenders.push(`${file}:${m[1]}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `${name} must not be reached from a public query/mutation`);
+  }
+
+  // The sync action is allowed to *use* a token, so its return value is checked
+  // directly: a caller learns how much changed and nothing about what.
+  const calendar = readFileSync("src/convex/calendar.ts", "utf8");
+  const sync = calendar.slice(
+    calendar.indexOf("export const syncGoogleCalendar"),
+    calendar.indexOf("export const upcomingEvents"),
+  );
+  const returned = sync.slice(sync.lastIndexOf("return {"));
+  assert.ok(!/accessToken|refreshToken|verifier/.test(returned), "the sync returns no credential");
 });
 
 test("the PKCE verifier never leaves the server", () => {
   const source = readFileSync("src/convex/credentials.ts", "utf8");
-  // It is stored only as a hash.
-  assert.ok(source.includes("verifierHash: hashSecret(args.verifier)"));
+  // It is stored verbatim — PKCE has to *send* it — in this server-only module,
+  // and the row is deleted on redemption.
+  assert.ok(source.includes("verifier: args.verifier"), "the verifier is stored");
+  assert.ok(
+    /consumeState[\s\S]*?ctx\.db\.delete\(row\._id\)/.test(source),
+    "the row holding the verifier is deleted when the state is redeemed",
+  );
 
   // ...and `beginConnect` returns a challenge, never the verifier. Checked on
   // the return statement specifically, because the verifier legitimately
@@ -417,7 +470,7 @@ test("the PKCE verifier never leaves the server", () => {
   const integrations = readFileSync("src/convex/integrations.ts", "utf8");
   const body = integrations.slice(
     integrations.indexOf("export const beginConnect"),
-    integrations.indexOf("export const finishConnect"),
+    integrations.indexOf("export const internalFinishOAuth"),
   );
   const returned = body.slice(body.indexOf("return {"));
   // Matched as a *key*, because `s256Challenge(verifier)` legitimately mentions
@@ -425,4 +478,17 @@ test("the PKCE verifier never leaves the server", () => {
   // never appear is a field that hands it out.
   assert.ok(!/verifier\s*[:,]/.test(returned), "beginConnect must not return the verifier");
   assert.ok(returned.includes("codeChallenge"), "it returns the challenge instead");
+
+  // The callback is the other place it could leak: it hands the verifier to the
+  // adapter, and must hand nothing else back to the browser.
+  const calendar = readFileSync("src/convex/calendar.ts", "utf8");
+  const callback = calendar.slice(
+    calendar.indexOf("export const googleCallback"),
+    calendar.indexOf("export const internalSyncCursor"),
+  );
+  assert.ok(callback.includes("verifier: peeked.verifier"), "the adapter is given the verifier");
+  for (const match of callback.matchAll(/dashboardRedirect\(request, \{([^}]*)\}/g)) {
+    assert.ok(!match[1].includes("verifier"), "the redirect must never carry the verifier");
+    assert.ok(!match[1].includes("accessToken"), "the redirect must never carry a token");
+  }
 });

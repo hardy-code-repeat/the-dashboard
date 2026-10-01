@@ -13,42 +13,53 @@ Status: `ACTIVE` · Last updated: 2026-10-01
 
 ## 1. Architecture
 
-### 1.1 Current architecture (verified 2026-10-01)
+### 1.1 Current architecture (verified 2026-10-01, after CHANGE-0012)
 
 ```text
 src/lib/            PURE INTELLIGENCE — deterministic, dependency-free
-  nlp.ts    393     token-based task parser + recurrence + due formatting
-  scorer.ts 240     online logistic regression, explainable ranking
-  tax.ts    561     5-country tax rule engine (US has arithmetic; others deadlines)
-  areas.ts  199     area catalogue + provider catalogue
+  nlp.ts             token-based task parser + recurrence + due formatting
+  scorer.ts          online logistic regression, 12 frozen features, explainable
+  tax.ts             5-country tax rule engine (US has arithmetic; others deadlines)
+  areas.ts           area catalogue + provider catalogue
+  attention/         pipeline (8 sections, caps, decay, dedupe) + hard rules +
+                     learned ranker + source adapters + fixtures
+  integrations/      types (the Adapter contract), batch (the diff engine),
+                     registry (nine lifecycle questions per provider),
+                     google-calendar (the first adapter)
       ↓
 src/convex/         BACKEND — persistence, orchestration, learning
-  assistant.ts 440  NL capture, learned ranking, training, notes, model
-  life.ts     475   areas, finance/tax, connections, area-scoped tasks
-  schema.ts   170   8 tables, schemaValidation: false
+  assistant.ts       NL capture, learned ranking, training, notes, snapshots
+  life.ts            areas, finance/tax, connections, area-scoped tasks
+  attention.ts       getAttention + four feedback mutations, server-side refusals
+  model.ts           snapshots, reset, pause, feature flags, realignment
+  spaces.ts          ownership backfill, personal space, membership
+  integrations.ts    the registry surface and the ONE batch writer
+  credentials.ts     OAuth state, PKCE, token store — no public endpoint
+  calendar.ts        the Google redirect, the sync action, the read model
+  schema.ts          16 tables, schemaValidation: true
   auth.*             Convex Auth (email OTP + anonymous), MUST NOT be altered
       ↓
 src/pages|components   UI — Convex reactive queries, no duplicated server state
-  Dashboard.tsx 757 area tabs, brief, model inspector, capture, tasks, chart, notes
-  Areas.tsx    601 TasksArea, PeopleArea, HealthArea, IntegrationsArea, AreaPicker
-  FinanceArea   464 country switcher, deadlines, readiness, expenses, estimate
-  Landing.tsx   416 marketing page
-  Auth.tsx      269 email OTP + guest
+  Dashboard.tsx      area tabs, attention feed, capture, tasks, chart, notes
+  AttentionFeed      the eight sections, grouped, with explainable reasons
+  CalendarStrip      the next fortnight, three honest states
+  Areas.tsx          TasksArea, PeopleArea, HealthArea, IntegrationsArea
+  FinanceArea        country switcher, deadlines, readiness, expenses, estimate
 ```
 
 **Current-state facts:**
 
-- The only object type persisted is a **Task**. `PeopleArea` stores
-  `"catch up with mum every week"` in `tasks.title`.
-- `nextOccurrence` is exported and tested but **called by no mutation** — the UI
-  promises recurrence that does not happen (D5).
-- No `internalMutation`, `internalQuery`, `httpAction` or cron exists anywhere.
-- All 9 integrations are `pending-credentials`; none can complete a handshake.
-- Health counters are component-local `useState` and reset on reload (D4).
-- **No test files exist.** `scripts/` is empty; the three harnesses that passed
-  were deleted (D10).
-- `previewCapture` is exported but referenced nowhere (N3).
-- `schemaValidation: false`, and every enum-ish field is a bare `v.string()` (N7).
+- Tasks, notes, areas, tax data, attention feedback, the learned model,
+  connections, **and calendar events** are all first-class rows. A meeting is no
+  longer a task with a title.
+- `internalQuery` / `internalMutation` / `httpAction` **exist** (phase 1.5–2).
+  A **cron** does not: sync is on demand, and scheduling it is the first thing
+  after the handshake can be exercised live.
+- One connected tool is implemented end to end (Google Calendar) and refuses
+  honestly until the deployment has credentials.
+- The **only** object type still faked as a task title is **People** (phase 3).
+- Health counters are still component-local `useState` (D4, phase 3).
+- 250 unit fixtures and 7 live conformance harnesses exist; see §8.1.
 
 #### CURRENT REALITY snapshot — verified against the repository 2026-10-01
 
@@ -57,17 +68,17 @@ architecture.** Target state is §1.2. The difference is §1.3.
 
 | Question | Answer |
 |---|---|
-| **What exists today?** | 9 Convex tables (`users`, `tasks`, `notes`, `assistantState`, `areas`, `taxProfile`, `expenses`, `taxDocuments`, `connections`). 3 routes (`/`, `/auth`, `/dashboard`). 4 pure `src/lib` modules. Convex Auth wired (email OTP + anonymous). Brutalist design system. Landing, Auth and Dashboard pages. |
-| **What works?** | NL task capture end to end. Deterministic parser. Learned ranking with visible reasons and a live model inspector. Notes. Life areas with enable/disable and starter seeding. Tax rules engine for 5 countries with per-line sourcing, readiness scoring and an expense categoriser. Finance area UI. Integration catalogue that renders honestly. |
-| **What is broken?** | **N1** — two concurrent completions can create a duplicate `assistantState` row, after which `.unique()` throws and `getDashboard`/`getModel` fail permanently. **N2** — a guest who signs up by email silently loses all data (no claim path). Both are real today. |
-| **What is partially implemented?** | **Recurrence** — parsed, displayed, `nextOccurrence` exported and tested, but no mutation calls it, so a recurring task completes and never returns. **Health** — component-local `useState`, resets on reload, nothing persisted. **Integrations** — 9 providers, all `pending-credentials`, none can complete a handshake. **Queries** — 6 call sites collect a whole table and filter in JS. |
-| **What is specified but not implemented?** | Everything in phases 0A–3. Attention, spaces, links, activity, people, commitments, documents, agents, calendar sync, sharing. All specified, **none approved, none started.** |
-| **What is planned?** | The phase sequence 0A → 0B → 0C → 1.0 → 1.1 → 1.5 → 2 → 3. |
-| **What is unknown?** | Whether Convex round-trips `-Infinity` in a query return (N5, unverified). Whether `bun test` infrastructure is wanted in a specific shape. Whether `.env` contents satisfy any provider (the agent cannot read `.env`). Every product and business assumption — see PRODUCT_CONTEXT §3.3. |
+| **What exists today?** | 16 Convex tables (`users`, `spaces`, `spaceMembers`, `grants`, `accessLog`, `links`, `activity`, `tasks`, `notes`, `assistantState`, `modelSnapshots`, `attentionState`, `featureFlags`, `areas`, `taxProfile`, `expenses`, `taxDocuments`, `connections`, `connectionTokens`, `syncCursors`, `oauthStates`, `calendarEvents`), every one with `ownerUserId` + `spaceId` except the auth tables and `links`. 3 routes. 11 pure `src/lib` modules across 4 directories. Convex Auth. Brutalist design system. |
+| **What works?** | NL capture; recurrence that respawns exactly once; a tax engine for 5 countries; an attention feed with eight sections, caps, decay, grouping and pins; learned ranking that can only break ties and cannot touch a hard rule; a model with rollback; an integration framework with one real, minimised, idempotent connector. |
+| **What is broken?** | **N2 / Q-001** — a guest who signs up by email silently loses their data. **D32** — this deployment serves no application HTTP routes, so the OAuth redirect cannot be exercised live. Both are open and both need a decision or an environment answer, not code. |
+| **What is partially implemented?** | **Calendar sync** — built, verified live against the database, but the handshake itself is blocked on credentials and on D32. **Health** — still component-local state. **Sharing** — schema and access path exist (0B); there is no UI. |
+| **What is specified but not implemented?** | Everything in phase 3: People as first-class objects with reversible merge, multi-object capture, documents, commitments, Life Admin, Finance expansion, agents, export, account deletion. All specified; **none started.** |
+| **What is planned?** | Phase 3, one feature at a time, each with its own spec section, ADR and budget (§11.3). |
+| **What is unknown?** | Whether this deployment type can serve HTTP routes at all (D32). Every product and business assumption — see PRODUCT_CONTEXT §3.3. |
 
-> **Nothing in this section is VERIFIED by a test.** No test suite exists.
-> "Works" here means *read in the code and observed to be wired*, which is
-> evidence level 1 and 2 — not level 3. See MAIN_AGENT §11.
+> **Everything in §1.4 marked VERIFIED below is backed by a live conformance run
+> against the deployed backend**, not by inspection. See MAIN_AGENT §11 for the
+> evidence levels.
 
 ### 1.2 TARGET STATE — approved future architecture
 
@@ -130,29 +141,32 @@ before Phase 3.**
 | **VERIFIED** | Required tests exist **and** all acceptance criteria and gates pass. |
 | **SHIPPED** | The user explicitly considers it complete. |
 
-> **Code existing is not verification.** Nothing in Panel is currently `VERIFIED`,
-> because no test suite exists.
+> **Code existing is not verification.** `VERIFIED` below means the acceptance
+> criteria pass *and* a live conformance run against the deployed backend agrees.
+> `BUILT` means wired and read, which is evidence level 1–2.
 
 | Capability | Status | Evidence | Phase |
 |---|---|---|---|
-| Natural-language capture | **BUILT** | `src/lib/nlp.ts`; live in Dashboard. Parser harness passed once, then was deleted — no test remains | 0A |
-| Recurring tasks | **PARTIALLY BUILT** | Parsed + displayed. `nextOccurrence` exported, never called. Does not respawn | 0A |
-| Attention engine | **NOT BUILT** | Only a 3-line "brief" string exists | 1.0 |
-| Learning / ranking | **PARTIALLY BUILT** | Logistic regression trained on task completion only. No clamp, version, rollback or feedback semantics | 0C / 1.1 |
-| People | **NOT BUILT** | Faked as `tasks.title` strings in `PeopleArea` | 3 |
-| Calendar | **NOT BUILT** | Provider entry exists with `pending-credentials` | 2 |
-| Finance | **PARTIALLY BUILT** | Expenses + tax engine work. No accounts, transactions, assets, liabilities, investments, subscriptions or goals | 3 |
+| Natural-language capture | **VERIFIED** | `src/lib/nlp.ts` + live 0A/0B conformance | 0A |
+| Recurring tasks | **VERIFIED** | `nextOccurrence` is wired into `setTaskCompleted`; spawned exactly once, live | 0A |
+| Attention engine | **VERIFIED** | Eight sections, caps, decay, dedupe, grouping, escalation, pins — `conformance-attention.ts` | 1.0 |
+| Learning / ranking | **VERIFIED** | Clamp, decaying rate, versioning, snapshots, rollback, reset, pause, flags; hard/ranked split; 12 features with 0–7 bit-identical — `conformance-1.1.ts` (25 checks) | 0C / 1.1 |
+| Spaces / ownership | **VERIFIED** | `ownerUserId` + `spaceId` on every product table; one personal space per user; backfill idempotent — `conformance-0b.ts` | 0B |
+| Activity / timeline | **VERIFIED** | `activity` with a closed taxonomy and an idempotency key; the 7-day chart reads it | 0B |
+| Integrations (framework) | **VERIFIED** | Registry, adapter contract, one idempotent writer, credential containment checked by a gate — `conformance-1.5.ts` (35 checks) | 1.5 |
+| Calendar | **PARTIALLY BUILT** | Adapter, sync, minimisation, deletion semantics and the dashboard block are verified live (`conformance-2.ts`, 33 checks). The handshake itself cannot be exercised: no credentials, and D32 | 2 |
+| People | **NOT BUILT** | Still faked as `tasks.title` strings in `PeopleArea` | 3 |
+| Multi-object capture | **NOT BUILT** | Capture produces exactly one task | 3 |
+| Finance | **PARTIALLY BUILT** | Expenses + tax engine verified. No accounts, transactions, assets, liabilities, investments, subscriptions or goals | 3 |
 | Life Admin | **NOT BUILT** | `home` area renders a generic task list | 3 |
-| Agents | **NOT BUILT** | No `internalMutation`, no cron, no agent modules | 3 |
-| Sharing / permissions | **NOT BUILT** | Everything scoped by `userId` only | 0B (schema) / P2 (UI) |
+| Agents | **NOT BUILT** | No cron, no agent modules. `internal*` functions now exist, which was the prerequisite | 3 |
+| Sharing / permissions | **PARTIALLY BUILT** | Schema, `permissions.can` and the audit log verified; no UI to use them | 0B / P2 |
 | Export | **NOT BUILT** | No manifest, no action | P2 |
 | Deletion | **NOT BUILT** | No account deletion | P2 |
-| Integrations (framework) | **NOT BUILT** | Catalogue + honest connect stub only | 1.5 |
-| Spaces / ownership | **NOT BUILT** | `userId` only | 0B |
-| Activity / timeline | **NOT BUILT** | Only `completedAt` | 0B |
-| Auth | **PARTIALLY BUILT** | Works. Guest path is defective (N2 / Q-001) | 0A |
-| Tax engine | **BUILT** | 5 countries. 34 cases passed once, harness deleted. US deep, others deadlines-only | 0C (validation) |
-| Design system | **BUILT** | `src/index.css`, 162 lines, complete | — |
+| Auth | **PARTIALLY BUILT** | Sign-in works. The guest path is defective (N2 / Q-001) | 0A |
+| Tax engine | **VERIFIED** | 5 countries, closed unions in the schema, `schemaValidation: true` | 0C |
+| Schema validation | **VERIFIED** | Ten closed unions; a full-conformance audit reported zero non-conforming rows before the flag was flipped | 0C |
+| Design system | **BUILT** | `src/index.css`, complete, untouched since the template | — |
 
 ## 2. Repository structure
 
@@ -500,20 +514,23 @@ encrypted, not hidden, absent.
 | Install | `bun install` | |
 | Typecheck | `bunx tsc -b --noEmit` | `bun tsc -b --noEmit` also works |
 | Build | `bun run build` | = `tsc -b && vite build` |
-| Lint | `bun run lint` | = `eslint .` — **FAILS AT BASELINE: 12 errors, 19 warnings, all pre-existing.** See §8.2. |
+| Lint | `bun run lint` | = `eslint .` — **FAILS AT BASELINE: 3 errors, 19 warnings, all pre-existing stock shadcn / template code.** See §8.2. |
 | Format | `bun run format` | = `prettier --write .` |
 | Preview (built output) | `bun run preview` | |
 | Dev server | `bun run dev` | = `vite`. **The agent must NOT run this** — the platform owns the dev server and Convex dev process. |
-| Convex codegen + push | `bun convex dev --once` | **Always with `--once`.** Never bare `convex dev` — non-interactive terminal, will hang. |
-| Spec drift check | `bun scripts/spec-drift.ts` | Dependency-free. Exits non-zero on drift. |
+| Tests | `bun test` | 250 fixtures across 10 files. No `test` script in `package.json` is needed — `bun test` runs them directly. |
+| Convex codegen + push | `bunx convex dev --once` | **Always with `--once`.** Never bare `convex dev` — non-interactive terminal, will hang. Add `--typecheck=disable` only to bootstrap codegen for a new module that calls a function the generated types do not know yet. |
+| Live conformance | `bun scripts/conformance-<phase>.ts <CONVEX_URL>` | One harness per phase: `0b`, `0c`, `attention`, `1.1`, `1.5`, `2`, `occ`. Each runs against the deployed backend and exits non-zero on failure. |
+| Spec drift check | `bun scripts/spec-drift.ts` | Dependency-free. 18 checks. Exits non-zero on drift. |
 
 ### 8.2 Known-failing / unavailable commands
 
 | Purpose | Status |
 |---|---|
-| Tests | **NOT AVAILABLE.** No `test` script in `package.json`, and **no test files exist**. Bun ships a built-in test runner so `bun test` would need no new dependency — but Phase 0A must add the fixtures and decide whether to add the script. Until then, the runbook has **no test command**, and any claim that Panel is tested is false. |
-| Lint | **FAILS AT BASELINE.** `bun run lint` reports **12 errors and 19 warnings** on untouched code, across `src/hooks/use-mobile.ts`, `src/lib/nlp.ts`, `src/main.tsx`, `src/pages/Dashboard.tsx`, `src/convex/assistant.ts`, `src/convex/life.ts`, `src/convex/_generated/*`, `vly-toolbar-readonly.tsx` and stock shadcn components. **Zero findings in `spec/` or `scripts/`.** |
+| Lint | **FAILS AT BASELINE.** `bun run lint` reports **3 errors and 19 warnings** on untouched stock code: `src/components/ui/carousel.tsx`, `src/components/ui/sidebar.tsx`, `src/hooks/use-mobile.ts`. **Zero findings in `spec/` or `scripts/`.** Down from 12/19 at the start; the gate is *no NEW problems*. |
+| HTTP routes | **NOT SERVED by this deployment.** Every application HTTP path 404s, including Convex Auth's own OIDC discovery endpoint. `convex dev --once` succeeds and validates the router, so the module is deployed — the backend does not serve it. See defect **D32**. Consequence: the OAuth redirect cannot be exercised live. |
 | Reset local data | **NOT AVAILABLE.** Convex is deployed (`VITE_CONVEX_URL`), not a local backend. There is no documented reset command. Data reset requires a deliberate user action via the Convex dashboard. Do not improvise one. |
+| Account deletion | **NOT BUILT.** No export manifest and no delete-everything action. Both are specified for P2. |
 
 > **How to use the lint gate until it is fixed.** The meaningful check is
 > *"are there any NEW problems?"* — not *"is the count zero?"* A gate that
@@ -729,6 +746,26 @@ phases are `NOT STARTED`.
 | **1.5** | registry, adapter contract, `applyBatch`, OAuth, tokens, cursors, lifecycle | per-provider UI; mutating scopes; provider writes | `connectionTokens` containment | credentials |
 | **2** | Google Calendar adapter, OAuth, sync, minimisation | writing to Google; private titles; attendees | ADR-013 | `GOOGLE_CLIENT_ID`/`SECRET` |
 | **3** | People, capture, Life Admin, commitments, Finance expansion, agents | anything without its own spec + ADR + budget | identity resolution guarantees (ADR-021) | none |
+
+#### Phase 3, feature 1 — People as first-class objects (PROPOSED, not approved)
+
+Phase 3 is a phase *of* phases. §11.3 requires each feature to carry its own
+scope, budget and approval, and the standing roadmap approval covers *starting*
+phase 3 — not every decision inside it. What follows is drafted so the first
+feature can begin without re-deriving anything. **It is a proposal. The agent has
+not started it and may not mark it approved.**
+
+| Field | Value |
+|---|---|
+| **Feature** | People — a person is a row, not a task title |
+| **Problem it solves** | `PeopleArea` stores `"catch up with mum every week"` in `tasks.title`. A person therefore cannot be shared, synced, linked to, or reasoned about, and two captures of the same person create two unrelated strings. RJD-004 already settled the hard part: never auto-merge on a name match. |
+| **IN SCOPE** | a `people` table (name, `identityKeys`, tombstone, `mergedIntoId`); capture that can produce a person *or* propose one; `people` as a real area surface; `PEOPLE_FIT` (feature 10) fed by a real person id rather than a free-text name; merge and unmerge as explicit, reversible user actions. |
+| **OUT OF SCOPE** | automatic merge (RJD-004); importing contacts from Google or iCloud; any inbound email parsing; anything that writes to a provider. |
+| **DO NOT TOUCH** | the identity-resolution guarantees in ADR-021; indices 0–7 of the feature layout; `permissions.can` as the single access path. |
+| **Budget (ADR-016)** | 6 new files · 1 new table · 0 deps · 1 abstraction (the identity-key matcher). Every figure is a ceiling, and exceeding one is a stop condition. |
+| **Acceptance criteria** | (1) A capture naming a known person links to that row rather than creating a second. (2) Two rows with the same normalised name stay separate until the user merges them. (3) Merge is reversible: unmerge restores both rows and every link. (4) A merged row is a tombstone that no query returns. (5) `PEOPLE_FIT` reads the person id, so two namesakes do not share evidence. (6) Live conformance: merge → unmerge leaves the row count and the link count exactly as they were. |
+| **Why it is first** | It is the only phase-3 item where the roadmap already made the hard decision (RJD-004), it unlocks feature 10 which is already computed from nothing, and it removes a place where the product currently lies about its own data model. |
+| **Risks** | R7 (identity resolution) and R19 (agents) are adjacent, not involved. The real risk is scope: "people" invites contacts, threads and social graph, none of which is in the budget. |
 
 ### 11.3 Scope rules
 

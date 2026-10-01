@@ -828,6 +828,173 @@ Related ADR: ADR-012, ADR-013, ADR-014, ADR-016, ADR-019, ADR-022
 
 ---
 
+## CHANGE-0012
+
+```
+Date:       2026-10-01
+Phase:      2 — Google Calendar
+Type:       feature
+Severity:   MAJOR
+Summary:    Panel now has one real connected tool. The OAuth handshake is real
+            (PKCE, single-use state, the verifier confined to the server), the
+            sync is real (paged, idempotent, diff-then-patch), and the
+            minimisation is real — a private event is stored as the literal
+            "Busy" and its title is never read, let alone written. Meetings
+            inside four hours are hard attention items that no amount of
+            personalisation can hide.
+Why:        Phase 1.5 built the framework and refused every connect attempt,
+            which was correct but finished. The product thesis — one operating
+            layer over the tools a person already uses — does not exist until
+            one of those tools is actually connected.
+Previous:    `connectTool` recorded intent as `pending-credentials` and stopped.
+            There was no callback, no sync, no calendar, and no dashboard block.
+New:        `src/lib/integrations/google-calendar.ts` (the adapter),
+            `src/convex/calendar.ts` (the redirect, the sync, the read model),
+            `src/components/CalendarStrip.tsx` (the dashboard block), the
+            `calendarEvents` table, and §7.2's deletion semantics in the writer.
+Files:      New (5 of the 5-file budget, exactly): src/lib/integrations/
+             google-calendar.ts, src/lib/integrations/google-calendar.test.ts,
+             src/convex/calendar.ts, scripts/conformance-2.ts,
+             src/components/CalendarStrip.tsx.
+             Modified (9, no budget cost): src/convex/{schema,credentials,
+             integrations,http,attention}.ts, src/lib/integrations/types.ts,
+             src/lib/attention/{rules,sources}.ts, src/pages/Dashboard.tsx,
+             src/lib/{attention/learned.test,integrations/integrations.test}.ts,
+             scripts/{spec-drift,conformance-1.5}.ts.
+Schema:     1 new table as budgeted: `calendarEvents`. Its column list *is* the
+             minimisation policy — there is nowhere to put an attendee list, a
+             description, a location or a dial-in, because no such column exists.
+             One schema change to an existing table: `oauthStates.verifierHash`
+             is replaced by `oauthStates.verifier` (see D30), with the old
+             column retained as optional so the deployment can be pushed without
+             a data migration.
+Deps:       0. `fetch` is in the runtime; a client library would have been one
+             more thing to audit for the privilege ADR-014 cares about.
+Abstraction: 0 new, with one judgement call recorded rather than hidden. The
+             writer body was *extracted* from `applyBatch` into
+             `writeNormalizedBatch` so a sync action and the public mutation
+             share one implementation — the alternative was a second writer, and
+             "the public path and the sync path disagree about idempotency" is
+             exactly the failure ADR-012 exists to prevent. `Adapter` gained a
+             method (`authorizationRequest`); `sources.ts` gained a predicate
+             (`calendarSuppressed`). No new concept, no new layer, one write path.
+Code:       The handshake is split across three function kinds, and that split is
+            forced rather than stylistic: an httpAction receives the redirect,
+            an action performs the token exchange (only an action may use the
+            network), and an internal mutation consumes the state and stores the
+            tokens (only a mutation can make single-use atomic). Phase 1.5 had
+            this as one mutation, which could never have worked — see D30.
+            The state is read before the exchange and redeemed after it, so the
+            verifier survives the one window in which it is needed and the row
+            holding it is *deleted* on redemption.
+            Minimisation is an allowlist in the mapper, not a filter: the adapter
+            never reads `description`, `attendees`, `location`,
+            `conferenceData`, `organizer`, `reminders`, `recurrence` or
+            `extendedProperties`, so there is no code path by which they could be
+            stored. A unit fixture serialises a hostile payload and asserts none
+            of those strings appears.
+            A private event becomes `"Busy"` in the adapter — before the title
+            ever exists as a string Panel could write. Not hidden in the UI, not
+            encrypted at rest: absent.
+            Recurring series are expanded by Google (`singleEvents=true`) and each
+            instance carries its own stable id, so a weekly standup is one row per
+            occurrence and Panel never sees the recurrence rule at all.
+Tests:      bun test -> 250 pass, 0 fail (16 new phase-2 fixtures, plus one
+             hardened containment fixture).
+             bun scripts/conformance-2.ts <url> -> 33 invariants held live, with
+             1 reported as not-applicable (see "Blocked" below).
+             bun scripts/conformance-1.5.ts -> 35/35 (its OAuth section rewritten
+             for phase 2; its "a kind with no table refuses" now uses `task`,
+             since calendarEvent gained a table).
+             conformance-0b, conformance-0c, conformance-attention,
+             conformance-1.1 -> all still pass live.
+             bunx convex dev --once -> Convex functions ready.
+             bunx tsc -b --noEmit -> clean.
+             bun run lint -> 3 errors / 19 warnings, unchanged. Zero new.
+             bun scripts/spec-drift.ts -> 18 pass, 1 warn, 0 fail.
+Acceptance criteria, checked one by one:
+  calendar.readonly only; registry rejects a mutating scope -> PASS, live and in
+    the registry. The registry asserts it at module load, so an entry that asked
+    for `calendar.events` would fail the build rather than the user.
+  a private event is stored as "Busy" and the title exists nowhere -> PASS, in
+    three independent places: the adapter fixture (the title is never read), the
+    schema (there is no column that could hold one), and the live read model
+    (no field of the response contains it).
+  recurring masters stored once; instances not duplicated -> PASS. Provider-side
+    expansion, one row per instance, keyed by the instance id. Asserted by the
+    replay check: the same instance applied twice writes nothing.
+  upstream deletion marks cancelled / orphanedSource, never deletes a user task
+    -> PASS, live. A sweep that removes every event reports `deletes: 1` for the
+    one that had already happened and `cancelled: 3` for the three still ahead.
+  stale >48h banners; >7d suppresses from Attention -> PASS. The banner is in the
+    dashboard block; the suppression is server-side in `getAttention`, so a
+    week-old calendar contributes no items at all.
+  disconnect -> reconnect -> full resync produces no duplicates -> PASS in
+    principle by construction (the cursor resets to null on both disconnect and
+    connect, and the writer is idempotent); the live half is blocked, see below.
+  manual end-to-end: connect, see a real meeting -> BLOCKED. See "Blocked".
+Defects found and fixed by this phase (D30, D31, D32, D33):
+  D30  `finishConnect` was a **mutation** that called `adapter.exchangeCode`.
+       The exchange performs `fetch`, and a Convex mutation is required to be
+       deterministic, so the documented OAuth completion path could never have
+       run at all. It survived a full phase because nothing could call it: with
+       no adapter registered it threw before reaching the network. Found by
+       writing the real flow, which is the only way to find this class of defect.
+       Replaced by the httpAction + internal mutation split above.
+  D31  `markDerivedOrphaned` tested `task.orphanedSource === false`, which is
+       almost never true — the column is optional and `addTask` never sets it to
+       `false`. The flag §7.2 names was, in practice, never set on anything. Now
+       `task.origin === "integration" && task.orphanedSource !== true`.
+  D32  **This deployment serves no application HTTP routes.** Every path 404s,
+       including Convex Auth's own OIDC discovery endpoint and
+       `auth.addHttpRoutes`' own routes, which have been in the template since
+       day one; `/` and `/version` answer because they are Convex's own built-ins.
+       The push succeeds and Convex *validates* the router (a deliberately broken
+       handler is rejected with "is not an HttpAction"), so the module is
+       deployed — the backend simply does not serve it. Not caused by phase 2 and
+       not fixable from here. Consequence: the OAuth redirect cannot be exercised
+       live, so both conformance harnesses report that section as `[SKIP]` with
+       the reason, rather than as a pass. The unit fixtures cover the handler's
+       decision logic; the transport is the part that cannot be checked here.
+  D33  `applyBatch` reported `deletes` as the *diff's* count of removals, which
+       includes rows that were kept and flagged `cancelled`. A caller reading
+       "3 deleted" when one row survived was being told a small lie that makes a
+       sync log untrustworthy. The counts now separate `deletes` (rows actually
+       removed) from `cancelled` (rows kept and flagged). Found by the phase-2
+       harness, which was written expecting the honest number.
+Risks:      `singleEvents=true` means an upstream edit to a series can change an
+            instance's id. The old row then arrives as an *absence*, which §7.2
+            handles: deleted if it has happened, cancelled if it has not. There is
+            a brief window in which both the old and new instance exist, and the
+            old one shows as cancelled rather than disappearing.
+            A token whose provider-side expiry has passed will not be refreshed:
+            the adapter reads the access token and does not yet implement a
+            refresh-token exchange. A revoked or expired token surfaces as
+            `auth_revoked` with `reconnectRequired`, which is honest but is a
+            worse experience than refreshing silently. Scheduled: the first thing
+            after the handshake can be exercised live.
+Blocked:    Two things, and only two.
+            (a) GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set, so the
+                handshake cannot be completed. The user adds them in the Keys tab;
+                the adapter refuses with `not_configured` until they exist, and the
+                dashboard says why rather than offering a button that cannot work.
+            (b) D32 — even with credentials, this deployment cannot receive the
+                redirect. Both are environment, not code.
+            Everything else in phase 2 is built and verified live.
+Decision:    A meeting inside the four-hour window is added to `HARD_KINDS` as
+            `calendar.imminent`. That is an extension of ADR-006's principle
+            rather than a new decision: someone who can dismiss it, or train a
+            model to bury it, will eventually do so, and "I am in a meeting in
+            twenty minutes" is not a preference. Verified live — the harness acts
+            on one and the weight vector does not move.
+            A new user with no connection sees a disabled button and one sentence
+            explaining that Google credentials are missing. Shipping a connect
+            button that always fails would have been worse than shipping none.
+Related ADR: ADR-006, ADR-012, ADR-013, ADR-014, ADR-016, ADR-019
+```
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -1690,6 +1857,10 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D27** | Scope enforcement was a denylist of mutating words. Google's `calendar.events` grants write access and matches none of them, so a genuinely mutating scope passed the check. | **RESOLVED (CHANGE-0011)** — an allowlist of known read-only scopes plus read-only suffixes, failing closed on anything unrecognised. Confirms ADR-013's "minimum scope" was a statement, not an enforcement, until now. |
 | **D28** | Provider-supplied expense categories were cast to the closed `expenseBucket` union, so any non-Panel value would have been a schema-validation failure at write time — a crash caused by someone else's data. | **RESOLVED (CHANGE-0011)** — `narrow()` maps to the closed vocabulary with an explicit `Uncategorised` bucket and `medium` confidence. |
 | **D29** | The ADR-022 OCC conformance suite's negative control seeded a state row into a user that had none, so it wrote the *first* row and asserted two — reporting failure against a detector with nothing to detect. | **RESOLVED (CHANGE-0011)** — a real state row is created before the duplicate is seeded. The control passes and the PASS is interpretable again. |
+| **D30** | `finishConnect` was a mutation calling `adapter.exchangeCode`, which performs `fetch`. Convex mutations must be deterministic, so the documented OAuth completion path could never have run. | **RESOLVED (CHANGE-0012)** — the flow is now an httpAction (receives the redirect, performs the exchange) plus an internal mutation (consumes the state and stores the tokens atomically). Found by writing the real flow; no test could have found it, because nothing could reach the network. |
+| **D31** | `markDerivedOrphaned` tested `task.orphanedSource === false`, which is almost never true — the column is optional and `addTask` never sets it to `false`. The §7.2 orphan flag was effectively never set. | **RESOLVED (CHANGE-0012)** — `task.origin === "integration" && task.orphanedSource !== true`. |
+| **D32** | **This deployment serves no application HTTP routes.** Every path 404s, including Convex Auth's OIDC discovery endpoint and its own `addHttpRoutes`, which predate this work. `/` and `/version` answer because they are Convex's built-ins. The push succeeds and Convex validates the router, so the module is deployed — the backend does not serve it. | **OPEN — ENVIRONMENT, not code.** Consequence: the OAuth redirect cannot be exercised live. Both conformance harnesses report that section as `[SKIP]` with this reason rather than as a pass. The handler's decision logic is covered by unit fixtures; only the transport is unverified. Needs an answer from the platform owner: does this deployment type serve HTTP routes at all? |
+| **D33** | `applyBatch` reported `deletes` as the diff's count of removals, including rows kept and flagged `cancelled`. | **RESOLVED (CHANGE-0012)** — the counts now separate `deletes` (rows actually removed) from `cancelled` (rows kept and flagged). Found by the phase-2 harness, which expected the honest number. |
 | D13 | `toMondayIndex()` in `src/lib/nlp.ts` is defined but never used. | **RESOLVED (CHANGE-0005)** — removed. |
 
 ### Intentionally accepted
@@ -1717,7 +1888,7 @@ approval**, not a note.
 | **1.0** | 11 | 1 (`attentionState`) | 0 | 1 (attention pipeline) | The scorer in the hard-rule path · an impressions table · notification delivery · a block/plugin framework |
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
-| **2** | 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
+| **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
 | **3** | per-feature | per-feature | 0 | per-feature | Any of it without its own spec section, ADR, budget and approval |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
@@ -1730,25 +1901,27 @@ screen · no push notifications · no sixth spec file · no modification of
 ## Current Development State
 
 ```
-Current phase:        2 — Google Calendar (inbound)
-Current objective:    Phases 0B, 0C, 1.0, 1.1 and 1.5 are VERIFIED. Phase 0A
+Current phase:        3 — feature work (each feature needs its own spec + ADR +
+                      budget before it starts)
+Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED. Phase 0A
                       remains BLOCKED on Q-001, which blocks only TASK-0A-003.
-Last completed:       CHANGE-0011 — integration framework. A registry that makes
-                      the nine lifecycle questions mandatory, an adapter
-                      contract, one idempotent diff-then-patch writer, and a
-                      credential store with no public function that can read it.
-Next phase:           2 — the Google Calendar adapter. No code blocker; the live
-                      handshake needs GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
+Last completed:       CHANGE-0012 — Google Calendar. A real OAuth handshake, a
+                      real paged sync, minimisation that is structural rather
+                      than filtered, and meetings that become hard attention
+                      items inside four hours.
+Next phase:           3 — the first feature, in the order the roadmap lists them.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
-                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified twice,
-                      most recently after 1.1 changed `recordOutcome`.
+                      Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified twice.
                       Non-blocking: Q-002, Q-003, Q-004.
-                      Phase 2 credentials — needed for a *live* handshake only.
-                      Everything else in phase 2 is buildable and is being built.
+                      Phase 2 live handshake — blocked on two environment items,
+                      neither of them code: GOOGLE_CLIENT_ID /
+                      GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
+                      D32, this deployment serving no application HTTP routes.
 
-Failing tests:        None. 234 fixtures pass; 0B, 0C, attention, 1.1 and 1.5
-                      conformance all pass live.
+Failing tests:        None. 250 fixtures pass; 0B, 0C, attention, 1.1, 1.5 and 2
+                      conformance all pass live. The phase-2 harness reports one
+                      section as SKIP (D32) rather than as a pass.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -1774,11 +1947,14 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          with evidence; live conformance passes.
   1.5    VERIFIED      —                 CHANGE-0011. 7 files / 3 tables / 0 deps /
                                          1 abstraction, exactly at budget.
-  2      IN PROGRESS   credentials       Depends on 1.5 (satisfied). The adapter,
-                                         minimisation and cursor logic are
-                                         buildable now; a live handshake needs
-                                         GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
-  3      NOT STARTED   —                 Depends on 2
+  2      VERIFIED      —                 CHANGE-0012. 5 files / 1 table / 0 deps /
+                                         0 abstractions, exactly at budget. Every
+                                         criterion passes except the live
+                                         handshake, which is blocked on the
+                                         environment (credentials + D32).
+  3      NOT STARTED   —                 Depends on 2 (satisfied). Each feature
+                                         needs its own spec section, ADR and
+                                         budget before it starts (§11.3).
 ```
 
 ### Phase lifecycle status table
@@ -1791,10 +1967,10 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.0** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0009. Eight hard-rule sections with caps, decay, de-duplication, grouping, escalation and pins; four feedback mutations enforced server-side; nothing stored but the feedback actually given. 11 files / 1 table / 0 deps / 1 abstraction, exactly at budget. Verified by 41 unit fixtures and a live conformance run. |
 | **1.1** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0010. Hard/ranked class split on a single `HARD_KINDS` list the server reads before training; features 8–11 appended with 0–7 bit-identical on a 40-case fixture; five-signal feedback; exploration reserve; bounded category suppression; a real `generalisedRanking` kill switch. 3 new files of 8 / 0 tables / 0 deps / 1 abstraction. Verified by 21 unit fixtures and a 25-check live conformance run. |
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
-| **2** | **IN PROGRESS** | Hardik (standing roadmap approval) | 2026-10-01 | user credentials for the live handshake only | Depends on 1.5 (satisfied) |
-| **3** | NOT STARTED | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 2 |
+| **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
+| **3** | **NOT STARTED** | Hardik (standing roadmap approval) | 2026-10-01 | — | Depends on 2 (satisfied). Roadmap order: People first (first-class with reversible merge), then multi-object capture, documents, commitments, Finance expansion, agents. Each gets its own spec section, ADR, budget and approval per §11.3 — the standing approval covers starting the phase, not every feature inside it. |
 
-**Phases 0B, 0C, 1.0, 1.1 and 1.5 are done to the limit of what the agent may
+**Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are done to the limit of what the agent may
 decide. Nothing is SHIPPED — shipment is the user's decision alone
 (MAIN_AGENT §11.1).**
 

@@ -46,6 +46,17 @@ function section(title: string): void {
   console.log(`\n── ${title}`);
 }
 
+/**
+ * Not applicable here, and reported rather than counted.
+ *
+ * Used only where the deployment serves no application HTTP routes (defect
+ * D32). Counting an unrunnable check as a pass would be a lie; counting it as a
+ * failure would blame code for the environment.
+ */
+function skip(label: string, why: string): void {
+  console.log(`  [SKIP] ${label} — ${why}`);
+}
+
 const signIn = q<{ tokens?: { token: string } | null }>("auth:signIn");
 const listIntegrations = q<
   { slug: string; scopes: string[]; connected: boolean; stale: boolean; suppressFromAttention: boolean }[]
@@ -53,8 +64,9 @@ const listIntegrations = q<
 const connectionStatus = q<{ connected: boolean; hasCredentials: boolean }>(
   "integrations:connectionStatus",
 );
-const beginConnect = m<{ state: string; codeChallenge: string }>("integrations:beginConnect");
-const finishConnect = m<{ connected: boolean }>("integrations:finishConnect");
+const beginConnect = m<{ state: string; codeChallenge: string; authorizeUrl: string }>(
+  "integrations:beginConnect",
+);
 const applyBatch = m<{
   creates: number;
   patches: number;
@@ -127,61 +139,57 @@ async function main(): Promise<void> {
   );
 
   // -----------------------------------------------------------------------
-  section("OAuth state is single-use");
+  section("the OAuth start refuses rather than faking a handshake");
   // -----------------------------------------------------------------------
-  const started = await client.mutation(beginConnect, { provider: "google-calendar" } as never);
-  check("a state is issued", typeof started.state === "string" && started.state.length > 16);
-  check("a code challenge is returned", started.codeChallenge.length > 16);
-  check("the raw verifier is not in the response", !JSON.stringify(started).includes("verifier"));
-
-  // No adapter is registered in 1.5, so finishing must refuse — but the state
-  // must still have been consumed by the refusal, or a replay would work once
-  // an adapter exists.
-  await expectThrow("finishing without an adapter is refused", () =>
-    client.mutation(finishConnect, {
-      provider: "google-calendar",
-      state: started.state,
-      code: "stub-code",
-    } as never),
-  );
-
-  const replayed = await capture(() =>
-    client.mutation(finishConnect, {
-      provider: "google-calendar",
-      state: started.state,
-      code: "stub-code",
-    } as never),
-  );
-  // The first attempt refuses because no adapter is registered — and because it
-  // *throws*, Convex rolls the transaction back, so `usedAt` is not committed
-  // and a replay reaches the same refusal. That is correct (a failed attempt
-  // must not burn the user's state) but it means this assertion cannot prove
-  // single-use; a garbage state is the part that is observable here, and the
-  // `usedAt` guard itself is asserted by the unit fixture.
-  check("a replay reaches the same refusal", replayed != null, String(replayed));
-  check(
-    "and the refusal is the adapter one, not a token error",
-    String(replayed).includes("not wired up"),
-    String(replayed),
-  );
-
-  const garbage = await capture(() =>
-    client.mutation(finishConnect, {
-      provider: "google-calendar",
-      state: "definitely-not-a-real-state",
-      code: "stub-code",
-    } as never),
+  // Rewritten in phase 2. This deployment has no GOOGLE_CLIENT_ID/SECRET, so
+  // `beginConnect` now refuses with `not_configured` — which is the correct
+  // behaviour and the thing worth asserting. The 1.5 checks that needed a real
+  // adapter (state issued, challenge returned, verifier withheld) cannot run
+  // without credentials; they live in `google-calendar.test.ts` as unit
+  // fixtures, and the *live* half of the handshake is asserted here instead:
+  // that the callback refuses an unknown state, and refuses it indistinguishably.
+  const notConfigured = await capture(() =>
+    client.mutation(beginConnect, { provider: "google-calendar" } as never),
   );
   check(
-    "an unknown state is refused",
-    garbage != null && garbage.includes("expired"),
-    String(garbage),
+    "beginConnect refuses when the provider has no credentials",
+    notConfigured != null && /not_configured|not configured/i.test(notConfigured),
+    String(notConfigured).split("\n")[0].slice(0, 120),
   );
   check(
-    "and is indistinguishable from a used one",
-    garbage === replayed || garbage?.includes("expired") === true,
-    `${garbage} vs ${replayed}`,
+    // The *names* of the missing env vars are exactly what the user needs to
+    // see; a credential *value* would be `ya29.` / `GOCSPX-`, and those must not
+    // appear anywhere.
+    "and the refusal names the missing variables without carrying a credential",
+    !/ya29\.|GOCSPX-|Bearer [A-Za-z0-9._-]{20}/.test(String(notConfigured)),
   );
+
+  const callback = async (query: string) => {
+    const response = await fetch(`${url}/oauth/google-calendar/callback${query}`, {
+      redirect: "manual",
+    });
+    return { status: response.status, location: response.headers.get("location") ?? "" };
+  };
+  const probe = await callback("");
+  if (probe.status === 404) {
+    // Defect D32: this deployment serves no application HTTP routes at all —
+    // Convex Auth's own OIDC discovery endpoint 404s too. The state lookup is
+    // therefore not reachable from here; it is asserted by the phase-2 unit
+    // fixtures instead.
+    skip(
+      "the OAuth callback's state handling",
+      "this deployment serves no application HTTP routes (D32)",
+    );
+  } else {
+    const wellFormed = await callback("?code=stub&state=well-formed-but-unknown-state");
+    const garbage = await callback("?code=stub&state=definitely-not-a-real-state");
+    check("an unknown state is refused", wellFormed.location.includes("calendar=expired"), wellFormed.location);
+    check(
+      "a malformed state is refused identically",
+      wellFormed.location === garbage.location,
+      `${wellFormed.location} vs ${garbage.location}`,
+    );
+  }
 
   await expectThrow("an unknown provider is refused", () =>
     client.mutation(beginConnect, { provider: "my-bank" } as never),
@@ -267,17 +275,21 @@ async function main(): Promise<void> {
   // -----------------------------------------------------------------------
   section("a normalised kind with no table refuses rather than drops");
   // -----------------------------------------------------------------------
+  // `calendarEvent` gained a table in phase 2; `task` is the kind that still has
+  // none, and it is the one that matters — it is what a future "import tasks
+  // from X" connector would produce, and the refusal is what stops it becoming
+  // silently dropped data.
   const refused = await capture(() =>
     client.mutation(applyBatch, {
       provider: "google-calendar",
       complete: true,
-      objects: [{ kind: "calendarEvent", externalId: "evt_1", fields: { title: "Standup" } }],
+      objects: [{ kind: "task", externalId: "task_1", fields: { title: "Standup" } }],
     } as never),
   );
   check(
-    "calendarEvent is refused in phase 1.5",
-    refused != null && refused.includes("no table"),
-    String(refused),
+    "a kind with no table is refused",
+    refused != null && /no table/i.test(refused),
+    String(refused).split("\n").slice(-2).join(" ").slice(0, 160),
   );
 
   // -----------------------------------------------------------------------

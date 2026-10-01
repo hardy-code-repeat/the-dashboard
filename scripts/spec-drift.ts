@@ -561,22 +561,86 @@ function checkCredentialContainment() {
     return;
   }
 
-  // The module itself must still publish nothing a client can call.
+  // The module itself must publish nothing a *client* can call.
+  //
+  // `internal*` endpoints are permitted and are not a hole: they are callable
+  // only from another function in this deployment, so no browser can reach one.
+  // Phase 2 needs three of them — a sync action has to read a token and cannot
+  // read a table, the OAuth callback has to read a state, and only a mutation
+  // can consume one atomically. The alternative would have been a public
+  // endpoint that hands out credentials, which is the thing ADR-014 forbids.
   const credentials = stripComments(readFileSync(join(dir, "credentials.ts"), "utf8"));
-  if (/export const \w+ = (query|mutation|action|internalQuery|internalMutation|internalAction)\(/.test(credentials)) {
-    record("credential containment", "fail", "credentials.ts exports a Convex endpoint");
+  const PUBLIC = /export const \w+(\s*:\s*\w+)? = (query|mutation|action|httpAction)\(/;
+  if (PUBLIC.test(credentials)) {
+    record("credential containment", "fail", "credentials.ts exports a PUBLIC Convex endpoint");
+    return;
+  }
+
+  // Internal endpoints are allowed, but not from a **public query or mutation**.
+  //
+  // A public query or mutation returns its result straight to the browser, so
+  // one that reaches a credential is a leak. An `action` or `httpAction` is
+  // different: it runs on the server and a client can only ask it to do its
+  // documented job, so an action that *uses* a token (the sync) is legitimate —
+  // what matters there is that its return value carries no credential, which is
+  // asserted by the unit fixtures rather than by this gate.
+  const internalNames = [...credentials.matchAll(/export const (internal\w+) = internal\w+\(/g)].map(
+    (m) => m[1],
+  );
+  const reachable: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".ts")) continue;
+    if (name.startsWith("_generated") || name === "credentials.ts" || name === "schema.ts") continue;
+    const code = stripComments(readFileSync(join(dir, name), "utf8"));
+    for (const block of publicResultReturningFunctions(code)) {
+      for (const internal of internalNames) {
+        if (block.includes(internal)) reachable.push(`${name}:${block.slice(0, 40)} -> ${internal}`);
+      }
+    }
+  }
+  if (reachable.length > 0) {
+    record(
+      "credential containment",
+      "fail",
+      `internal credential endpoint(s) reached from a public query/mutation: ${reachable.join(", ")}`,
+    );
     return;
   }
 
   record(
     "credential containment",
     "pass",
-    `${scanned} modules scanned; credentials.ts exports no endpoint (ADR-014)`,
+    `${scanned} modules scanned; credentials.ts exports no public endpoint ` +
+      `(${internalNames.length} internal, unreachable by name elsewhere) (ADR-014)`,
   );
 }
 
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+/**
+ * The source of every public `query` / `mutation` in a module.
+ *
+ * `httpAction` is deliberately absent: it returns a `Response`, not data, so
+ * "a credential endpoint was used" is not the same as "a credential was
+ * returned". The OAuth callback is exactly that case — it must read the state to
+ * redeem it — and what actually protects it is that the redirect it builds
+ * carries no token, which the unit fixtures assert.
+ *
+ * Sliced from the declaration to the next `export const`, which is crude and
+ * deliberately so: a gate that has to be right about *where* a string appears
+ * should not depend on a parser, and an over-wide slice can only produce a
+ * false positive (a reported leak that is not one), never a missed one.
+ */
+function publicResultReturningFunctions(code: string): string[] {
+  const blocks: string[] = [];
+  const re = /export const (\w+)(\s*:\s*\w+)? = (query|mutation)\(/g;
+  for (let m = re.exec(code); m; m = re.exec(code)) {
+    const start = m.index;
+    const next = code.indexOf("export const ", start + 1);
+    blocks.push(code.slice(start, next === -1 ? undefined : next));
+  }
+  return blocks;
+}
+
+function stripComments(source: string): string {  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 
 function checkSupersededAdrs(changelog: string) {

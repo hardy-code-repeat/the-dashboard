@@ -25,6 +25,8 @@ import {
 import {
   openTasks,
   upcomingDeadlines,
+  upcomingEvents,
+  type CalendarView,
   type ConnectionView,
   type DeadlineView,
   type DocumentView,
@@ -40,6 +42,8 @@ export interface RuleInput {
   deadlines: DeadlineView[];
   connections: ConnectionView[];
   documents: DocumentView[];
+  /** Meetings from a connected calendar. Empty when nothing is connected. */
+  calendar?: CalendarView[];
   /** Areas the user has switched on, so a task in a disabled area stays quiet. */
   enabledAreas: string[];
   /** The tax year the deadline list belongs to, for the detail line. */
@@ -63,6 +67,12 @@ export const HARD_KINDS: readonly string[] = [
   "document.incomplete",
   "connection.unfinished",
   "connection.stale",
+  // A meeting that is about to start. Phase 2 adds it, and it is here rather
+  // than in the ranked half for the same reason a task inside the four-hour
+  // window is: someone who can dismiss it, or train a model to bury it, will
+  // eventually do so, and "I am in a meeting in twenty minutes" is not a
+  // preference.
+  "calendar.imminent",
 ];
 
 const HARD_KIND_SET = new Set(HARD_KINDS);
@@ -251,6 +261,51 @@ export function documentRules(input: RuleInput, now: number): AttentionCandidate
 }
 
 /**
+ * Meetings that are about to start.
+ *
+ * The hard half only, on the same four-hour rule `taskRules` uses: inside the
+ * window a meeting is an event, outside it the item is either ranked or simply
+ * not attention — a meeting tomorrow morning is not something to interrupt
+ * someone about at lunchtime.
+ *
+ * Severity rises towards the start and reaches 0.9 at the moment it begins, so
+ * a meeting can be *pinned* rather than merely ranked. That is deliberate: the
+ * `now` section is capped at three, and a pinned item is rank 1 by definition
+ * and immune to the cap (ADR-006, §5.7).
+ *
+ * A private event contributes its title as the literal `"Busy"`, which is all
+ * Panel ever received — there is nothing to redact here because nothing else was
+ * stored (§7.3).
+ */
+export function calendarRules(input: RuleInput, now: number): AttentionCandidate[] {
+  const out: AttentionCandidate[] = [];
+
+  for (const event of upcomingEvents(input.calendar ?? [], now)) {
+    const hoursAway = (event.startsAt! - now) / HOUR_MS;
+    if (hoursAway > URGENT_WINDOW_HOURS) continue;
+
+    const urgency = clamp01(1 - Math.max(hoursAway, 0) / URGENT_WINDOW_HOURS);
+    const severity = clamp01(0.45 + urgency * 0.45);
+
+    out.push({
+      kind: "calendar.imminent",
+      sourceId: event._id,
+      section: "now",
+      class: "hard",
+      severity,
+      title: event.title,
+      detail: event.allDay ? "All day" : undefined,
+      dueAt: event.startsAt,
+      escalation: escalate(event.startsAt, severity, now),
+      pinned: hoursAway <= 0,
+      action: { label: "Open", kind: "event.open" },
+    });
+  }
+
+  return out;
+}
+
+/**
  * Every hard rule, in one call.
  *
  * The order here is the order rules are listed for a human, and it is also the
@@ -261,6 +316,7 @@ export function hardRules(input: RuleInput, now: number): AttentionCandidate[] {
   return [
     ...taskRules(input, now),
     ...deadlineRules(input, now),
+    ...calendarRules(input, now),
     ...connectionRules(input, now),
     ...documentRules(input, now),
   ];

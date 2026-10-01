@@ -3,9 +3,17 @@ import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { buildAttention, SECTION_BUDGET, type AttentionFeedback } from "../lib/attention/pipeline";
+import { allIntegrations } from "../lib/integrations/registry";
 import { learnedCandidates } from "../lib/attention/ranked";
 import { hardRules, isHardKind } from "../lib/attention/rules";
-import type { ConnectionView, DeadlineView, DocumentView, TaskView } from "../lib/attention/sources";
+import {
+  calendarSuppressed,
+  type CalendarView,
+  type ConnectionView,
+  type DeadlineView,
+  type DocumentView,
+  type TaskView,
+} from "../lib/attention/sources";
 import {
   emptyBehaviour,
   extractFeatures,
@@ -125,7 +133,14 @@ export const getAttention = query({
 
     const now = Date.now();
 
-    const [tasks, areas, connections, gathered, profile, feedback] = await Promise.all([
+    // The space comes first: the calendar read is scoped by it, and a user with
+    // no space yet has no events to suppress.
+    const space = await ctx.db
+      .query("spaces")
+      .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
+      .first();
+
+    const [tasks, areas, connections, gathered, profile, feedback, events] = await Promise.all([
       ctx.db
         .query("tasks")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
@@ -148,6 +163,12 @@ export const getAttention = query({
         .unique()
         .catch(() => null),
       loadFeedback(ctx, userId),
+      space
+        ? ctx.db
+            .query("calendarEvents")
+            .withIndex("by_space", (q) => q.eq("spaceId", space._id))
+            .collect()
+        : Promise.resolve([]),
     ]);
 
     const countryCode = (profile?.country ?? "US") as keyof typeof COUNTRIES;
@@ -196,11 +217,39 @@ export const getAttention = query({
       missing: missingLabels,
     }));
 
+    /**
+     * Meetings, unless the calendar is too old to trust.
+     *
+     * §7.2: past `staleSuppressHours` the connection is suppressed from
+     * Attention entirely — not greyed out, *absent*. A week-old calendar is a
+     * list of meetings that have already been moved, and interrupting someone
+     * about one is worse than saying nothing. The banner threshold is lower and
+     * is handled by `connectionRules`, which is where a "this may be out of
+     * date" message belongs.
+     *
+     * Computed from the registry's own number rather than a local constant, so
+     * the policy lives in one place: `IntegrationDef.staleSuppressHours`.
+     */
+    const calendarDef = allIntegrations().find((d) => d.slug === "google-calendar");
+    const suppressed = calendarSuppressed(connectionViews, calendarDef?.staleSuppressHours ?? 168, now);
+
+    const calendarViews: CalendarView[] = suppressed
+      ? []
+      : events.map((e) => ({
+          _id: e._id,
+          title: e.title,
+          startsAt: e.startsAt ?? null,
+          endsAt: e.endsAt ?? null,
+          allDay: e.allDay === true,
+          cancelled: e.cancelled === true,
+        }));
+
     const ruleInput = {
       tasks: taskViews,
       deadlines: deadlineViews,
       connections: connectionViews,
       documents: documentViews,
+      calendar: calendarViews,
       enabledAreas: areas.map((a) => a.slug),
       taxYearLabel: country.taxYearLabel(taxYear),
     };

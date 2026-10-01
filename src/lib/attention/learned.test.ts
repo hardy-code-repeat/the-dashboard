@@ -375,6 +375,10 @@ test("ADR-006 — the server's hard-kind list covers exactly what the rules emit
       { _id: "c2", provider: "gcal", label: "Old", status: "connected", connectedAt: NOW - 9 * DAY },
     ],
     documents: [{ requirementId: "w2", label: "W-2", readiness: 0.9, missing: ["x"] }],
+    calendar: [
+      { _id: "e1", title: "Standup", startsAt: NOW + HOUR, endsAt: NOW + 2 * HOUR },
+      { _id: "e2", title: "Later", startsAt: NOW + 30 * HOUR, endsAt: NOW + 31 * HOUR },
+    ],
     enabledAreas: ["general"],
   };
   const emitted = new Set(hardRules(input, NOW).map((i) => i.kind));

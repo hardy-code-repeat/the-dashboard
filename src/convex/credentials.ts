@@ -349,6 +349,19 @@ export const internalProviderToken = internalQuery({
 });
 
 /**
+ * The OAuth state, for an action that is about to redeem it.
+ *
+ * The callback is an `httpAction`, and an action has no `db` — so `peekState`
+ * itself cannot be called from there. This is the endpoint that makes it
+ * reachable, and it is `internal` for the reason the other two are: it returns a
+ * PKCE verifier, which must never travel to a client.
+ */
+export const internalPeekState = internalQuery({
+  args: { state: v.string() },
+  handler: async (ctx, args) => peekState(ctx, args),
+});
+
+/**
  * Writes the token half of a completed OAuth flow.
  *
  * Internal for the same reason: it takes an access token as an argument, so it

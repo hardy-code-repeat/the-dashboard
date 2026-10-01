@@ -161,7 +161,7 @@ interface GoogleEvent {
  * look identical to "you have no meetings", and that is exactly the kind of
  * quiet failure this phase is supposed to eliminate.
  */
-export function normalizeEvent(raw: unknown, now: number): NormalizedObject | null {
+export function normalizeEvent(raw: unknown): NormalizedObject | null {
   if (typeof raw !== "object" || raw === null) return null;
   const event = raw as GoogleEvent;
 
@@ -334,7 +334,7 @@ export async function fetchGooglePage(
 
   const objects: NormalizedObject[] = [];
   for (const raw of rawItems) {
-    const normalized = normalizeEvent(raw, args.now);
+    const normalized = normalizeEvent(raw);
     if (normalized) objects.push(normalized);
   }
 

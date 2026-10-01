@@ -56,6 +56,22 @@ export interface DocumentView {
   missing: string[];
 }
 
+/**
+ * One meeting, as the rules are allowed to see it.
+ *
+ * Five fields. There is no description, no attendee and no location here,
+ * because there is no such column on the table — §7.3 is enforced by the schema
+ * and this interface only restates it for the rule side.
+ */
+export interface CalendarView {
+  _id: string;
+  title: string;
+  startsAt: number | null;
+  endsAt: number | null;
+  allDay?: boolean;
+  cancelled?: boolean;
+}
+
 const DAY_MS = 86_400_000;
 
 /** Open tasks only, soonest first. Completed rows are never attention. */
@@ -95,4 +111,47 @@ export function staleConnections(connections: ConnectionView[], now: number, sta
       return now - last >= staleAfterMs;
     })
     .sort((a, b) => (a.lastSyncedAt ?? a.connectedAt) - (b.lastSyncedAt ?? b.connectedAt));
+}
+
+/**
+ * Whether the calendar is too old to trust for Attention (§7.2).
+ *
+ * Past `staleSuppressHours` the connection is suppressed from the feed
+ * *entirely* — not greyed out, absent. A week-old calendar is a list of meetings
+ * that have already been moved, and interrupting someone about one is worse than
+ * saying nothing. The lower banner threshold is a different concern and belongs
+ * to `connectionRules`.
+ *
+ * Pure, and taking `now`, so the policy is testable from literals rather than by
+ * arranging a database seven days old.
+ *
+ * The thresholds come from the integration registry rather than a local
+ * constant, so the policy is stated in exactly one place.
+ */
+export function calendarSuppressed(
+  connections: ConnectionView[],
+  staleSuppressHours: number,
+  now: number,
+): boolean {
+  const google = connections.find((c) => c.provider === "google-calendar");
+  // No connection means no meetings to suppress, and nothing to suppress *for*:
+  // an unconnected calendar is not a broken one.
+  if (!google) return false;
+  const last = google.lastSyncedAt ?? google.connectedAt;
+  return now - last >= staleSuppressHours * 3_600_000;
+}
+
+/**
+ * Meetings still ahead, soonest first.
+ *
+ * Cancelled events are dropped here rather than in the query, so the rule can
+ * never see one no matter who calls it. All-day events are kept: an all-day
+ * meeting still starts at a time, and the clock does not care how it was
+ * entered.
+ */
+export function upcomingEvents(events: CalendarView[], now: number): CalendarView[] {
+  return events
+    .filter((e) => e.cancelled !== true && e.startsAt != null && e.startsAt >= now)
+    .slice()
+    .sort((a, b) => (a.startsAt ?? 0) - (b.startsAt ?? 0));
 }

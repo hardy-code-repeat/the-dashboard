@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
 import { AttentionFeed } from "@/components/AttentionFeed";
+import { CalendarStrip } from "@/components/CalendarStrip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -622,6 +623,8 @@ export default function Dashboard() {
 
           {/* ---------- SIDE COLUMN ---------- */}
           <aside className="flex flex-col gap-6">
+            <CalendarStrip />
+
             <section className="brutal-flat bg-card p-5">
               <h2 className="font-display mb-4 text-sm uppercase tracking-wide">Last 7 days</h2>
               <div className="flex h-32 items-end gap-2">

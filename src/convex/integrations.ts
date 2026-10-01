@@ -27,7 +27,7 @@ import { v } from "convex/values";
 import { diffBatch, keyFor, syncActivityKey, type StoredObject } from "../lib/integrations/batch";
 import { googleCalendarAdapter } from "../lib/integrations/google-calendar";
 import { adapterFor, allIntegrations, definitionFor, registerAdapter } from "../lib/integrations/registry";
-import { IntegrationFailure, type NormalizedObject } from "../lib/integrations/types";
+import { IntegrationFailure, type NormalizedLink, type NormalizedObject } from "../lib/integrations/types";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query } from "./_generated/server";
@@ -340,13 +340,13 @@ async function writeNormalizedBatch(
     batch: {
       provider: string;
       objects: NormalizedObject[];
-      links: unknown[];
+      links: NormalizedLink[];
       cursor: string | null;
       fetchedAt: number;
       complete: boolean;
     };
   },
-): Promise<{ creates: number; patches: number; unchanged: number; deletes: number; written: number }> {
+): Promise<{ creates: number; patches: number; unchanged: number; deletes: number; cancelled: number; written: number }> {
   const now = args.batch.fetchedAt;
   const stored = await loadStored(ctx, args.spaceId);
   const diff = diffBatch(args.batch, stored);
@@ -355,7 +355,14 @@ async function writeNormalizedBatch(
     creates: diff.creates,
     patches: diff.patches,
     unchanged: diff.unchanged,
-    deletes: diff.deletes,
+    // `deletes` counts rows that were **actually removed**, and `cancelled`
+    // counts rows that were kept and flagged instead. The diff engine calls both
+    // of them "delete", because from its side they are the same event: something
+    // upstream is no longer there. Reporting the diff's own number here would
+    // tell a caller "3 deleted" when one row survived as `cancelled`, which is
+    // the kind of small lie that makes a sync log impossible to trust.
+    deletes: 0,
+    cancelled: 0,
     written: 0,
   };
   // Nothing to do is a successful outcome, not an error, and it must not
@@ -427,16 +434,17 @@ async function applyUpstreamDelete(
   kind: string,
   key: string,
   now: number,
-  counts: { written: number },
+  counts: { written: number; deletes: number; cancelled: number },
 ): Promise<void> {
   const existing = await findByKey(ctx, spaceId, kind, key);
   if (!existing) return;
 
   if (kind === "calendarEvent") {
-    const startsAt = existing.startsAt ?? null;
+    const startsAt = (existing as { startsAt?: number | null }).startsAt ?? null;
     if (startsAt != null && startsAt >= now) {
       await ctx.db.patch(storedId(kind, existing), { cancelled: true });
       counts.written += 1;
+      counts.cancelled += 1;
       return;
     }
   }
@@ -444,6 +452,7 @@ async function applyUpstreamDelete(
   await markDerivedOrphaned(ctx, existing.ownerUserId);
   await ctx.db.delete(storedId(kind, existing));
   counts.written += 1;
+  counts.deletes += 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,8 +642,23 @@ async function upsertConnection(
  * A kind with no table here refuses rather than being quietly dropped, because a
  * silent drop looks identical to a provider that simply had nothing to say.
  */
+/**
+ * The normalised kinds that have a typed table to land in.
+ *
+ * Deliberately a type and not a runtime list: a `const` array would be read by
+ * nobody, and a list nothing reads is a list that goes stale. `insertObject` is
+ * where a kind outside this set refuses, which is the only place the answer
+ * matters.
+ */
+/**
+ * The normalised kinds that have a typed table to land in.
+ *
+ * A list *and* a type, because both are load-bearing: the type narrows the
+ * loader, and the list is what `insertObject` checks before it branches. A kind
+ * added to one and not the other fails here rather than silently becoming a
+ * no-op.
+ */
 const SYNCED_KINDS = ["expense", "calendarEvent"] as const;
-
 type SyncedKind = (typeof SYNCED_KINDS)[number];
 
 async function loadStored(ctx: Ctx, spaceId: Id<"spaces">): Promise<StoredObject[]> {
@@ -650,7 +674,7 @@ async function loadStored(ctx: Ctx, spaceId: Id<"spaces">): Promise<StoredObject
   return [
     ...expenses.map((r) => stored("expense", r.externalId, r)),
     ...events.map((r) => stored("calendarEvent", r.externalId, r)),
-  ];
+  ].filter((s): s is StoredObject => s !== null);
 }
 
 function stored(kind: SyncedKind, externalId: string | undefined, row: unknown): StoredObject | null {
@@ -694,7 +718,7 @@ function storedId(kind: string, row: { _id: string }): Id<"expenses"> | Id<"cale
   return row._id as Id<"expenses"> | Id<"calendarEvents">;
 }
 
-const EXPENSE_BUCKETS: readonly string[] = [
+const EXPENSE_BUCKETS = [
   "Software & subscriptions",
   "Equipment",
   "Home office",
@@ -706,9 +730,9 @@ const EXPENSE_BUCKETS: readonly string[] = [
   "Education & training",
   "Office supplies",
   "Uncategorised",
-];
+] as const;
 
-const EXPENSE_CONFIDENCE: readonly string[] = ["high", "medium", "low", "confirmed"];
+const EXPENSE_CONFIDENCE = ["high", "medium", "low", "confirmed"] as const;
 
 /**
  * Narrows a provider-supplied value into a closed vocabulary.
@@ -719,8 +743,10 @@ const EXPENSE_CONFIDENCE: readonly string[] = ["high", "medium", "low", "confirm
  * break a user's finance screen, and a silent crash on a schema validator is a
  * far worse outcome than one uncategorised row the user can fix.
  */
-function narrow(value: unknown, allowed: readonly string[], fallback: string): string {
-  return typeof value === "string" && allowed.includes(value) ? value : fallback;
+function narrow<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
 }
 
 async function insertObject(
@@ -732,15 +758,42 @@ async function insertObject(
   externalId: string,
   fields: Record<string, unknown>,
 ): Promise<void> {
-  if (kind !== "expense") {
-    throw new Error(
-      `Phase 1.5 has no table for normalised kind "${kind}". Refusing rather than inventing a generic one.`,
-    );
-  }
-// `externalId` is supplied separately because it is the idempotency key and
-  // must not be taken from an arbitrary field bag.
+  // `externalId` is supplied separately because it is the idempotency key and
+  // must not be taken from an arbitrary field bag; `changedAt` belongs on the
+  // row's `upstreamChangedAt` column rather than in the field bag.
   const rest: Record<string, unknown> = { ...fields };
   delete rest.externalId;
+  delete rest.changedAt;
+
+  // The check the list exists for, thrown before any write so a caller sees a
+  // refusal rather than a half-written row.
+  if (!(SYNCED_KINDS as readonly string[]).includes(kind)) {
+    throw new Error(
+      `No table for normalised kind "${kind}". Refusing rather than inventing a generic one.`,
+    );
+  }
+
+  if (kind === "calendarEvent") {
+    await ctx.db.insert("calendarEvents", {
+      ownerUserId: userId,
+      spaceId,
+      provider,
+      externalId,
+      title: typeof rest.title === "string" ? rest.title : "Busy",
+      isPrivate: rest.isPrivate === true,
+      startsAt: typeof rest.startsAt === "number" ? rest.startsAt : null,
+      endsAt: typeof rest.endsAt === "number" ? rest.endsAt : null,
+      allDay: rest.allDay === true,
+      sourceUrl: typeof rest.sourceUrl === "string" ? rest.sourceUrl : undefined,
+      upstreamChangedAt: typeof fields.changedAt === "number" ? fields.changedAt : undefined,
+      createdAt: Date.now(),
+    });
+    return;
+  }
+
+  if (kind !== "expense") {
+  throw new Error(`Normalised kind "${kind}" has no writer.`);
+}
 
   await ctx.db.insert("expenses", {
     ownerUserId: userId,
@@ -755,8 +808,8 @@ async function insertObject(
     spentAt: typeof rest.spentAt === "number" ? rest.spentAt : Date.now(),
     source: provider,
     createdAt: Date.now(),
-    upstreamChangedAt: typeof rest.changedAt === "number" ? rest.changedAt : undefined,
-  } as never);
+    upstreamChangedAt: typeof fields.changedAt === "number" ? fields.changedAt : undefined,
+  });
 }
 
 /**
@@ -766,22 +819,24 @@ async function insertObject(
  * and the source going away is a reason to stop saying it is coming — not a
  * reason to delete their work. §7.2 deletion semantics, stated here rather than
  * left for whoever wires the first adapter.
+ *
+ * Phase 1.5 wrote `task.orphanedSource === false` here, which is almost never
+ * true: the column is optional and unset on every row created before it existed,
+ * and `addTask` does not set it to `false`. The effect was that the flag this
+ * function exists to set was, in practice, never set. Recorded as D31.
  */
-async function markDerivedOrphaned(ctx: Ctx, sourceId: Id<"expenses">): Promise<void> {
-  const source = await ctx.db.get(sourceId);
-  if (!source) return;
-
+async function markDerivedOrphaned(ctx: Ctx, ownerUserId: Id<"users">): Promise<void> {
   const tasks = await ctx.db
     .query("tasks")
-    .withIndex("by_owner", (q) => q.eq("ownerUserId", source.ownerUserId))
+    .withIndex("by_owner", (q) => q.eq("ownerUserId", ownerUserId))
     .collect();
 
   for (const task of tasks) {
-    // `orphanedSource` is the flag §7.2 names. It is set by kind, not by id,
-    // because a task derived from an expense is identified by its own source
-    // column rather than by a link row — and a task the user typed themselves
-    // has no source at all, so it is never touched here.
-    if (task.orphanedSource === false && task.origin === "integration") {
+    // `orphanedSource` is the flag §7.2 names. It is applied by origin, not by
+    // id, because a task derived from a provider object is identified by its
+    // own `origin` column rather than by a link row — and a task the user typed
+    // themselves has no origin, so it is never touched here.
+    if (task.origin === "integration" && task.orphanedSource !== true) {
       await ctx.db.patch(task._id, { orphanedSource: true });
     }
   }
