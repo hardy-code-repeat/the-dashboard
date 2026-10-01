@@ -59,6 +59,12 @@ export const objectKindValidator = v.union(
   v.literal("calendarEvent"),
   v.literal("area"),
   v.literal("connection"),
+  // Phase 3 feature 5. The two new object kinds, so `subscription.*` and
+  // `account.created` activity rows can name what they are about. Same
+  // reasoning as every other literal in this file: a closed union means an
+  // activity row cannot claim to be about something that does not exist.
+  v.literal("subscription"),
+  v.literal("account"),
 );
 export type ObjectKind = Infer<typeof objectKindValidator>;
 
@@ -101,6 +107,41 @@ export type LinkRel = Infer<typeof linkRelValidator>;
  * Activity taxonomy (§3.4). Closed: unknown kinds are a type error.
  * `meta` is scalar values only and is explicitly NOT a schema.
  */
+/**
+ * What an account is *for*, as a closed union (phase 3, feature 5, ADR-028).
+ *
+ * Deliberately narrow and deliberately useless for arithmetic. The point is to
+ * let the Finance area group obligations without asking the user to name things
+ * consistently, and to make an unknown value a compile error rather than a
+ * filter that silently drops a row.
+ */
+export const ACCOUNT_KINDS = ["checking", "savings", "cash", "credit", "investment"] as const;
+export const accountKindValidator = v.union(
+  v.literal("checking"),
+  v.literal("savings"),
+  v.literal("cash"),
+  v.literal("credit"),
+  v.literal("investment"),
+);
+export type AccountKind = Infer<typeof accountKindValidator>;
+
+/**
+ * How often a subscription bills (phase 3, feature 5).
+ *
+ * A closed union rather than a free-form number of days, because the annual
+ * cost is derived from it and a derived number is only trustworthy if its
+ * vocabulary is finite and its boundary cases have one place to be pinned by a
+ * fixture. `annualCost` in `src/lib/subscriptions.ts` is the only reader.
+ */
+export const SUBSCRIPTION_INTERVALS = ["weekly", "monthly", "quarterly", "yearly"] as const;
+export const subscriptionIntervalValidator = v.union(
+  v.literal("weekly"),
+  v.literal("monthly"),
+  v.literal("quarterly"),
+  v.literal("yearly"),
+);
+export type SubscriptionInterval = Infer<typeof subscriptionIntervalValidator>;
+
 export const ACTIVITY_KINDS = [
   "task.created",
   "task.completed",
@@ -124,6 +165,17 @@ export const ACTIVITY_KINDS = [
   "commitment.fulfilled",
   "commitment.cancelled",
   "commitment.followed_up",
+  // Phase 3 feature 5. `expense.added` is the last of D38's four leftovers:
+  // declared since phase 0B and written by nothing, because `life:addExpense`
+  // inserted its row and no activity row. Finance was the only product area
+  // mutating user data with no audit trail at all. The other four are this
+  // feature's own events, and all five are written and read back by
+  // `subscriptions:financeAudit`.
+  "subscription.created",
+  "subscription.updated",
+  "subscription.cancelled",
+  "subscription.deleted",
+  "account.created",
   "attention.acted",
   "attention.dismissed",
   "attention.snoozed",
@@ -168,6 +220,12 @@ export const activityKindValidator = v.union(
   v.literal("commitment.fulfilled"),
   v.literal("commitment.cancelled"),
   v.literal("commitment.followed_up"),
+  // Phase 3 feature 5. Mirrors ACTIVITY_KINDS above.
+  v.literal("subscription.created"),
+  v.literal("subscription.updated"),
+  v.literal("subscription.cancelled"),
+  v.literal("subscription.deleted"),
+  v.literal("account.created"),
   v.literal("attention.acted"),
   v.literal("attention.dismissed"),
   v.literal("attention.snoozed"),
@@ -980,7 +1038,16 @@ const schema = defineSchema(
     })
       .index("by_space", ["spaceId"])
       .index("by_owner", ["ownerUserId"])
-      .index("by_space_externalId", ["spaceId", "externalId"]),
+      .index("by_space_externalId", ["spaceId", "externalId"])
+      // Phase 3 feature 5 — D43. `getFinance` collected **every** expense the
+      // user had ever created on a reactively-subscribed query and filtered to
+      // the tax year in JavaScript. N4 closed that defect in phase 0B by
+      // asserting the set was "bounded", which is false: owner-scoped is not
+      // bounded, and an expense table only grows. This is D42's exact shape,
+      // arriving one feature earlier on the same query family. The range is on
+      // the local-time tax year so the rows returned are byte-identical to the
+      // `getFullYear()` filter it replaces, on any UTC offset.
+      .index("by_owner_spentAt", ["ownerUserId", "spentAt"]),
 
     /**
      * A meeting, cached from a connected calendar (§7.3, ADR-013).
@@ -1199,12 +1266,140 @@ const schema = defineSchema(
        */
       .index("by_owner_open", ["ownerUserId", "completed", "expectedAt"]),
 
-    // ---------- integrations ----------------------------------------------
+    /**
+     * A place money leaves from — a label, and nothing else (phase 3, feature 5,
+     * ADR-028).
+     *
+     * **There is no balance column, and that is the decision rather than an
+     * omission.** A balance is a derived value over transactions, a
+     * transaction is a ledger row, and §2.3 names the ledger as the thing Panel
+     * must not become: these products stop where an action is needed, and
+     * Panel's value is the part after that point.
+     *
+     * The minimisation argument is ADR-013's, applied to money. A private
+     * calendar event is stored as the literal `"Busy"` because the safest data
+     * is the data that was never stored. **The safest account is one that cannot
+     * be drained, because no column exists to type a number into** — and no
+     * account number, sort code, IBAN, card or merchant token exists either.
+     * A user who wants a balance has a ledger app; a user who wants to know
+     * what renews on the 14th does not, and that is what Panel now answers.
+     *
+     * A `kind` is a closed union rather than free text so the Finance area can
+     * group without the user having to name things consistently, and so an
+     * unknown value is a compile error instead of a filter that silently
+     * drops a row.
+     */
+    accounts: defineTable({
+      ...ownedBy,
+
+      /** What the user calls it: "Joint current". 1–60, trimmed. */
+      label: v.string(),
+
+      kind: accountKindValidator,
+
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"]),
+
+    /**
+     * A recurring charge with a known price and a known next renewal date
+     * (phase 3, feature 5, ADR-029).
+     *
+     * **The expiry logic is not here and never will be.** `documentId` points
+     * at a real `documents` row that `createSubscription` inserts in the same
+     * mutation, and every read resolves through it. `document.expiring`
+     * already exists, already fires, and its `by_owner_expiry` range already
+     * narrows the attention read to exactly the documents that have an
+     * expiry — so this feature adds **no attention kind, no section, no rule
+     * and no read** to `getAttention`. The same shape as `tasks.documentId`
+     * (ADR-026) and `tasks.commitmentId` (ADR-027): the related row holds
+     * nothing, and the relation resolves on read.
+     *
+     * **Why not a `renewsAt` column plus a new rule.** That is a second expiry
+     * model, and two expiry models disagree the moment a lead time or a
+     * boundary case is fixed in one and not the other. It would also re-open
+     * F3's one-renewal-one-item guard, which exists precisely because one
+     * renewal producing two feed items is a defect.
+     *
+     * **The money cannot live on `documents`.** A passport has no price and
+     * no billing interval, and R-007 defines a document as a label, an expiry
+     * and a lead time. Putting `amount` on `documents` would drag Life Admin
+     * into Finance, so the two compose through a pointer instead.
+     *
+     * **No currency column.** There is no rate source and no approved
+     * integration, so an amount is in the user's profile currency and Panel
+     * does not convert. Storing a currency without a conversion story would
+     * be a number that is silently wrong rather than visibly absent.
+     *
+     * `amount` is a float and deliberately stays one. See ADR-028's sibling
+     * note in the scope block: every write path rejects a non-finite amount,
+     * because a NaN reaching `estimateTax` yields a *plausible* number, which
+     * is worse than a crash.
+     */
+    subscriptions: defineTable({
+      ...ownedBy,
+
+      /** What the user calls it: "Netflix". 1–80, trimmed. */
+      label: v.string(),
+
+      /**
+       * What it costs per billing period. Finite, positive and bounded — see
+       * `MAX_AMOUNT` in `src/lib/subscriptions.ts`, which is the one place
+       * that rule is defined.
+       */
+      amount: v.number(),
+
+      /**
+       * A **closed** interval, not a free-form "every 17 days". A closed union
+       * is what makes the derived annual cost checkable: an open vocabulary
+       * would push a calendar-arithmetic branch into every read, and the
+       * boundary cases (February, leap years, 28-day months) would have no
+       * single place to be pinned by a fixture.
+       */
+      interval: subscriptionIntervalValidator,
+
+      /**
+       * Where the money leaves from. Optional, and it is a **label pointer**:
+       * deleting an account detaches its subscriptions and reports the count
+       * rather than cascading, so tidying a label cannot destroy an
+       * obligation. Same rule `deleteDocument` and `deleteCommitment` use.
+       */
+      accountId: v.optional(v.id("accounts")),
+
+      /**
+       * The renewal document (ADR-029). **Always present.** A subscription
+       * with no recorded renewal date is expressible — the document simply
+       * has no `expiresAt`, which is a real and permanently silent state — but
+       * a subscription that has lost its document is not expressible at all.
+       */
+      documentId: v.id("documents"),
+
+      /**
+       * Cancel stops the charging and the reminders. `reactivating` is the
+       * inverse and is what keeps "cancel" from being a one-way door.
+       */
+      cancelled: v.optional(v.boolean()),
+      cancelledAt: v.optional(v.number()),
+
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      // One subscription per document, and — more importantly — the read that
+      // resolves `documentId` back to a subscription is a point lookup rather
+      // than a per-row `get`. A subscription list is bounded at 200, so a
+      // per-row get would be a 200-query N+1 on a reactively-subscribed
+      // query: D41 again, in a new hat.
+      .index("by_owner_document", ["ownerUserId", "documentId"])
+      .index("by_owner_account", ["ownerUserId", "accountId"]),
 
     /**
      * A tool the user has connected. `credentials` holds the token supplied by
      * the provider's own OAuth flow; it never leaves the server.
      */
+    // ---------- integrations ----------------------------------------------
+
     connections: defineTable({
       ...ownedBy,
       /** Catalogue slug, e.g. "google-calendar". */

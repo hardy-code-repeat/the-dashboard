@@ -1252,6 +1252,12 @@ it, and how do we know it works?"**
 | REQ-050 | Panel creates no task for a commitment without the user asking | ADR-027 | 3 |
 | REQ-051 | An overdue promise and an overdue wait are both hard attention, in existing sections | ADR-006 | 3 |
 | REQ-052 | Capture infers neither a commitment nor a direction | — | 3 (Q-007) |
+| REQ-053 | A subscription owns its renewal document; expiry logic is never duplicated | ADR-029 | 3 |
+| REQ-054 | An account is a label, and a balance is a ledger | ADR-028 | 3 |
+| REQ-055 | A stored status, annual cost or balance is never a second copy of another field | ADR-025, ADR-028 | 3 |
+| REQ-056 | No money write accepts a non-finite amount or an unbounded magnitude | — | 3 |
+| REQ-057 | A renewal-shaped object reaches Attention only through the existing chain | ADR-029 | 3 |
+| REQ-058 | Deleting an account or subscription detaches, and reports the count | ADR-028 | 3 |
 
 ### 12.2 Full chains
 
@@ -1354,6 +1360,19 @@ it, and how do we know it works?"**
 | REQ-015 | ADR-010 | 3F | TASK-3F-036 | AC-3F-313 | TEST-3F-008 "A13" — measured **in isolation**, because earlier sections complete tasks on purpose | CHANGE-0016 |
 | REQ-023 | ADR-009 | 3F | TASK-3F-037 | AC-3F-314 | TEST-3F-008 — the `by_owner_open` range and the explicit `.take` | CHANGE-0016 — **this check found D42** |
 | REQ-016 | ADR-016 | 3F | TASK-3F-038 | AC-3F-315 | TEST-3F-009 (budget audit of the feature's own file set) | CHANGE-0016 — 4 of 4 files, 1 of 1 table, 0 deps, 1 abstraction |
+| REQ-053 | ADR-029 | 3F | TASK-3F-039 | AC-3F-401, AC-3F-402 | TEST-3F-010 (`src/lib/subscriptions.test.ts`, 27 fixtures); TEST-3F-011 (`scripts/conformance-5f.ts`) | CHANGE-0017 |
+| REQ-057 | ADR-029 | 3F | TASK-3F-040 | AC-3F-401, AC-3F-402 | TEST-3F-011 "A1", "A2" — **no new kind, section, rule or read** | CHANGE-0017 — the whole cost of the feature in the feed |
+| REQ-055 | ADR-025 | 3F | TASK-3F-041 | AC-3F-403, AC-3F-404 | TEST-3F-010 — the exhaustive interval table; TEST-3F-011 "A3" | CHANGE-0017 |
+| REQ-056 | — | 3F | TASK-3F-042 | AC-3F-405, AC-3F-406 | TEST-3F-010 (guards by exhaustion); TEST-3F-011 "A4" | CHANGE-0017 — **this check found D44** |
+| REQ-056 | — | 3F | TASK-3F-043 | AC-3F-407 | TEST-3F-011 "A5", "A6" | CHANGE-0017 — **this check found D43** |
+| REQ-054 | ADR-028 | 3F | TASK-3F-044 | AC-3F-408 | TEST-3F-011 "A7" | CHANGE-0017 |
+| REQ-009 | ADR-009 | 3F | TASK-3F-045 | AC-3F-409 | TEST-3F-011 "A8" — a second account sees nothing; a foreign id refused on all six paths; a `documentId` cannot be smuggled in | CHANGE-0017 |
+| REQ-058 | ADR-028 | 3F | TASK-3F-046 | AC-3F-410 | TEST-3F-011 "A9" | CHANGE-0017 |
+| REQ-032 | ADR-019 | 3F | TASK-3F-047 | AC-3F-411 | TEST-3F-011 "A10" — six kinds read back, not assumed | CHANGE-0017 — **this check found D46** |
+| REQ-015 | ADR-010 | 3F | TASK-3F-048 | AC-3F-412 | TEST-3F-011 "A11" — measured **in isolation** | CHANGE-0017 — no OCC re-run: `assistant.ts` untouched, no assistant state written |
+| REQ-052 | — | 3F | TASK-3F-049 | AC-3F-413 | TEST-3F-011 "A12" — capture creates zero subscriptions and zero accounts (Q-007 interim) | CHANGE-0017 |
+| REQ-031 | ADR-021 | 3F | TASK-3F-050 | AC-3F-414 | TEST-3F-011 "A13" — 34 `tax.test.ts` fixtures, the tax checklist, the six-area catalogue | CHANGE-0017 |
+| REQ-016 | ADR-016 | 3F | TASK-3F-051 | AC-3F-415 | TEST-3F-012 (budget audit of the feature's own file set) | CHANGE-0017 — 4 of 6 files, 2 of 2 tables, 0 deps, 1 abstraction |
 
 **Phase 3 feature 4 acceptance criteria → test mapping**
 
@@ -1374,6 +1393,83 @@ it, and how do we know it works?"**
 | AC-3F-313 | `FEATURE_COUNT` 12, `weightsVersion` 1, and a commitment moves no weight | `conformance-4f.ts` "A13" | PASS, live — four commitment mutations, zero samples, zero weight movement; and the follow-up task it created **did** train |
 | AC-3F-314 | Every read is index-scoped, owner-prefixed and bounded | `conformance-4f.ts` "A14" + the D42 correction | PASS — `by_owner_open` range, explicit `.take(200)` |
 | AC-3F-315 | Budget: 4 files / 1 table / 0 deps / 1 abstraction | CHANGE-0016 | PASS — 4 / 1 / 0 / 1 |
+
+**Phase 3 feature 5 acceptance criteria → test mapping**
+
+| AC | Criterion | Where verified | Result |
+|---|---|---|---|
+| AC-3F-401 | A subscription is created together with its renewal document, so one cannot exist unwatched | `conformance-5f.ts` "A1" | PASS, live — `documentId` returned by the create, and a smuggled `documentId` is refused |
+| AC-3F-402 | A renewal inside the lead window produces **exactly one** `document.expiring` item, and Panel adds no kind, section, rule or read | `conformance-5f.ts` "A1", "A2" | PASS, live — 1 item, class `hard`, section `deadlines`, zero `subscription.*` kinds present |
+| AC-3F-403 | Annual cost is derived, never stored, and correct for every closed interval | `subscriptions.test.ts`; `conformance-5f.ts` "A3" | PASS — all four intervals, plus the exact values where a double misbehaves (`0.07 × 12`) |
+| AC-3F-404 | The stored amount is never rewritten by rounding | `conformance-5f.ts` "A3", "A5" | PASS, live — 0.1 and 0.2 still exactly 0.1 and 0.2 |
+| AC-3F-405 | `NaN`, both infinities, zero, negatives and the magnitude ceiling are refused | `subscriptions.test.ts`; `conformance-5f.ts` "A4" | PASS, live — on `addExpense`, `createSubscription` and `saveTaxProfile` |
+| AC-3F-406 | Zero income is allowed, because no declared income is a real answer | `conformance-5f.ts` "A4" | PASS, live |
+| AC-3F-407 | An emitted bucket total is a clean 2dp number, and `getFinance` reads an index range over the tax year on local-time bounds | `conformance-5f.ts` "A5", "A6" | PASS, live — **this check found D43** |
+| AC-3F-408 | An account holds a label and a kind, and no balance column exists | `conformance-5f.ts` "A7" | PASS, live — the payload is exactly `id, label, kind, createdAt`; an unknown kind is refused |
+| AC-3F-409 | Every read and write is owner-scoped; a foreign id is refused on all six paths | `conformance-5f.ts` "A8" | PASS, live — including a foreign `accountId` and a smuggled `documentId` |
+| AC-3F-410 | Deleting an account detaches its subscriptions, reports the count, and leaves another account alone | `conformance-5f.ts` "A9" | PASS, live — detached 3, 4 survived as ungrouped, the other account untouched |
+| AC-3F-411 | `expense.added` and all five new kinds are written and read back | `conformance-5f.ts` "A10" | PASS, live — **this check found D46** |
+| AC-3F-412 | `FEATURE_COUNT` 12, `weightsVersion` 1, and a subscription moves no weight | `conformance-5f.ts` "A11" | PASS, live — zero samples, zero weight movement |
+| AC-3F-413 | Capture infers no subscription and creates no account | `conformance-5f.ts` "A12" | PASS, live (Q-007 interim) |
+| AC-3F-414 | The tax checklist, the 34 tax fixtures and the six-area catalogue are unchanged | `bun test`; `conformance-5f.ts` "A13" | PASS, live |
+| AC-3F-415 | Budget: 6 files / 2 tables / 0 deps / 1 abstraction | CHANGE-0017 | PASS — 4 / 2 / 0 / 1 |
+
+##### 12.0 Scope block — Subscriptions + Account Labels (Finance expansion)
+
+| Field | Value |
+|---|---|
+| **Feature** | Subscriptions + account labels — the recurring money Panel knows about, and the accounts it comes out of |
+| **Approval** | **APPROVED by Hardik, 2026-10-01**, on the standing roadmap approval. The `03_PRODUCT_CONTEXT.md` capability row still reads `RESEARCHED` / "Not specified" and §3.2 named Finance as gated on user research that has not happened; both were answered by that approval and are **recorded rather than edited away**. |
+| **Problem it solves** | A subscription is a **number** until its renewal is an **action**, and today Panel only holds the number. "£9.99/month" exists solely as an `expenses` row with a `Software & subscriptions` bucket: it is aggregated into a tax estimate, it is never dated, and the user cannot answer "what renews this month, and what does that cost me a year?" — which is the only reason a finance app is opened. Accounts are worse: Panel has **no account object at all**, so obligations cannot be grouped by where the money goes, and there is nowhere to put a balance — correctly, because a balance is a ledger (ADR-028). §2.3 states the thesis this feature implements: ledgers *stop where an action is needed*, and Panel's entire value is the part after that point. |
+| **User outcome** | Every recurring obligation in one place, with its next renewal date and its **annual cost**, reaching Attention through the expiry→renewal chain Panel already has. The user learns, without opening anything, that three renewals fall in the next 30 days and cost £412 a year. |
+| **IN SCOPE** | An `accounts` table holding a **label and a kind only** — no balance, no number, no institution id, no transactions (ADR-028). A `subscriptions` table: label, amount, a **closed** billing interval, the next renewal date, an optional `accountId`, and a `documentId` **pointing at a real `documents` row the subscription itself creates** (ADR-029). A derived annual cost and a four-state lifecycle in `src/lib/subscriptions.ts`. A Subscriptions block inside the **existing Finance area** — no new slug, no new tab, no new Page. Fixing **D43** (the unbounded expense read) and **D44** (`NaN` amounts), and writing the `expense.added` activity kind that D38 recorded as declared-but-never-written. |
+| **OUT OF SCOPE** | Any balance, transaction, ledger, or double-entry anything — §2.3 forbids it outright · account numbers, sort codes, IBANs, card or merchant credentials · exchange rates or multi-currency conversion · bank connectivity (blocked on credentials and D32 regardless) · CSV or OFX import · loans, assets, liabilities, investments, net worth, cash flow, financial goals · a finance-specific attention section or prioritiser · a second expiry or renewal model · a `status` column · capture inferring a subscription (Q-007) · automatic cancellation, payment or any external action · **moving money off the float representation** (see MONEY, below) |
+| **DO NOT TOUCH** | `src/lib/nlp.ts` token loop (#7) · scorer maths (#6) · `recordOutcome` (#8) · ADR-010 feature layout · `taxDocuments` and `toggleDocument` · the §5.7 section budgets · the Finance disclaimer position (MAIN_AGENT P10) · features 3 and 4 wholesale (ADR-025/026/027) · `estimateTax`, `readinessScore`, `mileageRateFor` and all 34 `tax.test.ts` fixtures |
+| **Terminology** | **Account** — a user-named place money leaves from, known only by its name and kind. **Subscription** — a recurring charge with a known price and a known next renewal date. **Annual cost** — derived, never stored. |
+
+**MONEY — the float decision, recorded with its consequences**
+
+`expenses.amount` and `taxProfile.grossIncome` stay `v.number()`. They were not migrated to minor units, because a migration rewrites the input to a verified tax estimate and the instruction is not to change existing financial semantics silently. The consequence is accepted and guarded rather than fixed:
+
+- **Every write path rejects a non-finite amount** (`Number.isFinite`) and a magnitude above `MAX_AMOUNT`. A NaN that reaches `estimateTax` does not produce an obvious failure — it produces a *plausible* number, which is the one outcome worse than a crash.
+- **Sums are rounded at the presentation boundary, never at rest.** `0.1 + 0.2` is reachable in a bucket total; rounding on write would corrupt the stored value to hide a display artefact, so the accumulator stays exact and `round2` is applied when a total is emitted.
+- **The tax-year filter is a local-time range**, matching the `getFullYear()` semantics it replaces exactly. A UTC range would silently move the boundary day for every user outside UTC, which is a worse defect than the one it fixes.
+
+**Why a subscription owns a `documents` row rather than duplicating expiry logic**
+
+`src/lib/subscriptions.ts` computes *annual cost* and *how much is left on the subscription*; it computes **nothing** about whether a document is expiring. That is `document.expiring`'s job, it already exists, and a second expiry model is the exact hazard F3 refused. So a subscription is **created together with** its document, and every subsequent read resolves `subscriptions.documentId → documents` — the ADR-026 shape, where the related row holds nothing and the relation resolves on read. Two consequences fall out for free:
+
+- **Zero new attention code.** `getAttention` gains no new source, no new read and no new rule. The `by_owner_expiry` range already covers the set.
+- **One renewal, one item — still true.** There is exactly one producer of "this is expiring", so the F3 anti-duplication guard is preserved rather than re-litigated.
+
+**Why account labels and not accounts**
+
+An account here is a *label the user chose*, so Panel can say "£412/yr across Joint current and Amex". It is deliberately incapable of holding a balance: a balance is a derived value over transactions, a transaction is a ledger row, and a ledger is what §2.3 names as the thing Panel must not become. A half-built account that stores a balance the user types in would be a number Panel cannot verify and cannot update — the worst of both.
+
+**ACCEPTANCE CRITERIA**
+
+1. A subscription with a renewal date inside its lead window produces **exactly one** `document.expiring` hard item, and Panel adds **no** new attention kind, section or rule.
+2. A subscription with no renewal date produces no document item; setting a date produces one; moving the date out of the window removes it.
+3. Annual cost is derived, never stored, and is correct for every closed interval; it is never a second copy of `amount`.
+4. `NaN`, `Infinity` and `-Infinity` are refused on `addExpense`, `saveTaxProfile` and `createSubscription`; a negative or zero amount is refused; an amount above `MAX_AMOUNT` is refused.
+5. A bucket total emitted to the client is rounded to 2dp; the stored expense amounts are unchanged by that rounding.
+6. `getFinance` reads expenses through a `by_owner_spentAt` **range** over the tax year, not a collect-then-filter (D43), and the set it returns is identical to the pre-change set for a user on any UTC offset.
+7. An account holds a label and a kind and **no** balance column exists anywhere in the schema.
+8. Every read and write is owner-scoped; a foreign `accountId`, `documentId` or `subscriptionId` is refused on every path.
+9. Deleting an account **detaches** its subscriptions and reports the count; it deletes nothing else.
+10. `expense.added` and all four `subscription.*` kinds are written and read back with real values — D38's Finance leftover closed.
+11. `FEATURE_COUNT` is 12, `WEIGHTS_VERSION` is 1, and no subscription or account mutation moves a weight.
+12. Capture creates zero subscriptions and zero accounts (Q-007 interim).
+13. All 34 `tax.test.ts` fixtures and the tax checklist are unchanged.
+
+**BUDGET** — 6 new files · 2 new tables (`accounts`, `subscriptions`) · 0 deps · 1 abstraction (`src/lib/subscriptions.ts`)
+
+| Budget item | Max | Used |
+|---|---|---|
+| New files | 6 | 5 — `src/lib/subscriptions.ts`, `src/lib/subscriptions.test.ts`, `src/convex/subscriptions.ts`, `scripts/conformance-5f.ts`, and the UI inside the **existing** `FinanceArea.tsx` (modified, not new) |
+| New tables | 2 | 2 |
+| New deps | 0 | 0 |
+| New abstractions | 1 | 1 |
 
 **Phase 0A (next)**
 

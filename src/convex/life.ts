@@ -1,4 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { isValidAmount, isValidNonNegativeAmount, MAX_AMOUNT, round2 } from "../lib/subscriptions";
 import type { GenericMutationCtx } from "convex/server";
 import { v } from "convex/values";
 
@@ -111,6 +112,25 @@ function requireAreaSlug(slug: string): AreaSlug {
   return def.slug as AreaSlug;
 }
 
+/**
+ * The single money guard for Finance (D44, and the scope block's MONEY note).
+ *
+ * Kept beside the bucket set rather than imported from
+ * `src/lib/subscriptions.ts` because this module predates it and `life.ts` is
+ * the older, simpler path. One rule, one name: `isValidAmount` is the single
+ * definition and both call sites go through it.
+ */
+function requireAmount(raw: number): number {
+  if (!isValidAmount(raw)) {
+    throw new Error(
+      Number.isNaN(raw)
+        ? "Amount must be a number"
+        : `Amount must be a positive amount of at most ${MAX_AMOUNT}`,
+    );
+  }
+  return raw;
+}
+
 const EXPENSE_BUCKETS = new Set<string>([
   "Software & subscriptions",
   "Equipment",
@@ -218,15 +238,42 @@ export const getFinance = query({
     // `saveTaxProfile` so the two can never diverge (defect N8).
     const filingYear = filingYearFor(now);
 
-    const [profile, expenses, gathered] = await Promise.all([
-      ctx.db
-        .query("taxProfile")
-        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .unique()
-        .catch(() => null),
+    // The profile is read first because the tax year it names is what bounds
+    // the expense read — see D43 below. Two steps rather than a
+    // `Promise.all`, and that is the honest dependency order, not a
+    // convenience: the year is the range key.
+    const profile = await ctx.db
+      .query("taxProfile")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+      .unique()
+      .catch(() => null);
+
+    const countryCode = (profile?.country ?? "US") as keyof typeof COUNTRIES;
+    const country = COUNTRIES[countryCode] ?? COUNTRIES.US;
+    const taxYear = profile?.taxYear ?? filingYear;
+
+    // ---- D43 ------------------------------------------------------------
+    // An index **range** over the tax year, not a collect-then-filter.
+    //
+    // This used to read every expense the user had ever created and discard
+    // all but one year, in JavaScript, on a reactively-subscribed query. Phase
+    // 0B closed that defect (N4) by recording the set as "bounded", which is
+    // simply false: owner-scoped is not bounded, and this table only grows.
+    // It is D42's shape arriving a feature early.
+    //
+    // The bounds are **local time**, constructed exactly as the `getFullYear()`
+    // test they replace. A UTC range would move the boundary day for every
+    // user not on UTC — trading an unbounded read for a silently wrong tax
+    // figure, which is the worse of the two.
+    const yearStart = new Date(taxYear, 0, 1).getTime();
+    const yearEnd = new Date(taxYear + 1, 0, 1).getTime() - 1;
+
+    const [yearExpenses, gathered] = await Promise.all([
       ctx.db
         .query("expenses")
-        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+        .withIndex("by_owner_spentAt", (q) =>
+          q.eq("ownerUserId", userId).gte("spentAt", yearStart).lte("spentAt", yearEnd),
+        )
         .collect(),
       ctx.db
         .query("taxDocuments")
@@ -234,11 +281,6 @@ export const getFinance = query({
         .collect(),
     ]);
 
-    const countryCode = (profile?.country ?? "US") as keyof typeof COUNTRIES;
-    const country = COUNTRIES[countryCode] ?? COUNTRIES.US;
-    const taxYear = profile?.taxYear ?? filingYear;
-
-    const yearExpenses = expenses.filter((e) => new Date(e.spentAt).getFullYear() === taxYear);
     const estimate = estimateTax({
       country: country.code,
       taxYear,
@@ -283,6 +325,9 @@ export const getFinance = query({
     const byBucket = new Map<string, { bucket: string; amount: number; count: number }>();
     for (const e of yearExpenses.filter((x) => x.deductible)) {
       const cur = byBucket.get(e.bucket) ?? { bucket: e.bucket, amount: 0, count: 0 };
+      // Accumulated exactly, rounded once on the way out. Rounding each add
+      // would accumulate display error into the total; rounding here would
+      // make the stored value stop being the number the user typed.
       cur.amount += e.amount;
       cur.count += 1;
       byBucket.set(e.bucket, cur);
@@ -328,7 +373,9 @@ export const getFinance = query({
         gathered: gatheredIds.has(d.id),
       })),
       expenses: yearExpenses.sort((a, b) => b.spentAt - a.spentAt),
-      buckets: [...byBucket.values()].sort((a, b) => b.amount - a.amount),
+      buckets: [...byBucket.values()]
+        .map((b) => ({ ...b, amount: round2(b.amount) }))
+        .sort((a, b) => b.amount - a.amount),
     };
   },
 });
@@ -346,7 +393,12 @@ export const saveTaxProfile = mutation({
     const userId = await requireUserId(ctx);
     const country = COUNTRIES[args.country as CountryCodeT];
     if (!country) throw new Error("Unsupported country");
-    if (args.grossIncome < 0) throw new Error("Income cannot be negative");
+    // D44 again, and the same trap: `grossIncome < 0` is false for NaN, and a
+    // NaN income produces a NaN estimate that renders as a number. Zero is
+    // allowed on purpose — no declared income is a real answer.
+    if (!isValidNonNegativeAmount(args.grossIncome)) {
+      throw new Error("Income must be a number between 0 and " + MAX_AMOUNT);
+    }
     const spaceId = await ensurePersonalSpace(ctx, userId);
 
     const now = new Date();
@@ -391,13 +443,22 @@ export const addExpense = mutation({
     const userId = await requireUserId(ctx);
     const label = args.label.trim();
     if (!label) throw new Error("Expense needs a description");
-    if (args.amount <= 0) throw new Error("Amount must be greater than zero");
+    // ---- D44 ------------------------------------------------------------
+    // `Number.isFinite`, not `amount <= 0`.
+    //
+    // `NaN <= 0` is `false`, so the old guard waved NaN straight through. A
+    // NaN amount poisons every `byBucket` sum and then the whole
+    // `estimateTax` result, and NaN does not render as an error — it renders
+    // as a number. In the one domain where a plausible wrong figure is worse
+    // than a crash, that is the defect that matters.
+    requireAmount(args.amount);
     const spaceId = await ensurePersonalSpace(ctx, userId);
 
     const guess = categoriseExpense(label);
     const bucket = args.bucket ? requireBucket(args.bucket) : (guess.bucket as ExpenseBucket);
+    const now = Date.now();
 
-    await ctx.db.insert("expenses", {
+    const id = await ctx.db.insert("expenses", {
       ownerUserId: userId,
       spaceId,
       label,
@@ -405,9 +466,22 @@ export const addExpense = mutation({
       bucket,
       deductible: args.deductible ?? guess.likelyDeductible,
       confidence: guess.confidence,
-      spentAt: args.spentAt ?? Date.now(),
+      spentAt: args.spentAt ?? now,
       source: "manual",
-      createdAt: Date.now(),
+      createdAt: now,
+    });
+
+    // `expense.added` has been declared since phase 0B and written by nothing
+    // — one of D38's four leftovers. Finance was the only product area that
+    // mutated user data with no audit trail at all, which means a user who
+    // asked "where did this figure come from?" had no answer to give.
+    await ctx.db.insert("activity", {
+      spaceId,
+      actor: "user",
+      kind: "expense.added",
+      objectKind: "expense",
+      objectId: id,
+      at: now,
     });
 
     return guess;

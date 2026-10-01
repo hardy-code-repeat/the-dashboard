@@ -3,10 +3,12 @@ import { motion } from "framer-motion";
 import {
   AlertTriangle,
   Check,
+  CreditCard,
   FileText,
   Info,
   Landmark,
   Plus,
+  Repeat,
   Scale,
   Trash2,
   TrendingDown,
@@ -15,9 +17,37 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatAmount, isValidAmount } from "@/lib/subscriptions";
 import { cn } from "@/lib/utils";
+
+/** A date input holds "YYYY-MM-DD"; the machine holds epoch ms. */
+function toDateInput(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** End of the chosen local day, so a date the user typed is the day they meant. */
+function endOfLocalDay(value: string): number | null {
+  if (!value) return null;
+  const t = new Date(`${value}T23:59:59`).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * A `<select>` gives back a string and a mutation wants a typed id.
+ *
+ * Cast once, here, rather than at six call sites — and rather than keying list
+ * rows on their label, which is how the first pass of this panel ended up able
+ * to cancel the wrong subscription. The id travels with the row instead.
+ */
+const asAccountId = (v: string): Id<"accounts"> | undefined =>
+  v ? (v as Id<"accounts">) : undefined;
+const asSubscriptionId = (v: string): Id<"subscriptions"> => v as Id<"subscriptions">;
 
 /**
  * The Finance area.
@@ -34,10 +64,28 @@ export function FinanceArea() {
   const setDeductible = useMutation(api.life.setExpenseDeductible);
   const toggleDoc = useMutation(api.life.toggleDocument);
 
+  const subs = useQuery(api.subscriptions.listSubscriptions);
+  const accounts = useQuery(api.subscriptions.listAccounts);
+  const createAccount = useMutation(api.subscriptions.createAccount);
+  const deleteAccount = useMutation(api.subscriptions.deleteAccount);
+  const createSubscription = useMutation(api.subscriptions.createSubscription);
+  const cancelSubscription = useMutation(api.subscriptions.cancelSubscription);
+  const reactivateSubscription = useMutation(api.subscriptions.reactivateSubscription);
+  const deleteSubscription = useMutation(api.subscriptions.deleteSubscription);
+  const updateSubscription = useMutation(api.subscriptions.updateSubscription);
+
   const [income, setIncome] = useState<string | null>(null);
   const [expenseLabel, setExpenseLabel] = useState("");
   const [expenseAmount, setExpenseAmount] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const [subLabel, setSubLabel] = useState("");
+  const [subAmount, setSubAmount] = useState("");
+  const [subInterval, setSubInterval] = useState("monthly");
+  const [subAccount, setSubAccount] = useState("");
+  const [subRenews, setSubRenews] = useState("");
+  const [accountLabel, setAccountLabel] = useState("");
+  const [accountKind, setAccountKind] = useState("checking");
 
   if (finance === undefined) {
     return <div className="brutal-flat bg-card p-8 text-center text-xs uppercase text-muted-foreground">Loading finance…</div>;
@@ -76,7 +124,7 @@ export function FinanceArea() {
   const handleAddExpense = async (event: React.FormEvent) => {
     event.preventDefault();
     const amount = Number(expenseAmount);
-    if (!expenseLabel.trim() || !Number.isFinite(amount) || amount <= 0) {
+    if (!expenseLabel.trim() || !isValidAmount(amount)) {
       toast.error("Add a description and an amount");
       return;
     }
@@ -94,6 +142,79 @@ export function FinanceArea() {
       toast.error(e instanceof Error ? e.message : "Could not add expense");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ---- subscriptions (phase 3, feature 5) -------------------------------
+  //
+  // The amount is checked client-side with the *same* guard the server uses.
+  // That is not redundancy for its own sake: it turns a network round-trip
+  // into a typed field error, and it means the UI and the server can never
+  // disagree about what a valid amount is.
+  const handleAddSubscription = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const amount = Number(subAmount);
+    if (!subLabel.trim() || !isValidAmount(amount)) {
+      toast.error("Add a name and a positive amount");
+      return;
+    }
+    setBusy(true);
+    try {
+      await createSubscription({
+        label: subLabel.trim(),
+        amount,
+        interval: subInterval,
+        accountId: asAccountId(subAccount),
+        renewsAt: endOfLocalDay(subRenews) ?? undefined,
+      });
+      setSubLabel("");
+      setSubAmount("");
+      setSubRenews("");
+      toast.success("Subscription tracked");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not add subscription");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAddAccount = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!accountLabel.trim()) {
+      toast.error("Give the account a name");
+      return;
+    }
+    setBusy(true);
+    try {
+      await createAccount({ label: accountLabel.trim(), kind: accountKind });
+      setAccountLabel("");
+      toast.success("Account added");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not add account");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteAccount = async (id: Id<"accounts">) => {
+    try {
+      const res = await deleteAccount({ id });
+      const n = res.detached;
+      toast.success(
+        n === 0
+          ? "Account removed"
+          : `Account removed — ${n} subscription${n === 1 ? "" : "s"} ungrouped`,
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not remove account");
+    }
+  };
+
+  const handleEditRenewal = async (id: Id<"subscriptions">, value: string) => {
+    try {
+      await updateSubscription({ id, renewsAt: endOfLocalDay(value) ?? undefined });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not set the renewal date");
     }
   };
 
@@ -275,6 +396,257 @@ export function FinanceArea() {
           </details>
         </section>
       </div>
+
+      {/* ---------- SUBSCRIPTIONS (phase 3, feature 5) ---------- */}
+      <section className="brutal-flat bg-card p-5">
+        <h2 className="font-display mb-1 text-sm uppercase tracking-wide">
+          Subscriptions
+        </h2>
+        <p className="mb-4 text-[10px] leading-relaxed uppercase text-muted-foreground">
+          What recurs, what it costs a year, and when it renews. Panel stores the
+          name, the price and the date — never a card, an account number or a
+          bank login.
+        </p>
+
+        {subs === undefined ? (
+          <p className="border-2 border-dashed border-border px-3 py-6 text-center text-[11px] uppercase text-muted-foreground">
+            Loading subscriptions…
+          </p>
+        ) : (
+          <>
+            {subs.summary.activeCount > 0 && (
+              <div className="brutal-flat mb-4 flex flex-wrap items-baseline gap-x-6 gap-y-1 border-2 border-border bg-background px-4 py-3">
+                <span className="font-display text-2xl leading-none">
+                  {country.currencySymbol}
+                  {formatAmount(subs.summary.activeAnnualTotal)}
+                </span>
+                <span className="text-[10px] uppercase text-muted-foreground">
+                  a year across {subs.summary.activeCount} active subscription
+                  {subs.summary.activeCount === 1 ? "" : "s"}
+                </span>
+                {subs.summary.cancelledCount > 0 && (
+                  <span className="text-[10px] uppercase text-muted-foreground">
+                    {subs.summary.cancelledCount} cancelled
+                  </span>
+                )}
+              </div>
+            )}
+
+            <form
+              onSubmit={handleAddSubscription}
+              className="mb-4 flex flex-col gap-2 sm:flex-row"
+            >
+              <Input
+                value={subLabel}
+                onChange={(e) => setSubLabel(e.target.value)}
+                placeholder="Netflix"
+                maxLength={80}
+                aria-label="Subscription name"
+                className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+              />
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={subAmount}
+                onChange={(e) => setSubAmount(e.target.value)}
+                placeholder="9.99"
+                aria-label="Subscription amount"
+                className="h-11 w-24 border-2 border-border bg-background focus-visible:ring-0"
+              />
+              <select
+                value={subInterval}
+                onChange={(e) => setSubInterval(e.target.value)}
+                aria-label="Billing interval"
+                className="h-11 border-2 border-border bg-background px-2 text-[11px] uppercase focus-visible:ring-0"
+              >
+                {subs.intervals.map((i) => (
+                  <option key={i} value={i}>
+                    {i}
+                  </option>
+                ))}
+              </select>
+              <Input
+                type="date"
+                value={subRenews}
+                onChange={(e) => setSubRenews(e.target.value)}
+                aria-label="Next renewal date"
+                className="h-11 w-40 border-2 border-border bg-background focus-visible:ring-0"
+              />
+              <select
+                value={subAccount}
+                onChange={(e) => setSubAccount(e.target.value)}
+                aria-label="Account it comes from"
+                className="h-11 border-2 border-border bg-background px-2 text-[11px] uppercase focus-visible:ring-0"
+              >
+                <option value="">No account</option>
+                {(accounts ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                type="submit"
+                disabled={busy}
+                className="brutal h-11 gap-2 bg-primary px-5 font-bold uppercase"
+              >
+                <Plus className="size-4" />
+                Add
+              </Button>
+            </form>
+
+            {subs.subscriptions.length === 0 ? (
+              <p className="border-2 border-dashed border-border px-3 py-6 text-center text-[11px] uppercase text-muted-foreground">
+                Nothing recurring tracked yet
+              </p>
+            ) : (
+              <ul className="mb-5 flex flex-col gap-2">
+                {subs.subscriptions.map((s) => (
+                  <li
+                    key={s.id}
+                    className={cn(
+                      "flex flex-col gap-2 border-2 border-border bg-background px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between",
+                      s.status === "cancelled" && "opacity-60",
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-2 text-[12px] font-bold uppercase">
+                        <Repeat className="size-3 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{s.label}</span>
+                        {s.status === "cancelled" && (
+                          <span className="shrink-0 text-[9px] uppercase text-muted-foreground">
+                            cancelled
+                          </span>
+                        )}
+                      </p>
+                      <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">
+                        {s.detail}
+                        {s.accountName ? ` · ${s.accountName}` : " · ungrouped"}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="font-display text-sm">
+                        {country.currencySymbol}
+                        {formatAmount(s.annualCost)}
+                        <span className="ml-1 text-[9px] font-normal uppercase text-muted-foreground">
+                          /yr
+                        </span>
+                      </span>
+                      {s.status === "active" ? (
+                        <>
+                          <input
+                            type="date"
+                            defaultValue={toDateInput(s.renewsAt)}
+                            onChange={(e) => void handleEditRenewal(asSubscriptionId(s.id), e.target.value)}
+                            aria-label={`Renewal date for ${s.label}`}
+                            className="h-8 w-36 border-2 border-border bg-background px-1 text-[10px] focus-visible:ring-0"
+                          />
+                          <Button
+                            variant="outline"
+                            className="brutal h-8 px-2 text-[10px] uppercase"
+                            onClick={() => void cancelSubscription({ id: asSubscriptionId(s.id) })}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          className="brutal h-8 px-2 text-[10px] uppercase"
+                          onClick={() => void reactivateSubscription({ id: asSubscriptionId(s.id) })}
+                        >
+                          Restore
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        className="brutal h-8 px-2"
+                        aria-label={`Delete ${s.label}`}
+                        onClick={() => void deleteSubscription({ id: asSubscriptionId(s.id) })}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <details className="mb-2">
+              <summary className="cursor-pointer text-[10px] uppercase text-muted-foreground">
+                Accounts ({accounts?.length ?? 0})
+              </summary>
+              <div className="mt-3 flex flex-col gap-3">
+                <p className="flex items-start gap-2 border-2 border-dashed border-border bg-background p-2.5 text-[10px] leading-relaxed uppercase text-muted-foreground">
+                  <Info className="mt-px size-3 shrink-0" />
+                  An account is a name, nothing more. There is no balance column
+                  in Panel, so there is nothing here to keep in sync and nothing
+                  that can be wrong.
+                </p>
+
+                <form onSubmit={handleAddAccount} className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    value={accountLabel}
+                    onChange={(e) => setAccountLabel(e.target.value)}
+                    placeholder="Joint current"
+                    maxLength={80}
+                    aria-label="Account name"
+                    className="h-10 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+                  />
+                  <select
+                    value={accountKind}
+                    onChange={(e) => setAccountKind(e.target.value)}
+                    aria-label="Account kind"
+                    className="h-10 border-2 border-border bg-background px-2 text-[11px] uppercase focus-visible:ring-0"
+                  >
+                    {(subs.accountKinds ?? []).map((k) => (
+                      <option key={k} value={k}>
+                        {k}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    type="submit"
+                    disabled={busy}
+                    className="brutal h-10 gap-2 bg-primary px-4 font-bold uppercase"
+                  >
+                    <Plus className="size-4" />
+                    Add
+                  </Button>
+                </form>
+
+                {accounts && accounts.length > 0 && (
+                  <ul className="flex flex-col gap-2">
+                    {accounts.map((a) => (
+                      <li
+                        key={a.id}
+                        className="flex items-center justify-between border-2 border-border bg-background px-3 py-2"
+                      >
+                        <span className="flex items-center gap-2 text-[11px] font-bold uppercase">
+                          <CreditCard className="size-3 text-muted-foreground" />
+                          {a.label}
+                          <span className="text-[9px] font-normal text-muted-foreground">
+                            {a.kind}
+                          </span>
+                        </span>
+                        <Button
+                          variant="ghost"
+                          className="brutal h-7 px-2"
+                          aria-label={`Remove ${a.label}`}
+                          onClick={() => void handleDeleteAccount(a.id)}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </details>
+          </>
+        )}
+      </section>
 
       {/* ---------- EXPENSES ---------- */}
       <section className="brutal-flat bg-card p-5">

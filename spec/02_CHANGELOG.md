@@ -1706,6 +1706,175 @@ Budget: 4 of 4 new files · 1 of 1 new table · 0 deps · 1 abstraction
 
 ---
 
+## CHANGE-0017
+
+```
+Date:       2026-10-01
+Phase:      3, feature 5 — Finance expansion / subscriptions + account labels
+Type:       feature
+Severity:   ARCHITECTURE
+Summary:    The recurring money Panel knows about, and the accounts it comes
+            out of. A subscription is a number until its renewal is an action,
+            and Panel previously only held the number — a subscription existed
+            solely as an expenses row under a "Software & subscriptions"
+            bucket, undated and invisible. Accounts did not exist at all.
+            Delivered as two label-shaped tables with **no new attention rule
+            and no new query** (ADR-029): the renewal reaches Attention through
+            the expiry chain feature 3 already shipped. Bundles two Finance
+            defects found by the audit (D43, D44) and two found by the
+            feature's own gates (D45, D46).
+```
+
+### Finance expansion: subscriptions and account labels
+
+### What changed
+
+The Finance area gained a **Subscriptions** block and an **Accounts** drawer.
+Two tables, one pure module, and — deliberately — no new attention machinery.
+
+The five things worth knowing before reading the code:
+
+1. **A subscription is created together with its renewal document** (ADR-029).
+   `createSubscription` inserts both in one mutation. A subscription without a
+   document is not expressible, so there is no state in which the user believes
+   Panel is watching something and it is not. That window is the D34 defect
+   class: a promise the code compiles against and never keeps.
+2. **Panel adds no attention kind, no section, no rule and no read.**
+   `document.expiring` already exists, already fires, and `by_owner_expiry`
+   already narrows the attention read to exactly the documents that have an
+   expiry. The cost of a subscription in the feed is **zero new query work** —
+   which is the direct answer to the D42 lesson, and it means "one renewal, one
+   item" is still structurally true rather than re-argued.
+3. **An account is a label, never a balance** (ADR-028). Label and a closed
+   kind. No balance column exists, so there is no reconciliation problem
+   because there is nothing to reconcile against. The safest account is one
+   that cannot be drained, because no column exists to type a number into.
+4. **Annual cost is derived, never stored**, and the summary totals the figures
+   the user can actually see in the list — so the total adds up on paper.
+5. **Money stays a float, and is guarded.** Amounts were *not* migrated to
+   minor units: that would rewrite the input to a verified tax estimate, which
+   is exactly the silent change to financial semantics that must not happen.
+   The consequence is accepted and guarded instead — see D44.
+
+### Why the roadmap line needed auditing first
+
+The capability table read `RESEARCHED` / "Not specified", with only "Accounts,
+subscriptions" as a named object and **no acceptance criteria, no ADR and no
+budget anywhere in the repository**. Approving it was a product decision, and
+§3.2 names Finance specifically as gated on user research that has not
+happened. Both were answered by Hardik on 2026-10-01, and that is recorded as
+the approval rather than by editing the status table to make the gap look like
+it never existed.
+
+The audit then found the trap: read alone, "Accounts, subscriptions" reads as
+a bank. §2.3 names the ledger as the thing Panel must not become, and says why
+— *these products stop where an action is needed, and Panel's value is the part
+after that point*. So accounts arrived as labels and subscriptions arrived as
+obligations, and the roadmap line is delivered without a ledger in it.
+
+### Composition over duplication
+
+The audit's question was whether this could be built from what exists. It
+could, almost entirely. `documents` already models label → expiry → derived
+lifecycle → renewal task; a subscription needs three of those fields and is
+missing only **amount** and **interval**. Those cannot live on `documents` —
+a passport has no price, and R-007 defines a document as a label, an expiry and
+a lead time — so the two compose through a pointer, which is the ADR-026 shape
+where the related row holds nothing and the relation resolves on read.
+
+The next renewal-shaped feature — insurance, a loan, a licence — composes the
+same way. That is what makes ADR-029 cheap rather than merely correct.
+
+### Money: the decision and its consequences
+
+`expenses.amount` and `taxProfile.grossIncome` stay `v.number()`. The
+alternative is better arithmetic and is not being adopted, because migrating
+them rewrites the input to a tax estimate that is verified and public-facing.
+
+So the guards, and what each one is for:
+
+- **`Number.isFinite` on every money write.** `NaN <= 0` is `false`, so the old
+  guard waved NaN through. A NaN amount poisons every bucket sum and the whole
+  `estimateTax` result — and NaN does not render as an error, it renders as a
+  **number**. In the one domain where a plausible wrong figure is worse than a
+  crash, that is the defect that matters. D44.
+- **`MAX_AMOUNT` as a magnitude ceiling**, so an absurd value is refused at the
+  door rather than displayed as a figure nobody can act on.
+- **Sums rounded at emission, never at rest.** `0.1 + 0.2` is reachable in a
+  bucket total; rounding on write would corrupt the stored value to hide a
+  display artefact, which is how a money system becomes impossible to reason
+  about afterwards.
+- **The tax-year filter is a local-time range**, matching the `getFullYear()`
+  test it replaces exactly. A UTC range would move the boundary day for every
+  user not on UTC — trading an unbounded read for a silently wrong tax figure,
+  which is the worse of the two.
+
+### Defects found and fixed
+
+- **D43 — `getFinance` read every expense the user had ever created.** A
+  collect-then-filter on a reactively-subscribed query. Phase 0B closed N4 by
+  recording the set as "bounded", which is false: owner-scoped is not bounded,
+  and the table only grows. It is D42's shape arriving a feature early. Fixed
+  with a `by_owner_spentAt` range, constructed on **local-time** bounds so the
+  returned set is byte-identical to the filter it replaces.
+- **D44 — `NaN` and `Infinity` were accepted as amounts**, on both
+  `addExpense` and `saveTaxProfile` (`grossIncome < 0` is false for NaN too).
+- **D45 — `daysUntilRenewal` returned `-0`.** `Math.round` of a small negative
+  fraction is `-0`, which formats as "-0" and fails `Object.is(x, 0)`. A
+  subscription one millisecond before its renewal would report a negative zero
+  days. Found by a unit fixture, not by inspection.
+- **D46 — a date-only edit wrote no audit row.** `updateSubscription` returned
+  early when the subscription's own patch was empty, which is *always* the case
+  for a renewal date, because the date lives on the document (ADR-029). So
+  `subscription.updated` was declared and — for the most common edit there is —
+  never written. This is D38 arriving one feature later, and it was found by
+  the live harness, not by the unit suite.
+- **`expense.added` written at last.** The final one of D38's four leftovers:
+  declared since phase 0B, written by nothing, which made Finance the only
+  product area mutating user data with no audit trail at all.
+- **A UI that could cancel the wrong row.** The first pass of the panel keyed
+  list rows on `label + detail`, so two identically-named subscriptions would
+  collide. The compiler caught it, because the view carried no id; the id is
+  now carried explicitly and every action uses it.
+
+### Boundaries this feature accepts
+
+- **There is no currency column.** There is no rate source and no approved
+  integration, so an amount is in the user's profile currency and Panel does not
+  convert. Storing a currency without a conversion story would be a number that
+  is silently wrong rather than visibly absent.
+- **A subscription with no renewal date is legal** and permanently silent. The
+  user recorded a recurring cost and no date; that is an honest answer.
+- **Deleting detaches, never cascades.** An account removal ungroups its
+  subscriptions and reports the count; a subscription removal clears its
+  document's date and detaches its follow-up tasks. A user cannot destroy an
+  obligation by tidying a label.
+- **Capture infers nothing financial** (Q-007 interim), asserted live.
+
+### Verification
+
+**27 unit fixtures** in `src/lib/subscriptions.test.ts` — 422 pass, 0 fail
+across 15 files. **74 live invariants, 0 skips**, covering all thirteen
+acceptance criteria, including isolation across all six write paths, the
+byte-identical tax-year range, the non-finite refusals, and a proof that a
+subscription moves no weight while the whole feature runs.
+
+`assistant.ts` was **not touched** and no weight-mutation point moved
+(Do-Not-Touch #8), so ADR-022's OCC invariant is not re-armed — the last live
+run (I) stands, at 1,936 mutations / 45 rounds / 0 duplicates. That is a
+deliberate decision to inherit evidence, taken because the precondition for
+re-running is absent: the OCC harness guards `assistantState` initialisation,
+and this feature writes no assistant state.
+
+All eleven pre-existing conformance harnesses re-run and pass.
+
+Related ADR: ADR-002, ADR-003, ADR-006, ADR-008, ADR-009, ADR-010, ADR-013,
+ADR-016, ADR-019, ADR-025, ADR-026, ADR-028, ADR-029
+Related defects: D43, D44, D45, D46
+Budget: 4 of 6 new files · 2 of 2 new tables · 0 deps · 1 abstraction
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -2971,6 +3140,98 @@ actually settled. At that point `owedTo` completion stops being an assertion and
 becomes evidence, and the whole no-learning decision above would need reopening.
 That is a security-shaped question, not an engineering one, and it is not close.
 
+### ADR-028 — An account is a label, never a balance
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 5 (CHANGE-0017).
+Extends ADR-013, ADR-024, ADR-025; evidence in R-010 and §2.3.
+
+**Decision.** An `accounts` row holds a user-chosen **label** and a closed **kind**
+(`checking` | `savings` | `cash` | `credit` | `investment`). It holds **no
+balance**, no account number, no sort code, no institution identifier and no
+transactions. An account exists so that a recurring obligation can be grouped by
+where the money leaves from, and for nothing else.
+
+**Context.** The roadmap line for Finance expansion reads "Accounts,
+subscriptions", which read alone is a request for a bank. The audit found the
+opposite problem: Panel has no account object at all, but it also has no business
+having one, because every field a real account needs is a field Panel cannot
+verify and cannot keep current.
+
+A balance is not a fact. It is a derived value over a set of transactions, and a
+transaction is a ledger row. So an account with a balance is a ledger with extra
+steps, and §2.3 names the ledger as the thing Panel must not become — the research
+conclusion being that these products *stop where an action is needed*, and that
+Panel's whole value is the part after that point. Building the number and
+skipping the action would invert the thesis.
+
+The minimisation argument is the same one ADR-013 used for a private calendar
+event. A private meeting is stored as the literal `"Busy"`; the safest data is the
+data that was never stored. The safest account is one that cannot be drained,
+because **no column exists to type a number into**. A user who wants a balance has
+YNAB; a user who wants to know what renews on the 14th does not, and Panel now
+answers that question.
+
+**Consequences.**
+- The Finance area can group by account and total by account, and that is the
+  ceiling of what an account is for.
+- There is no reconciliation problem, because there is nothing to reconcile
+  against. That is the point.
+- **Deleting an account detaches** its subscriptions and reports the count, and
+  deletes nothing else — the same rule `deleteDocument` and `deleteCommitment`
+  use, so a user cannot lose an obligation by tidying a label.
+- An account is **not** a place to put a credit card, a bank login or a merchant
+  token. If a future feature needs a payment instrument, that is a new decision
+  with a new threat model, not an extra column here.
+
+**Conditions for revisiting.** Revisit when Panel has a source that can *observe*
+a balance — a real bank connection. At that point the number is evidence rather
+than an assertion, and the no-ledger decision would need a real argument rather
+than a product one. That is blocked on credentials and on D32 regardless.
+
+### ADR-029 — A subscription owns its renewal document; expiry logic is never duplicated
+
+**Status:** Active. Recorded 2026-10-01, with phase 3 feature 5 (CHANGE-0017).
+Extends ADR-025, ADR-026, ADR-027.
+
+**Decision.** A `subscriptions` row carries a `documentId` pointing at a real
+`documents` row, and `createSubscription` **creates that document in the same
+mutation**. Every read resolves through the pointer. `src/lib/subscriptions.ts`
+computes annual cost and time remaining; it contains **no** expiry or
+attention logic of any kind.
+
+**Context.** The obvious implementation of "a subscription renews" is a
+`renewsAt` column on the subscription and a new attention rule that reads it. That
+builds a second expiry model alongside the one feature 3 shipped, and the two
+disagree the moment a lead time, a window or a boundary case is fixed in one and
+not the other — which is exactly the failure ADR-025 was written to prevent, and
+which F3's acceptance criteria specifically guarded against with "one renewal,
+one item".
+
+Composing instead is nearly free. `documents` already models label → expiry →
+derived seven-state lifecycle → renewal task, `document.expiring` already fires,
+and `by_owner_expiry` already narrows the attention read to exactly the documents
+that have an expiry. A subscription needs three of those fields and is missing
+only **amount** and **interval** — and a passport has neither, which is why the
+money cannot go on `documents` and the composition has to point rather than merge.
+
+**Consequences.**
+- **Panel adds no attention kind, no section, no rule and no read** for this
+  feature. `getAttention` is unchanged. The cost of a subscription in the feed is
+  zero new query work, which is the direct answer to the D42 lesson.
+- There is exactly one producer of "this is expiring", so the F3 anti-duplication
+  guard is preserved rather than re-litigated on every future renewal-shaped
+  feature.
+- Cancelling a subscription **cancels its document**, and deleting it detaches
+  the document rather than deleting it, so a renewal chain cannot be orphaned
+  pointing at a row that no longer exists.
+- A subscription cannot be created without a document, so a subscription with no
+  expiry is expressible (the document simply has none) and a subscription with a
+  document Panel forgot about is not.
+
+**Conditions for revisiting.** Not close. The next renewal-shaped feature —
+insurance, a loan, a licence — composes this way too, which is what makes the
+decision cheap rather than merely correct.
+
 ---
 
 ## Rejected Decisions
@@ -3053,6 +3314,10 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 | **D40** | The Life Admin `stale` rule fired **only when the document had already expired**. The ordinary case went unreported: renewing early — which is exactly what R-006 tells people to do — ticking the task off, and the expiry never moving all read as ordinary progress. | **RESOLVED (CHANGE-0015)** — the rule is now stated as *the expiry is not later than the moment the user said they renewed*, which covers both a late renewal and a forgotten date. Found by the **live conformance harness, not the unit suite**: every unit fixture for `stale` used an already-expired document, so 37 fixtures were satisfied by a rule that missed what users actually do. The lesson is recorded because it is the third time a fixture set that only exercised the extreme case has hidden a defect (D34, D38, and now this). **A boundary is accepted**: an *early* renewal whose date never moved is still not detectable without storing the previous expiry, which ADR-025 rules out; the surface shows the completed renewal and the expiry side by side instead. |
 | **D41** | `documents:listDocuments`, `documents:getExpiring` and `attention:getAttention` each resolved renewal tasks **once per document** — an N+1 worth up to 200 queries on a reactively-subscribed query. The same defect class as D37 and D39, introduced by the feature that had just audited for it. | **RESOLVED (CHANGE-0015)** — one owner-scoped `tasks.by_owner_document` read per query, grouped by `documentId` in JavaScript. The database has already scoped the set, because Convex omits a row from an index when the indexed field is absent. Caught in self-review, not by a test, which is the third time that has been the only thing standing between this project and a regression it already knew about. |
 | D37 | `listPeople` and `getPerson` read **every task the user has ever created** in order to count open items per person, on a reactively-subscribed query. | **RESOLVED (CHANGE-0013)** — a `tasks.by_owner_person` index. Convex omits a document from an index when the indexed field is absent, so that range holds exactly the tasks that name somebody, which is the entire input these two functions need. The read is now scoped by the index rather than by a filter over everything the user owns. The wider audit found every other `.collect()` in `src/convex` is already index-scoped to one owner or one space, which is the correct shape for a product where each user is their own tenant; a table-wide scan would be the defect, and there is none. |
+| **D43** | **`getFinance` collected every expense the user had ever created** and filtered to the tax year in JavaScript, on a reactively-subscribed query. N4 closed this in phase 0B by recording the set as "over a bounded per-user expense set" — **that claim is false**. Owner-scoped is not bounded; an expense table only grows, and the Finance area is the one place a user adds a row casually and often. D42's exact shape, arriving a feature early. | **RESOLVED (CHANGE-0017)** — a `expenses.by_owner_spentAt` index on `(ownerUserId, spentAt)` read as a **range** over the tax year. The bounds are built with `new Date(year, 0, 1)`, i.e. **local time**, so the returned set is byte-identical to the `getFullYear()` filter it replaces on any UTC offset. A UTC range would have been tidier and would have moved the boundary day for every user outside UTC — trading an unbounded read for a silently wrong tax figure, which is the worse of the two. Found by the feature-5 audit, not by a test: no fixture could have caught it, because the function returned the *right rows*, just by the wrong mechanism. That is the sharpest version of the D42 lesson — **a collect-then-filter can be entirely correct in its output and still be the defect.** |
+| **D44** | **`addExpense` accepted `NaN` and `Infinity`.** The guard was `if (args.amount <= 0)`, and `NaN <= 0` is `false`. `saveTaxProfile` had the mirror-image hole: `grossIncome < 0` is also false for NaN. A NaN amount poisons every bucket sum and then the whole `estimateTax` result — and NaN does not surface as an error, it surfaces as a **number**. A tax estimate rendered from a NaN input is plausible, confident and entirely invented, which is the single worst outcome in the most trusted calculation Panel makes. | **RESOLVED (CHANGE-0017)** — one guard, `Number.isFinite`, in `src/lib/subscriptions.ts`, used by all four money write paths, plus a `MAX_AMOUNT` magnitude ceiling. Two predicates rather than one because `grossIncome` is legitimately `0` and a subscription's amount is not. Found by the feature-5 audit, in the one place where it matters most, and **deliberately not "fixed" by migrating to integer minor units** — that would rewrite the input to a verified tax estimate, which is precisely the silent change to financial semantics that must not happen without asking. |
+| **D45** | **`daysUntilRenewal` returned `-0`.** `Math.round` of a small negative fraction is `-0`, not `0`, and `-0` formats as "-0" and fails `Object.is(x, 0)`. A subscription one millisecond before its renewal date would have reported "negative zero days". | **RESOLVED (CHANGE-0017)** — normalised at the derivation. Found by a **unit fixture**, at the ±1 ms boundary, and by nothing else: no integration test would have surfaced a value that is arithmetically equal to the right answer. The boundary fixtures for `commitments` were written for exactly this reason and paid for themselves again. |
+| **D46** | **`updateSubscription` wrote no activity row for a date-only edit.** The function returned early when the subscription's own patch was empty — which is *always* the case for a renewal date, because the date lives on the `documents` row the subscription points at (ADR-029). So `subscription.updated` was declared in the taxonomy and, for the single most common edit in the feature, never written. | **RESOLVED (CHANGE-0017)** — the early return now accounts for the document write. Found by the **live conformance harness, not the unit suite**, which is the second time in three features that the harness has caught something the fixtures could not: the unit tests exercise the pure machine, and this defect lives entirely in a mutation's control flow. It is D38's shape arriving one feature late — a declared kind that nothing writes — and the audit trail is only worth anything if the row is actually written. |
 | **D42** | **`getAttention` collected every commitment the user had ever made and filtered to the open, past-dated ones in JavaScript.** Not a table-wide scan — owner-scoped, so not the D37/D39 shape — but still a collect-then-filter, and on the *hottest* read in the product: the one that runs on every dashboard load and every attention feed tick. It also grows without limit as the user accumulates settled commitments, which is the one direction a personal history always grows. The §11.2 scope block had already asserted the shape the code should have (`by_owner_open` range, explicit `.take`), so the specification was right and the first implementation was not. | **RESOLVED (CHANGE-0016)** — a `commitments.by_owner_open` index on `(ownerUserId, completed, expectedAt)`, read as a range, so the database excludes settled and undated rows before anything is transferred. The lesson is now the general one rather than an instance of it: **for a derived-state query, assert the read is an index range in the acceptance criteria, not just a bounded collect** — a `.take(200)` cap hides an unbounded query from a reviewer exactly as effectively as no cap at all. The same fix removed the last `by_owner` collect from the attention path. Found by the feature's own criterion AC-3F-314, not by self-review — the first time in this project a criterion caught a performance defect rather than confirming one, which is the outcome the phase review asked for. |
 
 ### Intentionally accepted
@@ -3081,7 +3346,7 @@ approval**, not a note.
 | **1.1** | 8 | 0 — the budget's 1 table (`modelSnapshots`) was consumed by 0C, so 1.1 needs none | 0 | 1 (generalised `extractFeatures`) | Negative category features · training from absence · changes to indices 0–7 |
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
-| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug |
+| **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) · **F5 (Subscriptions): 4 of 6** (`src/lib/subscriptions.ts`, `src/lib/subscriptions.test.ts`, `src/convex/subscriptions.ts`, `scripts/conformance-5f.ts` — the UI went into the existing `FinanceArea.tsx`) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) · **F5: 2** (`accounts`, `subscriptions`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) · **F5: 1** (the derived subscription state machine, `src/lib/subscriptions.ts`, which also holds the single money guard) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug. F5 additionally: any balance, transaction or ledger (§2.3 forbids it) · account numbers, sort codes, IBANs, card or merchant credentials · exchange rates or multi-currency conversion · bank connectivity · CSV or OFX import · loans, assets, liabilities, investments, net worth, cash flow, financial goals · a finance-specific attention section or prioritiser · a second expiry or renewal model · a `status` column · capture inferring a subscription · **migrating the existing float money representation to minor units** |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -3095,45 +3360,46 @@ screen · no push notifications · no sixth spec file · no modification of
 ```
 Current phase:        3 — feature work (each feature needs its own spec + ADR +
                       budget before it starts). Features 1 (People), 2
-                      (Multi-object Capture), 3 (Life Admin) and 4
-                      (Commitments + Waiting On) are done.
+                      (Multi-object Capture), 3 (Life Admin), 4 (Commitments +
+                      Waiting On) and 5 (Subscriptions + Account Labels) are done.
 Current objective:    Phases 0B, 0C, 1.0, 1.1, 1.5 and 2 are VERIFIED, and so
-                      are phase 3 features 1 (People), 2 (Multi-object Capture),
-                      3 (Life Admin) and 4 (Commitments + Waiting On). Phase 0A
-                      remains BLOCKED on Q-001, which blocks only TASK-0A-003.
-                      Q-006 and Q-007 are open and non-blocking.
-Last completed:       CHANGE-0016 — Commitments + Waiting On. A promise the user
-                      made and a wait the user is in are one object with a
-                      direction (`owed` / `owedTo`), not two systems. Four
-                      states, all derived from (expectedAt, completed, now), no
-                      status column (ADR-025). Panel records the user's
-                      assertion and never claims what another person did
-                      (ADR-027), enforced by two copy functions rather than one
-                      template. An inbound wait is deliberately not a task, and
-                      no task is created without the user asking; following up
-                      does not settle the commitment. Outbound overdue is hard
-                      attention in `people`; inbound overdue is hard attention
-                      quieter, in `waitingOn` — the section that had existed since
-                      1.0 with no producer.
-Next phase:           3 — Finance expansion, then agents, in the order the
-                      roadmap lists them. Each needs its own spec section, ADR,
-                      budget and approval (§11.3).
+                      are phase 3 features 1 through 5. Phase 0A remains BLOCKED
+                      on Q-001, which blocks only TASK-0A-003. Q-006 and Q-007
+                      are open and non-blocking.
+Last completed:       CHANGE-0017 — Finance expansion. Subscriptions and account
+                      labels. A subscription is a number until its renewal is an
+                      action, and Panel previously held only the number. The
+                      renewal reaches Attention through the expiry chain feature
+                      3 already shipped: **no new attention kind, section, rule
+                      or query** (ADR-029), and "one renewal, one item" stays
+                      structurally true. An account is a label and never a
+                      balance, so there is nothing to reconcile and nothing that
+                      can be wrong (ADR-028). Annual cost is derived, never
+                      stored. Bundled D43 (an unbounded expense read), D44 (NaN
+                      amounts), D45 (-0 days) and D46 (a missing audit row).
+Next phase:           3 — Deterministic agents, which is APPROVED and specified
+                      (ADR-011, §6.1, §9.3) but NOT BUILT. See the open
+                      question: five of the six named agents already duplicate
+                      machinery that exists, and the sixth needs unapproved
+                      Finance work.
 
 Blockers:             Q-001 (guest account data) — BLOCKING for TASK-0A-003 only.
                       Q-005 RESOLVED 2026-10-01 by ADR-022; N1 verified nine
-                      times, most recently as run I after feature 4.
+                      times, most recently as run I after feature 4. Feature 5
+                      deliberately did NOT re-run OCC: `assistant.ts` was not
+                      touched and the feature writes no assistant state, so the
+                      precondition for re-arming is absent.
                       Non-blocking: Q-002, Q-003, Q-004, Q-006, Q-007.
                       Phase 2 live handshake — blocked on two environment items,
                       neither of them code: GOOGLE_CLIENT_ID /
                       GOOGLE_CLIENT_SECRET (D30 context: the Keys tab), and
                       D32, this deployment serving no application HTTP routes.
 
-Failing tests:        None. 395 fixtures pass across 14 files; 0B, 0C,
-                      attention, 1.1, 1.5, 2, 3, 3f, 4 and 4f conformance all pass
-                      live, plus the ADR-022 OCC suite re-verified (48 mutations,
-                      0 duplicates, run I). The phase-2 harness reports one
-                      section as SKIP (D32) rather than as a pass. The phase-3
-                      harnesses have no skips.
+Failing tests:        None. 422 fixtures pass across 15 files; 0B, 0C,
+                      attention, 1.1, 1.5, 2, 3, 3f, 4, 4f and 5f conformance all
+                      pass live. The phase-2 harness reports one section as SKIP
+                      (D32) rather than as a pass. The phase-3 harnesses have no
+                      skips.
 
 Known risks:
   R1  Concurrent user actions duplicate or corrupt state  → CLOSED by ADR-022
@@ -3166,12 +3432,12 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          environment (credentials + D32).
   3      IN PROGRESS   —                 Features 1 (People, CHANGE-0013), 2
                                          (Multi-object Capture, CHANGE-0014), 3
-                                         (Life Admin, CHANGE-0015) and 4
+                                         (Life Admin, CHANGE-0015), 4
                                          (Commitments + Waiting On,
-                                         CHANGE-0016) VERIFIED. Remaining
-                                         features (Finance expansion, agents)
-                                         each need their own spec, ADR and budget
-                                         (§11.3).
+                                         CHANGE-0016) and 5 (Subscriptions +
+                                         Account Labels, CHANGE-0017) VERIFIED.
+                                         The remaining feature (agents) is
+                                         APPROVED and specified but NOT BUILT.
 ```
 
 ### Phase lifecycle status table
@@ -3188,9 +3454,10 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **3** | **IN PROGRESS** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | — | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. Remaining features — Finance expansion, agents — each get their own spec section, ADR, budget and approval per §11.3. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
-(People), 2 (Multi-object Capture), 3 (Life Admin) and 4 (Commitments + Waiting
-On). Everything here is done to the limit of what the agent may decide. Nothing
-is SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
+(People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting
+On) and 5 (Subscriptions + Account Labels). Everything here is done to the limit
+of what the agent may decide. Nothing is SHIPPED — shipment is the user's
+decision alone (MAIN_AGENT §11.1).**
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are
