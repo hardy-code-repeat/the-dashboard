@@ -745,7 +745,8 @@ phases are `NOT STARTED`.
 | **1.1** | generalised features, learned ranking, 5-signal feedback, exploration | negative category features; changes to 0–7 | indices 0–7 | none |
 | **1.5** | registry, adapter contract, `applyBatch`, OAuth, tokens, cursors, lifecycle | per-provider UI; mutating scopes; provider writes | `connectionTokens` containment | credentials |
 | **2** | Google Calendar adapter, OAuth, sync, minimisation | writing to Google; private titles; attendees | ADR-013 | `GOOGLE_CLIENT_ID`/`SECRET` |
-| **3** | People, capture, Life Admin, commitments, Finance expansion, agents | anything without its own spec + ADR + budget | identity resolution guarantees (ADR-021) | none |
+| **3** | People, capture, Life Admin, commitments, Finance expansion, agents | anything without its own spec + ADR + budget | identity resolution guarantees (ADR-021) |
+| **4** | **4A** area-native surfaces: Finance workspace, contextual add, commitments as objects, honest Home. **4B** transactions + document ingestion — **architecture only, BLOCKED on Q-008** | new pages, routes or a second navigation tier · a new attention kind · a new table in 4A · any change to the capture parser · double-entry, journals, a stored balance column, reconciliation, OCR, or an LLM in 4B | ADR-028 (until Q-008 is answered) · ADR-029 · `estimateTax` · the scorer · `nlp.ts` · `recordOutcome` | `Q-008` blocks all of 4B · 4A needs approval (CHANGE-0019) | guarantees (ADR-021) | none |
 
 #### Phase 3, feature 1 — People as first-class objects (APPROVED · **VERIFIED**)
 
@@ -1177,6 +1178,200 @@ lesson, applied a second time):
 | **Verification** | Unit fixtures for the state machine (pure, injected clock) covering all four states, both directions and every boundary, plus seven rule-level fixtures. A live harness deciding all 14 criteria, including cross-user isolation, the person merge/unmerge case and the exact copy strings. `assistant.ts` is **not** touched by the feature — the follow-up task is inserted, not completed — so OCC was not required to be re-armed; it was re-armed and re-run anyway, so the claim is backed by a live run in this session rather than an inherited one (run I, 48 mutations, 0 duplicates), and the temporary fixture was reverted afterwards. |
 | **Risk** | Product drift toward a CRM: contacts, threads, history, reminders. The defences are the one-table budget, the OUT OF SCOPE list, and the fact that a commitment here is a single obligation with a person and a date — which is what the roadmap line actually promised. |
 
+#### Phase 4, feature 4A — Area-native surfaces (PROPOSED · **NOT APPROVED**)
+
+> Written 2026-10-02 after a product reality correction. **No code exists.**
+> This is the specification of a *correction*: phase 3 built the domain, and the
+> surface never caught up. The change entry is CHANGE-0019; the budget row is in
+> the changelog. Implementation starts only on approval.
+
+**The defect being corrected, in the project's own terms.** Panel is a personal
+operating system whose areas expose different parts of the user's life. Today
+five of six areas do not:
+
+1. The front door is `general`, the only cross-area surface, and it is a task
+   board (`src/pages/Dashboard.tsx:77`).
+2. **Home has no domain body** — it falls through to `TasksArea`
+   (`Dashboard.tsx:435`), which is `getAreaTasks(area)` plus task mutations. A
+   custom area does the same. Two of six areas are filtered task lists.
+3. **Commitments and Waiting On render only inside Relationships, and only when
+   `people.length > 0`** (`Areas.tsx:1052`). A wait on a landlord or an insurer
+   has no person row, so it is invisible.
+4. **Finance has the objects but no hierarchy.** It opens on a disclaimer and
+   country buttons, interleaves objects with three inline `Add` forms, hides
+   Accounts inside a collapsed `<details>`, and offers no Overview, no
+   Finance-scoped attention, no Finance tasks, no Finance documents and no
+   Finance commitments.
+5. **Health is a mock** — `HABITS` is a module constant against `useState`, with
+   no table and no persistence. Logged as **D50**, deliberately not fixed
+   (product owner, 2026-10-02).
+
+**The model this feature enforces.** Panel → Area → Object. An area answers
+*what exists here*, then *what needs attention*, then *what can I do*. A task is
+one object kind and must never become the universal representation — that is the
+whole correction. General is explicitly *allowed* to remain task-centric; it is
+the universal capture surface, and the bug is that every other area behaved the
+same way.
+
+**Finance section order (the reference implementation).**
+
+| Order | Section | Bound to | New work |
+|---|---|---|---|
+| 1 | Overview | `life.getFinance`, `subscriptions.listSubscriptions` — figures already returned | composition only |
+| 2 | Attention | existing attention kinds for the space, filtered for display | **no new kind** (ADR-029) |
+| 3 | Objects | accounts, subscriptions, expenses + buckets, tax documents, commitments | existing queries |
+| 4 | Actions | contextual add | new descriptor, new component |
+| 5 | Tasks | `life.getAreaTasks("finance")` | existing query |
+
+Accounts stop being a collapsed disclosure. Overview is composed from values the
+two queries already return, so **4A adds no database read at all** — the direct
+answer to the D42/D48 lesson, applied in advance rather than after a defect.
+
+**Contextual add.** A descriptor list, data not code: `{label, verb, existing
+mutation, requires?}`. Finance offers expense, income (the existing profile
+field), account, subscription, document, task, capture. Life admin offers
+document, renewal, task, capture. Relationships offers person, commitment,
+waiting-on, task, capture. General offers capture, task, commitment,
+waiting-on. **A verb is only ever listed when a mutation already exists** — the
+descriptor is a UI affordance over the domain, never a second way to write.
+
+**Must NOT.** A new page, route or navigation tier (`activeArea` stays a
+client-side switch) · a new attention kind · a new table · a new query · a
+per-area bespoke component · any change to the capture parser or to
+`estimateTax`/the scorer/`nlp.ts`/`recordOutcome` · converting any domain object
+into a task to make it visible.
+
+#### Phase 4, feature 4B — Transactions and document ingestion (ARCHITECTURE ONLY · **BLOCKED on Q-008**)
+
+> Written 2026-10-02 at the product owner's instruction: *"I want Panel to
+> eventually support manually created and imported transactions. Do not assume
+> transactions are permanently forbidden. Produce the concrete
+> transaction/ingestion architecture first, then surface the §2.3/ADR-028
+> amendment as a deliberate product decision."*
+>
+> **Nothing here is approved and nothing here is built.** §2.3 and ADR-028 stand
+> unchanged. This section exists so the amendment can be decided against a real
+> design rather than in the abstract.
+
+**The constraint as written today.** §2.3: *"Panel must NOT copy: Building a
+double-entry ledger. Panel needs to know about money, not to re-account for
+it."* ADR-028: *"a transaction is a ledger row — an account with a balance is a
+ledger with extra steps."* REQ-054: *"An account is a label, and a balance is a
+ledger."*
+
+**What the research found, and it is the reason this is a decision and not a
+task.** Of the ten things a user might want from "read my statement for me",
+**eight need no transaction row**: detect recurring charges → propose
+subscriptions; statement totals → verify or seed expenses; statement period and
+dates → a tracked document; an anomaly → an agent proposal; tax figures →
+`taxProfile`. Only *every transaction, a balance, reconciliation, transfers as a
+conjugate pair, and categorisation per transaction* require persisted
+transactions. A search of the service catalogue for a privacy-first,
+no-LLM PDF/CSV extractor returned **no match**, so extraction would have to be
+deterministic and in-house — consistent with ADR-001, and the reason "upload and
+the AI understands it" is not available even if someone wanted it.
+
+**Proposed data model — two tables, and the balance is deliberately not one.**
+
+`transactions`
+
+| Field | Type | Why |
+|---|---|---|
+| `spaceId`, `ownerUserId` | ids | ADR-009; every read index-scoped (D48) |
+| `accountId` | id, optional | a transaction may be unattributed |
+| `postedAt` | number | epoch ms; the only time axis |
+| `amountMinor` | number | **integer minor units** — money is never a float |
+| `currency` | string | ISO 4217 shape-validated |
+| `direction` | `"out" \| "in"` | closed union; explicit rather than inferred from a sign |
+| `label` | string ≤120 | what the statement called it |
+| `merchant` | string, optional | |
+| `bucket` | existing `expenseBucketValidator`, optional | **no new vocabulary** |
+| `deductible` | boolean | defaults from the bucket, user-overridable |
+| `confidence` | `high \| medium \| low \| confirmed` | **reuses the existing expense confidence vocabulary** |
+| `source` | `"manual" \| "import"` | closed union; no provider writes in v1 |
+| `externalId` | string, optional | the §6 idempotency key for imports |
+| `importId` | id, optional | which import produced the row |
+
+Indexes — and every one of them is scope-first, because the D48 invariant is
+now a standing rule: `by_owner_postedAt`, `by_space_postedAt`,
+`by_account_postedAt`, `by_owner_externalId` (idempotency), `by_owner_import`.
+
+`imports` — one durable record per uploaded file: `spaceId`, `ownerUserId`,
+`filename`, `byteSize`, `contentType`, `storageId`, `sha256`, `status`
+(`uploaded → extracted → confirmed → applied | failed | discarded`), detected
+`kind` (`csv | xlsx | pdf`), the **aggregate** detection result (statement
+period, printed totals, counts), a `uncertainty: string[]`, and candidate
+proposals (recurring charges, documents). Indexes: `by_owner_createdAt`,
+`by_space_status`, `by_owner_sha256` so re-uploading the same file is detected.
+
+**The balance is a query, not a column.** `balance(account, from, to) = Σ
+signed amountMinor` over `by_account_postedAt`, computed at read time. This is
+the single decision that keeps ADR-028's actual hazard — a stored number that can
+drift from reality with nothing to check it — from returning through the back
+door. A derived balance cannot be stale.
+
+**Pipeline — nine stages, no stage may be skipped, and none of them is a
+model.**
+
+1. **Upload** — Convex file storage, per-space ownership, hard size cap,
+   type allowlist. No public URL is ever produced.
+2. **Identify** — by magic bytes, never by the client-declared MIME type. A file
+   that lies about itself is refused, not parsed.
+3. **Extract** — CSV/XLSX parsed by a deterministic parser in a Convex Node
+   action; PDF text layer extracted. A **scanned PDF is refused with a stated
+   reason** — OCR would require an inference service, which ADR-001 forbids.
+4. **Parse** — a bounded vocabulary of statement layouts (date, description,
+   amount columns). An unrecognised layout yields `failed` with the reason; it
+   never yields a partial write.
+5. **Validate** — arithmetic: do the extracted rows sum to the printed total? A
+   mismatch is **surfaced as uncertainty**, not accepted quietly. This single
+   check is what makes the difference between a parser and a guess.
+6. **Show what was found** — period, totals, N candidate transactions,
+   M candidate recurring charges, K candidate documents, and every uncertain
+   field marked as such.
+7. **User confirms** — per row and per proposal. Bulk-accept is offered only
+   where the arithmetic check passed.
+8. **Persist what was approved** — `applyImport` writes with deterministic
+   idempotency keys (`import:<importId>:<externalId>`), creating documents and
+   subscriptions only from *confirmed* proposals. Applying the same import twice
+   writes nothing twice (ADR-009, §6).
+9. **Audit** — one `activity` row per import with counts; `imports.status` is
+   the durable record; the stored file is deleted after apply unless retention is
+   explicitly on.
+
+**Uncertainty is a first-class output.** Every extracted field carries
+provenance and confidence; low-confidence rows are never auto-persisted; the UI
+shows what is uncertain rather than a confident wrong number.
+
+**Security model (§15), decided now rather than later.** Ownership and space via
+the existing `requireUserId` / `personalSpaceId()` pair, with membership
+authorisation on read and write · storage ids are never returned across users or
+spaces · an explicit delete endpoint, and deletion of the row set by default ·
+export includes or excludes files by a stated flag · retention defaults to
+delete-after-apply · size cap and type allowlist · file content is never
+executed, and the parser runs with no network access · every apply is auditable.
+There is no path by which one user's financial document is readable by another.
+
+**Budget.** 6 files · 2 tables · **2 dependencies** (a deterministic CSV/XLSX
+parser and a PDF text extractor) · 1 abstraction (the import pipeline). The
+dependencies are the reason ADR-016 treats this as a stop condition: Panel has
+been dependency-free on purpose, and a spreadsheet cannot be parsed without one.
+
+**What the §2.3 / ADR-028 amendment would have to say — and is exactly the
+question in Q-008.** (a) Panel stores transaction *facts* the user typed or
+imported, not an accounting system. (b) No journal entries, no debit/credit, no
+double-entry invariants. (c) **A balance is derived and never stored.** (d) Panel
+never presents itself as the system of record for a bank. (e) Reconciliation,
+transfer pairing and cross-account categorisation are out of scope in v1.
+ADR-028 would be superseded, not edited.
+
+**Must NOT introduce.** Double-entry or journals · a stored balance column · a
+reconciliation or matching engine · bank connectivity · OCR · any LLM or
+inference service · per-transaction inference · a change to `estimateTax` (the
+estimate keeps calling the same pure function; transactions inform *inputs*, the
+arithmetic stays in one place) · a second writer for a financial row outside the
+idempotent `applyImport`.
+
 ### 11.3 Scope rules
 
 - Work outside `IN SCOPE` is **not done**, however trivial. It becomes an Open
@@ -1264,6 +1459,14 @@ it, and how do we know it works?"**
 | REQ-062 | Agent executions are capped per run and per space per day, and overflow is counted, observable and audited | ADR-030 | 3 |
 | REQ-063 | A run record states what happened, and a run that did nothing says why | ADR-030 | 3 |
 | REQ-064 | An agent that already has a producer is not reimplemented | ADR-030 | 3 |
+| REQ-065 | An area shows the state of its domain; a task is one object kind and never the universal representation | — (CHANGE-0019) | 4A |
+| REQ-066 | Every verb an area offers is backed by a mutation that already exists | — (CHANGE-0019) | 4A |
+| REQ-067 | A domain object is visible where it belongs, independent of whether some other object exists | — (CHANGE-0019) | 4A |
+| REQ-068 | Context changes which verbs an area offers, never what the capture parser does | ADR-001, — (CHANGE-0019) | 4A |
+| REQ-069 | **CONDITIONAL on Q-008** — a transaction, if it exists at all, is a fact the user supplied or imported, and a balance is derived at query time and never stored | pending (supersedes ADR-028) | 4B (blocked) |
+| REQ-070 | An import shows what was found, and its uncertainty, before anything is persisted | — (CHANGE-0020, gated) | 4B (blocked) |
+| REQ-071 | An uploaded file belongs to one space, is never readable by another, and is deletable and auditable | ADR-009, ADR-014 | 4B (blocked) |
+| REQ-072 | File parsing is deterministic and in-house; no OCR and no inference service | ADR-001 | 4B (blocked) |
 
 ### 12.2 Full chains
 
@@ -1626,6 +1829,26 @@ There is one `catch` in the batch loop. A failure is recorded against that space
 | TASK-0A-005 | D5 | Wire `nextOccurrence` into completion; idempotent. | Done — guarded by a transition check |
 | TASK-0A-006 | D6 | Single-call `addTask({ input, area })`. | Done |
 | TASK-0A-007 | N3, N6, N8, D13 | Resolve dead `previewCapture`; unify feature-name and priority definitions; de-duplicate `filingYear` and `requireUserId`; remove dead `toMondayIndex`. | Done |
+
+**Phase 4, feature 4A (Area-native surfaces) — PROPOSED, NOT APPROVED, NOT BUILT**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-065 | — | 4A | TASK-4A-001 | AC-4A-501 | TEST-4A-601 `scripts/conformance-4a.ts` "A1" — Finance's first rendered section is the Overview, composed only from values `getFinance` and `listSubscriptions` already return | CHANGE-0019 |
+| REQ-065 | — | 4A | TASK-4A-002 | AC-4A-502, AC-4A-503 | TEST-4A-601 "A2" — accounts, subscriptions, expenses, tax documents and commitments each render in Finance; Accounts is no longer a collapsed disclosure | CHANGE-0019 |
+| REQ-066 | — | 4A | TASK-4A-003 | AC-4A-504 | TEST-4A-601 "A3" — every offered verb resolves to an existing Convex mutation, asserted by name; no verb exists without one | CHANGE-0019 |
+| REQ-067 | — | 4A | TASK-4A-004 | AC-4A-505 | TEST-4A-601 "A4" — a commitment with **no person row** is visible in General; today it is invisible, which is the defect | CHANGE-0019 |
+| REQ-068 | — | 4A | TASK-4A-005 | AC-4A-506 | TEST-4A-601 "A5" — capture in Finance still reaches `assistant.addTask` unchanged; the parser, `nlp.ts` and `estimateTax` are byte-identical | CHANGE-0019 |
+| REQ-065 | — | 4A | TASK-4A-006 | AC-4A-507, AC-4A-508 | TEST-4A-601 "A6" — Home states what it is; a second account sees none of it; the 13 existing harnesses, `bun test`, `tsc`, the stock lint baseline and `spec-drift` all still pass | CHANGE-0019 |
+
+**Phase 4, feature 4B (Transactions + ingestion) — ARCHITECTURE ONLY, BLOCKED on Q-008**
+
+| REQ | ADR | Phase | Task | Acceptance | Test | Change |
+|---|---|---|---|---|---|---|
+| REQ-069 | pending | 4B | TASK-4B-001 | AC-4B-511 | TEST-4B-611 **reserved, not written — BLOCKED by Q-008**: no code may exist before that question is answered | CHANGE-0020 (not written) |
+| REQ-070 | — | 4B | TASK-4B-002 | AC-4B-512 | TEST-4B-612 **reserved, not written — BLOCKED by Q-008**: the review screen must show uncertainty before anything is persisted | CHANGE-0020 (not written) |
+| REQ-071 | — | 4B | TASK-4B-003 | AC-4B-513 | TEST-4B-613 **reserved, not written — BLOCKED by Q-008**: a second account and a second space both read nothing | CHANGE-0020 (not written) |
+| REQ-072 | — | 4B | TASK-4B-004 | AC-4B-514 | TEST-4B-614 **reserved, not written — BLOCKED by Q-008**: a scanned PDF is refused with a stated reason, deterministically | CHANGE-0020 (not written) |
 
 ### 12.3 Target chains — later phases (not yet implemented)
 

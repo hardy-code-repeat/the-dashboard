@@ -35,7 +35,7 @@ const REQUIRED = [
   "05_PANEL_CONTROL_CENTER.html",
 ] as const;
 
-const PHASES = ["0A", "0B", "0C", "1.0", "1.1", "1.5", "2", "3"] as const;
+const PHASES = ["0A", "0B", "0C", "1.0", "1.1", "1.5", "2", "3", "4"] as const;
 
 const failures: string[] = [];
 const warnings: string[] = [];
@@ -284,7 +284,7 @@ function checkPhaseStatus(changelog: string) {
   }
 
   const rowRe =
-    /^\|\s*\*\*(0A|0B|0C|1\.0|1\.1|1\.5|2|3)\*\*\s*\|\s*\**([A-Z ]+?)\**\s*\|/gm;
+    /^\|\s*\*\*(0A|0B|0C|1\.0|1\.1|1\.5|2|3|4)\*\*\s*\|\s*\**([A-Z ]+?)\**\s*\|/gm;
   const found = new Map<string, string>();
   let m: RegExpExecArray | null;
   while ((m = rowRe.exec(table)) !== null) {
@@ -474,7 +474,7 @@ function checkAcceptance(fundamentals: string) {
   record(
     "phase acceptance criteria",
     "pass",
-    `all 8 phases scoped; 0A declares all 7 required fields and ${numbered} criteria`,
+    `all ${PHASES.length} phases scoped; 0A declares all 7 required fields and ${numbered} criteria`,
   );
 }
 

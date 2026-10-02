@@ -2010,6 +2010,112 @@ Budget: 5 of 6 new files · 2 of 2 new tables · 0 deps · 1 abstraction
 
 ---
 
+## CHANGE-0019
+
+**Area-native surfaces: an area shows the state of a part of life, not its tasks**
+
+Severity: PRODUCT
+Status: **PROPOSED — NOT APPROVED. No code written.** Spec and change entry
+first, per the product owner (2026-10-02); implementation begins only after
+approval.
+
+**Trigger.** A product reality correction: the running application reads as "a
+todo application with different tabs". An audit of the surface against the
+backend found the backend is not the problem.
+
+**The diagnosis, in five parts.**
+
+1. `activeArea` defaults to `general` (`src/pages/Dashboard.tsx:77`), and
+   General is the only cross-area surface — so the front door is a task board.
+2. **Home has no domain body.** It falls through to `TasksArea`
+   (`Dashboard.tsx:435`), which is `getAreaTasks(area)` plus add/complete/delete.
+   Custom areas do the same. Two of the six areas *are* filtered task lists.
+3. **Commitments and Waiting On are rendered only inside Relationships, and only
+   when the user has at least one person** (`Areas.tsx:1052`,
+   `{!loading && people.length > 0 && <Commitments … />}`). An "I owe Raj £40"
+   or a "waiting on the landlord" is invisible in General and in Finance unless
+   a person row exists. An approved phase-3 domain object has no reliable
+   surface.
+4. **Finance is already domain-specific but has no hierarchy.** It opens on a
+   disclaimer and country buttons; the objects are interleaved with three inline
+   `Add` forms; Accounts is collapsed inside a `<details>`; there is no
+   Overview, no Finance-scoped attention, no Finance tasks, no Finance
+   documents, no Finance commitments. Objects Panel already knows about are
+   unreachable *from Finance*.
+5. **Health is a mock** (D50) — recorded, not fixed, by owner decision.
+
+**What changes.** Five workstreams, all on the existing tab system.
+
+- **A. Finance becomes a workspace in the §16 order:** Overview → Objects
+  (accounts, subscriptions, expenses) → Attention → Actions → Tasks and
+  Documents. Overview is composed from figures `getFinance` and
+  `listSubscriptions` already return; **no new query and no new field**. Accounts
+  stop being a collapsed disclosure.
+- **B. Contextual Add.** One add control per area whose entries are *descriptors
+  bound to existing mutations*. Finance offers expense, income (the existing
+  profile field), account, subscription, document, task, capture. Life admin
+  offers document, renewal, task, capture. Relationships offers person,
+  commitment, waiting-on, task, capture. No new mutation, no arbitrary action
+  menu, no verb that has no domain capability behind it.
+- **C. Commitments become objects in General**, reusing the existing
+  `commitments.listCommitments` body and dropping the `people.length > 0` gate.
+  They stay in Relationships too — a person and what they are owed are the same
+  question from two sides.
+- **D. Home is made honest.** Either it gets a domain body or its heading says
+  what it is ("Tasks in Home"). The fallback stops being silent.
+- **E. Capture is unchanged.** Universal capture stays; the parser is untouched;
+  no LLM is introduced. Context changes which *verbs* are offered, never what
+  the parser does.
+
+**What this explicitly does not do.** No new table. No new backend query. No new
+page, route or navigation tier — `activeArea` stays a client-side switch. No
+second page system. No new attention kind (ADR-029 stands: exactly one producer
+of "this is expiring"). No change to `estimateTax`, the scorer, `nlp.ts` or
+`recordOutcome` (§13 Do-Not-Touch). No ledger, no transactions — those are Q-008
+and phase 4B, a separate change that is blocked until the ledger question is
+answered.
+
+**Budget** (declared now, enforced on implementation, ADR-016): 3 new files
+(`src/components/AreaAdd.tsx`, `src/lib/areaActions.ts`,
+`src/lib/areaActions.test.ts`) · **0 tables** · **0 deps** · 1 abstraction (the
+contextual-add descriptor as data rather than as per-area code). Harness
+`scripts/conformance-4a.ts` is the verification artefact and is counted inside
+the 3.
+
+**Acceptance criteria** — the product owner's list, and how each is met:
+
+| # | Criterion | How |
+|---|---|---|
+| 1 | General stays task-centric | unchanged; it gains commitments/waiting-on as objects |
+| 2 | Finance visibly domain-specific | workstream A |
+| 3 | Finance is not a task list | already true; made explicit rather than incidental |
+| 4 | Existing Finance objects surfaced directly | accounts, subscriptions, expenses, tax documents, commitments, tasks |
+| 5 | Tasks available but not the only object | Tasks becomes one section of Finance |
+| 6 | Life admin stays domain-specific | unchanged; gains contextual add only |
+| 7 | Relationships stays people-centric | unchanged; gains contextual add; keeps commitments |
+| 8 | Tabs remain the navigation model | no route added |
+| 9 | No second page system | `activeArea` remains a client-side switch |
+| 10 | Existing backend reused | every section binds an existing query or mutation |
+| 11 | No ledger without approval | transactions are Q-008 / 4B, unapproved |
+| 12 | No external LLM | unchanged, ADR-001 |
+| 13 | Existing functionality intact | full harness suite re-run; stock lint baseline is the gate |
+
+**Verification plan.** A new harness drives the real surface: that Finance's
+first section is an Overview; that every add verb maps to an existing mutation
+and a foreign/absent capability is never offered; that commitments with no
+person row are visible in General; that Finance tasks and documents render from
+existing reads; and that a second account sees none of it. Plus the 13 existing
+harnesses, `bun test`, `tsc`, the lint baseline and `spec-drift`.
+
+**Decisions required before approval.** Q-009 (where commitments live as
+objects). The contextual-add verb list is stated above as the recommendation and
+stands unless the product owner changes it.
+
+Related: Q-008, Q-009, D50 (Health), ADR-025, ADR-027, ADR-028, ADR-029,
+ADR-030
+
+---
+
 ## Open Questions / Decisions Required
 
 ### Standing roadmap approval — 2026-10-01
@@ -2207,6 +2313,63 @@ to the feature layout, not a redesign.
 - **Interim behaviour:** Feature 4 ships with (a). Capture is unchanged and still
   creates tasks only; a commitment is created by pressing a button in the
   Relationships area, with a direction chosen there.
+
+### Q-008 — May Panel hold a transaction model, and does §2.3 change?
+
+- **Asked by:** the product owner, 2026-10-02 — *"I want Panel to eventually
+  support manually created and imported transactions. Do not assume transactions
+  are permanently forbidden. Produce the concrete transaction/ingestion
+  architecture first, then surface the §2.3/ADR-028 amendment as a deliberate
+  product decision."*
+- **The constraint as it stands today.** §2.3: *"Panel must NOT copy: Building a
+  double-entry ledger. Panel needs to know about money, not to re-account for
+  it."* ADR-028: *"a transaction is a ledger row — an account with a balance is a
+  ledger with extra steps, and §2.3 names the ledger as the thing Panel must not
+  become."* REQ-054: *"An account is a label, and a balance is a ledger."*
+- **What is being proposed.** Phase 4B — a `transactions` table holding facts
+  the user typed or imported, and an `imports` table holding one durable record
+  per uploaded file. The full architecture, including the extraction pipeline,
+  the uncertainty rules, the security model and the budget, is written in
+  `04_SYSTEM_FUNDAMENTALS.md` under *Phase 4, feature 2*. **It is architecture
+  only. No code, no table, no dependency.**
+- **What the amendment would have to say, and what it must keep saying.** (a)
+  Panel stores transaction *facts*, not an accounting system; (b) no journal
+  entries, no debit/credit, no double-entry invariants; (c) **a balance is
+  derived at query time and never stored as a column** — which is what keeps
+  ADR-028's actual hazard (a balance that can be wrong and that nothing can
+  check) from returning; (d) Panel never presents itself as the system of record
+  for a bank; (e) reconciliation, transfers-as-a-conjugate-pair, and categoris-
+  ing across accounts are out of scope in the first version.
+- **Cost of saying yes.** 2 tables, 1 abstraction, and — the part ADR-016 makes
+  a stop condition — **2 new dependencies** (a deterministic CSV/XLSX parser and
+  a PDF text extractor). A dependency-free Panel cannot parse a spreadsheet.
+- **Cost of saying no.** Excel/PDF import stays out of reach, and the only
+  finance input is manual. Panel keeps its sharpest differentiator: it is not a
+  ledger and never drifts from the bank.
+- **Blocked by:** a human decision. Phase 4B is `BLOCKED` on this and nothing
+  else, so the answer unblocks a whole feature without any other work.
+- **Interim behaviour:** unchanged. Accounts have no balance column,
+  subscriptions carry name/price/renewal, expenses are per-item rows, and
+  Finance imports nothing.
+
+### Q-009 — Where do commitments and waiting-on live as objects?
+
+- **Asked by:** the product architecture audit, 2026-10-02.
+- **The problem.** The commitments UI exists, is complete (create, update,
+  complete, cancel, reopen, follow up, delete) and is rendered **only inside
+  Relationships, only when the user has at least one person**
+  (`src/components/Areas.tsx:1052`). A commitment is not always about a person:
+  waiting on a landlord, a council or an insurer has no person row, and today it
+  is invisible.
+- **Options.** (a) Render commitments in **General** as objects, keeping the
+  Relationships copy — recommended, and what CHANGE-0019 workstream C proposes.
+  (b) Give commitments their own tab — rejected: a seventh tab for one object
+  kind is a second navigation tier for a single primitive. (c) Move them out of
+  Relationships — rejected: "what Raj owes me" is the question people open that
+  area to ask.
+- **Blocked by:** a human decision. It changes where an approved phase-3 feature
+  is rendered, which is product surface, not implementation.
+- **Interim behaviour:** unchanged.
 
 ---
 
@@ -3544,6 +3707,8 @@ Do not re-raise these without new evidence that invalidates the original reasoni
 
 | **D49** | **`writeNormalizedBatch` re-read the whole space for every changed object.** `loadStored` had already collected every synced `expenses` and `calendarEvents` row for the space; then `findByKey` collected **both ranges again** — once per patch and once per delete — to recover a single row and pick its `_id`. A batch of n changes cost n full space scans, and because each lookup returned one row the result looked bounded while the database access was not. Phase 2 code, written before D48 existed as a rule. | **RESOLVED** — the rows are already in hand, so they are indexed once by key (`rowsByKey`) and `findByKey` is **deleted**; `applyUpstreamDelete` now takes the row rather than a key. One full read per sync remains (see A6). No table, index, file, abstraction or dependency added: the fix is one function removed. Writes are byte-identical — phase-2 harness §7.2 still reports `cancelled 3 / deletes 1 / patches 0 / unchanged 0 / written 4` — because a mutation is serialisable, so the re-read could only ever return what `stored` already held, and `diffBatch` only emits `patch`/`delete` for keys that are in `stored`. **Found by the D48 audit finally reaching phase 2, not by a test — the sixth consecutive defect found by reading rather than by a failing assertion.** |
 
+| **D50** | **The Health area displays data that does not exist.** `HealthArea` renders four habits from a module-level constant (`HABITS`, `src/components/Areas.tsx:1096`) against `useState` — there is no `habits` table (`grep -c habits src/convex/schema.ts` → 0), nothing is written, and every value is lost on reload. It is a mock presented as a feature, and it is the one area that most looks domain-specific while being the least real. | **RECORDED, NOT FIXED — product owner decision 2026-10-02: leave it alone for now.** Fixing it properly means a new table, a budget and an approval, and removing it means deleting a tab a user can see. Neither is a defect *repair*; both are phase work. It is logged so that the next reader knows the surface is a placeholder and does not mistake the polished card for a working feature, and so that Health is not counted as a delivered area in any completeness claim. **Not counted as verified capability anywhere.** |
+
 ### Intentionally accepted
 
 | ID | Issue | Why accepted |
@@ -3572,6 +3737,7 @@ approval**, not a note.
 | **1.5** | 7 — used 7 | 3 (`connectionTokens`, `syncCursors`, `oauthStates`) | 0 | 1 (`NormalizedBatch` + `applyBatch`) | Per-provider mutations · per-provider UI · broader than minimum scopes · mutating calendar scopes |
 | **2** | 5 — used 5 | 1 (`calendarEvents`) | 0 | 0 (Google adapter only) — the writer body was extracted from `applyBatch` into `writeNormalizedBatch` so the sync action and the public mutation share one path; no new concept and still one writer | Writing to Google · storing private event titles · storing attendees/descriptions/locations · a second OAuth path |
 | **3** | per-feature. **F1 (People): 4 of 6** · **F2 (Capture): 2 of 4** (`src/lib/capture.ts`, `src/lib/capture.test.ts`) · **F3 (Life Admin): 4 of 4** (`src/lib/documents.ts`, `src/lib/documents.test.ts`, `src/convex/documents.ts`, `src/components/LifeAdminArea.tsx`) · **F4 (Commitments): 4 of 4** (`src/lib/commitments.ts`, `src/lib/commitments.test.ts`, `src/convex/commitments.ts`, `scripts/conformance-4f.ts` — the UI went into the existing `Areas.tsx` and the harness is counted as verification, not product) · **F5 (Subscriptions): 4 of 6** (`src/lib/subscriptions.ts`, `src/lib/subscriptions.test.ts`, `src/convex/subscriptions.ts`, `scripts/conformance-5f.ts` — the UI went into the existing `FinanceArea.tsx`) · **F6 (Agents): 5 of 6** (`src/lib/agents.ts`, `src/lib/agents.test.ts`, `src/convex/agents.ts`, `convex.config.ts`, `scripts/conformance-6f.ts` — the UI went into the existing `FinanceArea.tsx` again) | per-feature. **F1: 1** (`people`) · **F2: 0** · **F3: 1** (`documents`) · **F4: 1** (`commitments`) · **F5: 2** (`accounts`, `subscriptions`) · **F6: 2** (`agentRuns`, `agentProposals`) | 0 | per-feature. **F1: 1** (identity-key matcher) · **F2: 1** (the segmenter, `src/lib/capture.ts`) · **F3: 1** (the derived expiry state machine, `src/lib/documents.ts`) · **F4: 1** (the derived commitment state machine, `src/lib/commitments.ts`) · **F5: 1** (the derived subscription state machine, `src/lib/subscriptions.ts`, which also holds the single money guard) · **F6: 1** (the agent framework and its one agent, `src/lib/agents.ts`; `convex.config.ts` is a one-line schedule declaration, not an abstraction) | Any of it without its own spec section, ADR, budget and approval. F1 additionally: automatic merge (RJD-004) · contact import · inbound email parsing · provider writes · person sharing. F2 additionally: prose-conjunction splitting · fuzzy matching · creating a person from a capture · commitments/documents/expenses/notes as capture outputs · a new feature index. F3 additionally: file storage, upload or scanning · automatic renewal, payments or any external action · a `status` column · a second attention section · a second prioritisation system · natural-language capture of documents · merging documents · a per-country lead-time catalogue. F4 additionally: a task per commitment · asserting what another person did · training on a kept commitment · a `status` column · a reminder that fires before the date for an inbound wait · a new attention section, tab or slug. F5 additionally: any balance, transaction or ledger (§2.3 forbids it) · account numbers, sort codes, IBANs, card or merchant credentials · exchange rates or multi-currency conversion · bank connectivity · CSV or OFX import · loans, assets, liabilities, investments, net worth, cash flow, financial goals · a finance-specific attention section or prioritiser · a second expiry or renewal model · a `status` column · capture inferring a subscription · **migrating the existing float money representation to minor units**. F6 additionally: the other five §6.1 agents, each of which has a producer already (ADR-030) · a second producer for any existing hard rule · a sixth Attention kind · any write to financial data · automatic confirmation or categorisation · any external action or provider write · an external scheduler, queue, Redis, worker, second backend or plugin registry · an LLM or any non-determinism · high-frequency polling · notifications · multi-agent orchestration, a workflow engine, a marketplace or a plugin framework |
+| **4** | per-feature, and the first feature is a **correction**, not an addition. **4A: 3 of 3** — `src/components/AreaAdd.tsx`, `src/lib/areaActions.ts`, `src/lib/areaActions.test.ts` (the harness `scripts/conformance-4a.ts` is counted as verification, not product). **4B: 6**, `BLOCKED` on Q-008 | **4A: 0.** **4B: 2** (`transactions`, `imports`) | **4A: 0.** **4B: 2 — a deterministic CSV/XLSX parser and a PDF text extractor**, which ADR-016 makes a stop condition precisely because Panel has been dependency-free | **4A: 1** (the contextual-add descriptor as data rather than as per-area code). **4B: 1** (the import pipeline) | 4A: a new page or route · a second navigation tier · a new attention kind · a new query · a new table · a per-area bespoke component · any change to the capture parser · any change to `estimateTax`, `scorer.ts`, `nlp.ts` or `recordOutcome`. 4B: double-entry or journals · a stored balance column · a reconciliation engine · bank connectivity · OCR · an LLM · per-transaction inference |
 
 **Standing exclusions, all phases:** no external AI/LLM API · no new dependency
 without approval · no generic object/EAV table · no agent framework · no settings
@@ -3686,6 +3852,20 @@ Phase status (authoritative — see MAIN_AGENT §5):
                                          user's call, and the remaining gaps are
                                          Q-001, Q-006, Q-007 and the phase-2
                                          handshake.
+  4      NOT STARTED  —                 Specification only; nothing built.
+                                         4A (Area-native surfaces) is written
+                                         up as CHANGE-0019 and awaits
+                                         approval: a correction to how
+                                         existing capability is presented,
+                                         3 files / 0 tables / 0 deps /
+                                         1 abstraction. 4B (Transactions and
+                                         document ingestion) is an
+                                         architecture only and is BLOCKED on
+                                         Q-008, which asks whether §2.3 and
+                                         ADR-028 should be amended; 6 files /
+                                         2 tables / 2 deps / 1 abstraction.
+                                         D50: the Health area is a mock and is
+                                         not counted as capability.
 ```
 
 ### Phase lifecycle status table
@@ -3700,12 +3880,21 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
 | **3** | **IMPLEMENTED** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | environment only: the 07:00 cron delivery is declared and its runner exercised live, but the firing itself is not observable from here | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. **Feature 5 (Subscriptions + Account Labels) VERIFIED** — CHANGE-0017. A subscription is a number until its renewal is an action, so a subscription carries a `documentId` pointing at a real `documents` row **created in the same mutation** (ADR-029): the cost of a subscription in the feed is **zero new attention code**, and "one renewal, one item" stays structurally true rather than re-argued. An account is a label and a closed kind with **no balance column anywhere in the schema** (ADR-028) — an account with a balance is a ledger with extra steps, and §2.3 names the ledger as the thing Panel must not become. Annual cost is derived, never stored. Money stays `v.number()`; the floats were **not** migrated to minor units, because that would rewrite the input to a verified tax estimate, and the consequence is accepted and guarded instead (D44). 4 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 27 unit fixtures, a **74-check live conformance run with 0 skips**, and a proof that a subscription moves no weight while the whole feature runs. The harness found **D46** (`subscription.updated` was never written for a date-only edit, because the date lives on the document). **Feature 6 (Deterministic Agents) VERIFIED** — CHANGE-0018. Panel had intelligence and **no *when***: everything it knows is computed at query time, so a user who does not open the app is never told anything. Delivered as ADR-030 — **one Convex cron function** (`agents/daily`, `0 7 * * *`) and **one registered agent**, because five of the six §6.1 names already had producers and building them would have violated feature 3's *one renewal, one item* criterion in the name of following the specification. The scheduler answers *when* and never *what*: the tier is a **return type**, and the `automatic` variant's action union is `{flag} | {log}` — there is no variant that can write a financial row, so an agent that tried would not compile. The one agent (`finreview`) sums what rests on unconfirmed deduction categories and states the swing by calling `estimateTax` **twice** rather than applying a rate of its own, and its wording is constrained never to claim a category is wrong. **Overflow is counted, observable and audited** — all three, which needed a query (`getLastRun`) rather than a column, because a cap that silently discards work is a cap nobody can debug. 5 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 26 unit fixtures (**448 pass, 0 fail across 16 files**) and a **52-check live conformance run with 0 skips over 61 mutations**, whose headline check drives the per-space daily cap to its exact boundary and proves the 51st execution is refused, counted as overflow, reported `capped` rather than successful, and observable by the owner — with every financial figure byte-identical afterwards. **Cron firing itself is recorded as UNVERIFIED** rather than as a pass, because a 07:00 delivery cannot be observed inside a test run and the CLI cannot read the schedule back; likewise the thrown-failure path is a `[NOTE]`, not a pass. Remaining gaps in phase 3 are all product decisions or environment: Q-001, Q-006, Q-007 and the phase-2 handshake. |
+| **4** | **NOT STARTED** | none — CHANGE-0019 is written and unapproved; 4B additionally blocked on Q-008 | — | Q-008 for 4B; approval for 4A | Specification only. 4A: area-native surfaces — 3 files / 0 tables / 0 deps / 1 abstraction, no new query and no new table, a correction to presentation rather than new capability. 4B: transactions and document ingestion — 6 files / 2 tables / **2 deps** / 1 abstraction, architecture recorded in SYSTEM_FUNDAMENTALS, **not implemented and not approved**. D50 recorded: the Health area is a mock and is not counted as capability anywhere. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
 (People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting
 On), 5 (Subscriptions + Account Labels) and 6 (Deterministic Agents).
 Everything here is done to the limit of what the agent may decide. Nothing is
 SHIPPED — shipment is the user's decision alone (MAIN_AGENT §11.1).**
+
+**Phase 4 is `NOT STARTED` and exists only as specification.** 4A (Area-native
+surfaces) is written up and awaiting approval as CHANGE-0019 — it is a correction
+to how existing backend capability is presented, not new capability. 4B
+(Transactions and document ingestion) is written up as an **architecture only**
+and is `BLOCKED` on Q-008, which is a live question about whether §2.3 and
+ADR-028 should be amended. Nothing in phase 4 has been implemented, and no ADR
+has been recorded for it.
 
 > A written specification is never an approval (MAIN_AGENT §12). The existence of
 > a detailed plan for a phase does not authorise beginning it. Phases 0B–3 are
