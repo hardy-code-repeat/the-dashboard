@@ -96,6 +96,12 @@ function RouteSyncer() {
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
+      // Only the embedding frame may drive navigation. Without this, **any**
+      // window that can obtain a reference to this one — including a page that
+      // embeds Panel in an iframe — can send `{type:"navigate"}` and drive the
+      // user's history. The preview toolbar *is* the parent frame, so this
+      // check costs the feature nothing and closes the listener to strangers.
+      if (event.source !== window.parent) return;
       if (event.data?.type === "navigate") {
         if (event.data.direction === "back") window.history.back();
         if (event.data.direction === "forward") window.history.forward();

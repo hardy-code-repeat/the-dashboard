@@ -837,7 +837,12 @@ const schema = defineSchema(
       createdAt: v.number(),
     })
       .index("by_space", ["spaceId"])
-      .index("by_owner", ["ownerUserId"]),
+      .index("by_owner", ["ownerUserId"])
+      // Added so the dashboard can ask for *the most recent* notes with an
+      // index range and a cap, instead of reading every note the user has ever
+      // written and sorting them in memory. `by_owner` alone cannot express
+      // "recent", which is exactly why the read was unbounded.
+      .index("by_owner_createdAt", ["ownerUserId", "createdAt"]),
 
     /**
      * The user's trained model: a logistic-regression weight vector learned

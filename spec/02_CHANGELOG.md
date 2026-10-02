@@ -2196,6 +2196,261 @@ ADR-030
 
 ---
 
+## CHANGE-0023
+
+**Hardening pass: four defects found, three fixed, two human decisions required**
+
+Severity: SECURITY
+Status: **THREE FIXES APPLIED AND VERIFIED; TWO ITEMS STOPPED AT THE HUMAN BOUNDARY.**
+
+**Trigger.** A full product hardening pass — research, threat model, live attack
+of the deployed backend, dependency audit, secrets audit, privacy and legal
+readiness. The brief was explicit that the objective is not "make the app look
+secure" but "make Panel defensible against realistic failure, abuse, accidental
+misuse, malicious input, data leakage and future growth".
+
+**Method.** Not a source read-through. `scripts/conformance-sec.ts` was built as
+a permanent live harness that creates **two legitimately authenticated users**
+and has the second attack the first's objects by id through the public API.
+It now holds **59 boundaries**, and every one of them is checked from the
+outside.
+
+---
+
+### D51 — Stored XSS through `calendarEvents.sourceUrl` — **CRITICAL — FIXED**
+
+**Finding.** `calendarEvents.sourceUrl` is written from the public
+`integrations.applyBatch` mutation, which takes `objects: v.array(v.any())`.
+`insertObject` wrote `sourceUrl` verbatim if it was a string, and
+`CalendarStrip.tsx` rendered it as `href={event.sourceUrl}`.
+
+**Evidence.** The harness stored four payloads and read them back unchanged:
+
+```
+STORED sourceUrls: ["javascript:alert(document.domain)",
+                    "java\tscript:alert(1)", " javascript:alert(2)",
+                    "JaVaScRiPt:alert(3)"]
+```
+
+React escapes text but **not** an `href`, so each of these was a working link
+that ran script in Panel's origin on click. The auth token lives in the browser.
+
+**Impact.** Stored cross-site scripting and full session compromise, reachable
+by any authenticated user against their own space and against any shared view of
+calendar events.
+
+**Fix.** One shared guard, `src/lib/url.ts` → `safeHttpUrl`, applied at **both**
+ends: the write path (`insertObject`) is authoritative and the render path
+(`CalendarStrip`) is defence in depth. It accepts only an absolute `http:`/
+`https:` URL and returns `undefined` for everything else — `javascript:`,
+`data:`, `vbscript:`, `file:`, relative paths, and strings carrying control
+characters. It **never returns the input unchanged on the failure path**, which
+is the bug this class of guard usually reintroduces.
+
+Control characters are rejected *before* parsing, because the WHATWG URL parser
+strips tabs and newlines: `java<TAB>script:` resolves to the `javascript:`
+scheme and defeats a naive prefix check. That bypass was written down before the
+code was written.
+
+**Tests.** `src/lib/url.test.ts` — 9 fixtures including the tab/newline bypass,
+`data:`/`vbscript:`/`file:`, the non-string cases, and a direct assertion that
+refusal never echoes the input. `conformance-sec.ts` S9 proves live that no
+executable URL survives the write path **and** that a genuine `https:` link
+still round-trips — a guard that refuses everything is an outage, not a fix.
+
+---
+
+### D52 — Unbounded array on a public mutation — **MEDIUM — FIXED**
+
+**Finding.** `integrations.applyBatch` accepted `v.array(v.any())` with no
+length bound. A single authenticated call could carry an arbitrarily large
+batch, which is then diffed in memory and written inside one transaction.
+
+**Evidence.** The harness submitted 2 000 objects: **accepted, in 2 362 ms.**
+
+**Impact.** Mass-write and resource-exhaustion in the caller's hands. Bounded by
+per-user isolation, so this is availability rather than confidentiality.
+
+**Fix.** `MAX_BATCH_OBJECTS = 500`, refused before any write. A real sync pages
+by cursor, so 500 is far above any page the integration produces. Re-verified:
+**refused in 282 ms.**
+
+---
+
+### D53 — The dashboard read every note a user ever wrote — **MEDIUM — FIXED**
+
+**Finding.** `getDashboard` did
+`notes.by_owner.collect()`, sorted in memory and returned the entire set to the
+browser on **every dashboard load**. `notes` had no `createdAt` index at all, so
+"the most recent notes" was not expressible as an index range — which is
+precisely why the read was unbounded.
+
+**Impact.** An unbounded read, an unbounded response payload and an unbounded
+number of DOM nodes, growing with total notes ever written. The classic D48
+shape: a bounded *result* was never the defence.
+
+**Fix.** Added `by_owner_createdAt` to `notes`, and the dashboard now reads
+newest-first through that index with `.take(50)`. The in-memory sort is gone
+because the index does it.
+
+**Tests.** `conformance-sec.ts` S12: 70 notes written, 50 returned, order
+verified newest-first.
+
+---
+
+### D54 — A live credential committed to source — **CRITICAL — HUMAN ACTION**
+
+**Finding.** `src/convex/auth/emailOtp.ts` contains a literal third-party API
+key, used as an `x-api-key` header on every email OTP send.
+
+**Blast radius, established rather than assumed.** The module is **server-side
+only** — no client component imports it, so the key is **not in the browser
+bundle**. Exposure is therefore to anyone with repository access, which is
+serious but narrower than a client-exposed secret. The email OTP provider is
+registered and live, so the key is in active use.
+
+**Why this was not simply deleted.** Removing the literal breaks email sign-in
+for every user of the live deployment immediately, and the replacement has to be
+a key the owner creates and stores through the platform's Keys UI — which this
+agent cannot do. That is a security-versus-availability decision with a real
+product consequence, so it is **the owner's call**, not a silent code change.
+
+**Interim control.** `conformance-sec.ts` S11 scans the credential-bearing
+modules for key-shaped literals and **reports without passing**. It is
+deliberately still red: a guard that turned green while the secret remained in
+the file would mark the problem solved when it is not.
+
+**Required remediation, precisely.**
+1. Rotate the key at the issuing service.
+2. Add the replacement through the platform Keys UI under a documented name.
+3. Replace the literal with a read of that name, then delete the literal.
+4. Treat repository history as compromised for this key. Rewriting history is
+   **not** performed here — it is destructive and requires explicit approval.
+
+---
+
+### D55 — Dependency advisories — **HIGH — PARTLY HUMAN ACTION**
+
+`npm audit --omit=dev` reports 7 advisories. Each was assessed for **applicability
+to Panel**, not merely counted:
+
+| Package | Installed | Severity | Applicability to Panel |
+|---|---|---|---|
+| `@auth/core` | 0.37.4 | **critical** | **Real.** Homoglyph-`@` email-normaliser bypass, and Panel has an email OTP sign-in path. |
+| `axios` | 1.18.1 | high | Server-side only, in the OTP sender. The advisories (prototype-pollution gadget, redirect SSRF) require conditions Panel does not create. |
+| `react-router` | 7.18.1 | high | **Not applicable.** The advisory is RSC-mode CSRF; Panel uses `<BrowserRouter>` + `<Routes>` with no data router, no loader/action and no RSC. |
+| `nanoid`, `hono`, `postcss` | transitive | high/mod | Transitive or build-time. |
+
+**Why `@auth/core` was not simply upgraded.** `@convex-dev/auth@0.0.90` declares
+`"@auth/core": "^0.37.0"`. On a zero-major version a caret resolves to
+`>=0.37.0 <0.38.0`, so the fixed `0.41.3+` **cannot be reached without upgrading
+`@convex-dev/auth` itself** — a change to the sign-in stack, with a real risk of
+locking every user out. That is a security decision with a major product
+tradeoff and is therefore escalated, not taken unilaterally.
+
+**Recommendation to the owner.** Upgrade `@convex-dev/auth` to a release that
+resolves `@auth/core >= 0.41.3`, test sign-in (both anonymous and email OTP)
+against the live deployment, and keep the old version as a rollback. `axios`
+should move to `>=1.19.1` in the same pass; it is a patch-level change.
+
+---
+
+### D56 — No self-service data export or account deletion — **HIGH — HUMAN ACTION**
+
+**Finding.** Panel has **no** function, page or control by which a user can
+export their data or delete their account. `subscriptions.deleteAccount` deletes
+a *financial account row*, not a user.
+
+**Why it matters.** Panel collects tasks, notes, financial transactions,
+accounts, subscriptions, documents, people, relationships, commitments and a
+per-user behavioural model. Data export and erasure are rights under **GDPR**
+Arts. 17 and 20 and under India's **DPDP Act 2023**. Panel cannot currently
+honour either.
+
+**Why this stops here rather than being built.** Account deletion means a
+correct, cascading deletion across roughly twenty tables with three hard cases
+that are genuine product decisions, not engineering: what happens to data in a
+**shared space** when one member deletes their account; whether **audit records**
+are deleted or retained (a defensible design retains them, redacted); and
+whether **derived model state** is deleted with the user. Guessing any of these
+would produce a destructive feature whose semantics nobody approved. A data
+export path is lower-risk and could be built first.
+
+**Required decision.** Choose the deletion semantics for shared spaces, audit
+records and model state. Everything else follows from that choice.
+
+---
+
+### D57 — Findings that are real but not defects
+
+- **`calendar:upcomingEvents` reads one space.** It takes `.first()` from
+  `by_createdBy`, so a user who creates a second space sees calendar events for
+  only the first. Not a security issue — the space is always the caller's — but
+  **multi-space calendar support is incomplete**, and the same `.first()` shape
+  appears elsewhere. Recorded, not fixed: making it correct changes product
+  behaviour.
+- **`getDashboard` still returns every task.** Ranking genuinely needs the whole
+  open set, so bounding it is a product decision (how many tasks does the board
+  show?) rather than a safe fix. Recorded with that recommendation.
+- **CRLF and `.first()` patterns** were reviewed and are correct where found.
+
+---
+
+### D58 — postMessage listener accepted any origin — **LOW — FIXED**
+
+`main.tsx`'s route sync accepted `{type:"navigate"}` from **any** window, so a
+page embedding Panel in an iframe could drive the user's history. The listener
+now requires `event.source === window.parent`. The preview toolbar *is* the
+parent frame, so the feature is unaffected and the listener is closed to
+strangers.
+
+---
+
+### What the live harness proved about the rest
+
+**59 boundaries, all holding.** Cross-tenant reads (5), cross-tenant writes and
+deletes (18), **indirect references** — a foreign id smuggled into a *new* row
+rather than used to mutate an existing one (5) — victim's data intact afterwards
+(6), the attacker's own views empty of it (7), unauthenticated access (8),
+malformed and cross-table identifiers (3), abuse surface (1), injection (2),
+CSV formula handling (2), and bounded reads (2).
+
+The S4 section exists because a silent no-op looks identical to a refusal in the
+attack table: every refusal is followed by a check that the victim's objects are
+**still intact**, so a function that swallowed the call would be caught.
+
+**Where the backend was audited by hand and held.** Every public query, mutation
+and action taking an id argument was read for an ownership check; the pattern
+`const row = await ctx.db.get(args.id); if (!row || row.ownerUserId !== userId)`
+is applied consistently. Space-scoped reads derive the space from the
+authenticated identity (`ensurePersonalSpace` or a `by_createdBy` index) rather
+than from a caller argument.
+
+**Agent safety is structurally sound.** `AgentAction` is a closed union of
+`{kind:"flag"} | {kind:"log"}` — an agent cannot express a financial write, a
+delete, a share or an outbound message at all. The scheduled function carries no
+authority, has a `dryRun` argument, and passes no space id of its own.
+
+**Secrets.** No hardcoded secret outside D54. The only high-entropy literals in
+tracked source are the four published NIST SHA-256 test vectors.
+
+---
+
+### Gates
+
+`tsc` 0 errors · `bun test` **564 pass / 0 fail across 21 files** (up from 555 —
+the 9 URL-guard fixtures) · lint at the stock **3 errors / 19 warnings**
+baseline · `spec-drift` unchanged · **all 15 pre-existing harnesses exit 0** plus
+the new `conformance-sec.ts` at **59 boundaries**.
+
+Related: ADR-009, ADR-011, ADR-012, ADR-013, ADR-014, ADR-016, ADR-024, ADR-031
+Budget: 8 files (`src/lib/url.ts`, `src/lib/url.test.ts`,
+`scripts/conformance-sec.ts`, `src/convex/integrations.ts`,
+`src/convex/schema.ts`, `src/convex/assistant.ts`, `src/components/CalendarStrip.tsx`,
+`src/main.tsx`) · 1 new index · 0 new tables · 0 new deps
+
+---
+
 ## CHANGE-0022
 
 **The statement import screen: review, then an explicit ask**

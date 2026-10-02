@@ -28,6 +28,7 @@ import { diffBatch, keyFor, syncActivityKey, type StoredObject } from "../lib/in
 import { googleCalendarAdapter } from "../lib/integrations/google-calendar";
 import { adapterFor, allIntegrations, definitionFor, registerAdapter } from "../lib/integrations/registry";
 import { IntegrationFailure, type NormalizedLink, type NormalizedObject } from "../lib/integrations/types";
+import { safeHttpUrl } from "../lib/url";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query } from "./_generated/server";
@@ -264,6 +265,13 @@ export const internalFinishOAuth = internalMutation({
  * Deletion follows §7.2: the normalised row goes, and anything the user derived
  * from it is marked orphaned rather than deleted.
  */
+/**
+ * The largest batch a single call may carry.
+ *
+ * Applied on the public path, which is the one a client can reach directly.
+ */
+const MAX_BATCH_OBJECTS = 500;
+
 export const applyBatch = mutation({
   args: {
     provider: providerSlugValidator,
@@ -273,6 +281,26 @@ export const applyBatch = mutation({
   handler: async (ctx, args) => {
     const userId = await requireUser(ctx);
     const spaceId = await ensurePersonalSpace(ctx, userId);
+
+    // **The bound belongs on the input, not only on the output.**
+    //
+    // `v.array(v.any())` accepts any length, so before this check a caller
+    // could hand the server one array of arbitrary size and make a single
+    // authenticated call do unbounded work: the whole batch is diffed in
+    // memory and every differing row is written inside one transaction. A
+    // bounded *result* was never the defence — the harness proved 2000 objects
+    // were accepted and written in one call, which is a mass-write and a
+    // resource-exhaustion lever in the caller's hands.
+    //
+    // A real sync pages by cursor, so a legitimate batch is one page long; 500
+    // is far above any page the integration produces and far below anything
+    // worth accepting blind.
+    if (args.objects.length > MAX_BATCH_OBJECTS) {
+      throw new Error(
+        `A sync batch may contain at most ${MAX_BATCH_OBJECTS} objects; got ${args.objects.length}.`,
+      );
+    }
+
     return writeNormalizedBatch(ctx, {
       userId,
       spaceId,
@@ -780,7 +808,7 @@ async function insertObject(
       startsAt: typeof rest.startsAt === "number" ? rest.startsAt : null,
       endsAt: typeof rest.endsAt === "number" ? rest.endsAt : null,
       allDay: rest.allDay === true,
-      sourceUrl: typeof rest.sourceUrl === "string" ? rest.sourceUrl : undefined,
+      sourceUrl: safeHttpUrl(rest.sourceUrl),
       upstreamChangedAt: typeof fields.changedAt === "number" ? fields.changedAt : undefined,
       createdAt: Date.now(),
     });

@@ -28,6 +28,7 @@ import { CalendarDays, ExternalLink, RefreshCw } from "lucide-react";
 
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
+import { safeHttpUrl } from "@/lib/url";
 
 /** The value Panel stores for a private event (§7.3). */
 const BUSY = "Busy";
@@ -200,9 +201,9 @@ export function CalendarStrip() {
                         {durationLabel(event) ? ` · ${durationLabel(event)}` : ""}
                       </p>
                     </div>
-                    {event.sourceUrl ? (
+                    {safeHttpUrl(event.sourceUrl) ? (
                       <a
-                        href={event.sourceUrl}
+                        href={safeHttpUrl(event.sourceUrl)}
                         target="_blank"
                         rel="noreferrer noopener"
                         className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"

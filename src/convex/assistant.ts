@@ -193,6 +193,15 @@ function currentWeights(state: AssistantDoc | null): number[] {
  * The whole dashboard: tasks ordered by the learned model, plus a short
  * "what matters now" brief derived from the user's real data.
  */
+/**
+ * How many notes the dashboard carries.
+ *
+ * The notes list is a "recent notes" panel — it was already sorted newest-first
+ * on the client — so a cap is invisible for anyone with a normal number of them
+ * and is the difference between one indexed read and an unbounded one.
+ */
+const MAX_DASHBOARD_NOTES = 50;
+
 export const getDashboard = query({
   args: {},
   handler: async (ctx) => {
@@ -201,7 +210,15 @@ export const getDashboard = query({
 
     const [tasks, notes, state, spaces] = await Promise.all([
       ctx.db.query("tasks").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
-      ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
+      // Newest first, from an index range, capped. Previously this collected **every
+      // note the user had ever written**, sorted them in memory, and returned the
+      // whole set to the browser on every single dashboard load — an unbounded
+      // read, an unbounded payload, and an unbounded number of DOM nodes.
+      ctx.db
+        .query("notes")
+        .withIndex("by_owner_createdAt", (q) => q.eq("ownerUserId", userId))
+        .order("desc")
+        .take(MAX_DASHBOARD_NOTES),
       loadState(ctx, userId),
       ctx.db.query("spaces").withIndex("by_createdBy", (q) => q.eq("createdBy", userId)).collect(),
     ]);
@@ -298,7 +315,9 @@ export const getDashboard = query({
 
     return {
       tasks: ranked.map((r) => ({ ...r.task, score: r.score, reasons: r.reasons })),
-      notes: notes.sort((a, b) => b.createdAt - a.createdAt),
+      // Already newest-first: the index range and `order("desc")` above did the
+      // sorting the database should have been doing.
+      notes,
       brief,
       stats: {
         open: open.length,
