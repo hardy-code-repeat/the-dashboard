@@ -2196,6 +2196,110 @@ ADR-030
 
 ---
 
+## CHANGE-0021
+
+**Money at a glance on the Main Panel: a cross-domain overview, not a second Finance area**
+
+Severity: PRODUCT
+Status: **BUILT AND VERIFIED 2026-10-02.** No new model, no stored balance, no
+new dependency, and no new backend query.
+
+**Trigger.** 4B gave Panel a derived balance and 4A gave the Finance area a real
+workspace — but the landing view still showed no money at all. A product whose
+front door cannot tell you what you are worth has put its most trustworthy
+number behind a tab. The standing instruction for this increment was to surface
+useful derived Finance visibility on the Main Panel **without** letting it become
+a financial database dump, and to keep the architectural line: **Main Panel =
+cross-domain overview, Finance area = deep workspace.**
+
+**Research first, then adapt only what fits.** Comparable products were surveyed
+before anything was written, and the pattern is consistent:
+
+- **One figure first, with the greatest visual emphasis.** The clearest statement
+  of this in banking-app UX guidance is that the most important information
+  should appear first and receive the greatest emphasis, "which for most users
+  means account balance". → **ADOPTED**: the derived balance is the largest
+  element in the panel.
+- **The feed is the home screen.** Monzo and Revolut both make the transaction
+  feed the landing surface — merchant, amount, instant balance. Starling ships
+  "a continuous feed rather than monthly statements". → **ADOPTED**: recent
+  activity, most recent first, below the figure.
+- **Restraint beats density.** The same research notes Monzo holds its home
+  screen to five actions and Revolut shows a basic-account user "only what a
+  basic-account user needs; not competing for space on the home screen". →
+  **ADOPTED**: five transactions, four named accounts, one next renewal, no
+  charts. This is the direct answer to "not a database dump".
+- **Net worth, budget-vs-actual, spending-by-category.** This is the standard
+  personal-dashboard recommendation. → **REJECTED**, because every one of those
+  needs a number Panel has deliberately refused to store. Net worth needs stored
+  balances (ADR-031); a budget needs a budget model that does not exist; a
+  spending-by-category chart would require an aggregation the backend
+  deliberately does not have. Adopting the advice would have meant inventing the
+  model to satisfy the chart.
+
+**What was built.** `MoneyAtAGlance` in `src/components/Areas.tsx`, mounted in
+`Dashboard.tsx` inside the `activeArea === "general"` branch — the same mounting
+rationale `Commitments` already uses: *General is the cross-domain view, and an
+object does not stop existing because the user has not opened a particular tab.*
+
+- **Balances, grouped by currency, largest element.** Summed from the rows
+  `transactions:listBalances` already returns. Two currencies are shown side by
+  side and **never added into one figure**, because an account row carries no
+  currency (ADR-028) so a person can hold two in one account, and pounds plus
+  dollars would be a small, confident, unsourceable lie.
+- **The word "derived" is on the screen.** The panel states *summed from your
+  transactions, not stored*. Every comparable product shows a stored balance
+  that can silently drift from the bank; Panel shows a sum that cannot, and says
+  so rather than letting the number imply a stored field it is not.
+- **Next renewal** — the one forward-looking signal, from the existing
+  `subscriptions:listSubscriptions`. Backward-looking balances alone tell a
+  person where they are, not what is about to happen.
+- **Recent activity**, five rows, bounded client-side as well as by the query.
+- **A link into Finance**, not a workspace. The panel is an overview; the depth
+  is one click away and unchanged.
+
+**Constraint compliance, which is most of the value here.**
+- **No duplicate Finance model.** None added.
+- **No stored balance.** None stored; the figure is computed from fetched rows.
+- **No unnecessary database reads.** Three `useQuery` calls, all of functions
+  that already existed and were already read by the Finance workspace. **No new
+  backend query was added**, and the currency totals are summed in the component
+  rather than by a fourth read — the same way `FinanceArea`'s Overview composes
+  its figures, so the number on the overview and the number in Finance are the
+  same arithmetic and **cannot disagree**.
+- **No new dependency.** None.
+- **All reads index-scoped and bounded.** `listBalances` is capped at 20
+  accounts with per-account index reads issued in parallel; the feed is capped
+  at 5.
+
+**The cost, stated rather than hidden.** `listBalances` is the most expensive
+read in the finance module, because ADR-031 forbids storing a balance and a sum
+needs every row. Putting it on the landing surface means paying that cost on
+every dashboard load. It is paid deliberately and recorded in the component's own
+documentation: a derived balance is the one figure that cannot drift from the
+bank, and hiding it would waste the most trustworthy number in the product.
+
+**Honest limits.** There is **no financial attention signal**, and none was
+invented: the attention feed has no finance-shaped kind (harness check B9
+asserts that writing a transaction adds none), so this increment does not claim
+one exists. The nine checks added to `scripts/conformance-4a.ts` (now **53
+invariants, 0 failed**, up from 43) are **source anchors, not HTTP
+observations** — they verify the architecture claims (reuse only, no mutation,
+no new backend function, currencies keyed not summed, bounded feed, renders
+nothing when empty), and the harness says so explicitly rather than inflating
+the live-invariant count with claims no API call can observe.
+
+**Verification.** `tsc` 0 errors; `bun test` **555 pass / 0 fail across 20
+files**; lint at the stock 3 errors / 19 warnings baseline; `spec-drift` 18
+passed / 1 warning / 0 failures; all **16 harnesses exit 0** (`occ` still not run
+by design). Gates unchanged: a new view reads existing data and writes nothing.
+
+Related: ADR-031, ADR-028, ADR-002, ADR-009, ADR-021, CHANGE-0019, CHANGE-0020
+Budget: 3 of 3 files (`src/components/Areas.tsx`, `src/pages/Dashboard.tsx`,
+`scripts/conformance-4a.ts`) · 0 tables · 0 new queries · 0 deps
+
+---
+
 ## CHANGE-0020
 
 **Transactions: first-class money facts, with a derived balance**
@@ -2280,10 +2384,15 @@ passed / 0 failures, and harnesses 2, 3, 3f, 4, 4f, 5f, 6f all still PASS.
   in-house, so "upload and the AI understands it" is unavailable by
   architecture rather than by policy.
 
-### 4B-2 dependency decision package — required by ADR-016, awaiting approval
+### 4B-2 dependency decision package — required by ADR-016
 
 ADR-016 makes a new dependency a stop condition. This is the package that
 condition asks for, researched 2026-10-02. **Nothing has been installed.**
+
+**Decision 2026-10-02: APPROVED as recommended — CSV ships with ZERO
+dependencies.** 4B-2a is built and verified on that basis (see above). The XLSX
+and PDF rows below remain **future, separately approved increments**; nothing
+from them has been implemented, and the SheetJS rejection stands unchanged.
 
 **The recommendation is narrower than expected: the first useful import needs
 zero dependencies.**
@@ -2332,16 +2441,117 @@ maintenance cost in exchange for formats most banks do not export.
 
 ---
 
-**Implementation status 2026-10-02.** 4B-1 is **built and verified**:
-`src/lib/money.ts`, `src/lib/money.test.ts`, `src/convex/transactions.ts` and
-`scripts/conformance-4b.ts` exist and pass. `imports` exists as a schema with no
-writer, which is stated plainly by harness check B8 — an empty list is the
-honest answer while there is no upload surface. **4B-2 (the pipeline) is not
-built** and needs its two parsing dependencies, which is an ADR-016 stop
-condition and therefore its own approval.
+**Implementation status 2026-10-02.** **4B-1 built and verified; 4B-2a built and
+verified.** See the 4B-2a entry below for the full record.
 
-Related: ADR-031, ADR-028, ADR-009, ADR-011, ADR-014, Q-008
-Budget: 4 of 6 files · 2 of 2 tables · 0 deps · 1 abstraction
+### 4B-2a — CSV statement import: built and verified 2026-10-02
+
+**Status:** built, gated, **0 new dependencies**. The zero-dependency option in
+the decision package above was approved and is what was built.
+
+**What this adds.** One pure parser, one pure hash, two mutations, one harness.
+
+- **`src/lib/csv.ts`** (pure) — a hand-written RFC 4180 parser plus deterministic
+  column identification, date parsing, amount parsing, a content-derived row id
+  and `buildImportPreview`, which returns **candidates, refusals and
+  uncertainties and cannot write anything** because it has no database access.
+- **`src/lib/sha256.ts`** (pure) — SHA-256 over UTF-8, hand-written because
+  `crypto.subtle` is not assumed to exist in the Convex runtime and a dependency
+  is not worth 70 lines of arithmetic.
+- **`transactions:prepareImport`** (mutation) — reads a statement, returns a
+  preview, and writes **exactly one `imports` row and no transaction**.
+- **`transactions:applyImport`** (mutation) — takes the same text, verifies it
+  still hashes to the sha256 that was previewed, and only then writes.
+
+**The acceptance criterion is one sentence: no file, however malformed, ever
+turns into a transaction without a person asking for it.** `prepareImport` and
+`applyImport` are separate calls precisely so that asking is required, and the
+harness measures it directly rather than inferring it.
+
+**Why the text is passed twice instead of caching the parsed rows.** The
+`imports` row stores aggregates only — totals, a period, a row count, and the
+words of anything uncertain — which is what the schema comment already said.
+Caching rows there to avoid a second parse would put someone's raw statement
+into the one table that gets listed. Re-parsing text the caller already holds is
+cheaper, and the sha256 comparison proves the bytes applied are the bytes that
+were previewed.
+
+**Four refusals, in the parser itself, that will not be relaxed.** A **date is
+never guessed** (`03/04/2026` is ambiguous in most of the world and unambiguous
+in none of it, so the row is refused *as ambiguous* rather than as invalid); an
+**amount is never guessed** (a cell that is not a plain decimal is refused with
+the offending text quoted back); a **column is identified by name, never by
+position** ("the third column looks like a date" is how a balance column becomes
+an amount); and **nothing is persisted** by the parsing layer at all.
+
+**A row that moves no money is refused.** `0.00` in an amount column is almost
+always an opening or carried figure. Writing it as a transaction would be the
+same category error as storing a balance as a movement — the single thing
+ADR-031 exists to prevent.
+
+**Verification.** `src/lib/csv.test.ts` — **57 fixtures**. `src/lib/sha256.test.ts`
+— **9 fixtures**, including all four published NIST vectors (empty, `abc`, the
+56-byte padding boundary, and one million `a`), because a hand-written hash that
+is *almost* right looks like an integrity check and agrees with nothing.
+`scripts/conformance-4b2.ts` — **59 live invariants, 0 failed**, driving the real
+deployment through the real auth path: a comma inside quotes, a doubled quote
+and a field spanning two lines all survive the round trip; an unclosed quote, a
+quote inside a bare field, an empty file, a UTF-16 file and a binary file are
+each refused with a reason a person can act on and write nothing; an oversized
+file is refused and a file past the row cap is truncated **with the truncation
+stated**; an ambiguous, empty and impossible date each refuse their own row and
+locate it by row number; an invalid amount quotes its cell back; the same
+statement uploaded twice produces identical row keys and writes once; rows that
+disagree with the statement's own balance cannot be applied until the person says
+the file is wrong anyway; a foreign account and a foreign import are refused on
+both mutations; a re-applied import is idempotent; and the import is audited with
+a real content hash, the aggregate totals and `appliedAt`.
+
+**Three defects found and fixed while building this, all by the tests.**
+
+1. **The reconciliation compared the wrong pair of numbers.** It tested
+   `closingBalance + sum(rows)` against zero, but the first row's balance is the
+   balance *after* its own movement. Any statement without an explicit opening
+   row — which is most of them — reported a false discrepancy of exactly the
+   first row's amount, and that false discrepancy **blocks the import behind a
+   warning that the user's own bank is wrong**. Fixed by deriving the opening
+   balance as `firstBalance − firstMovement`. Pinned by a fixture that fails
+   loudly if it ever regresses.
+2. **`maxFieldsPerRow` was checked only on the comma**, so a row whose *last*
+   field tipped it over the bound walked straight past the check. A bound the
+   last column escapes is not a bound.
+3. **`parseSignedAmount("12.34-")` reported money going *in*.** The trailing
+   minus was stripped but the direction flag was never set, so a withdrawal was
+   recorded as a deposit. Exactly the sign error the `direction` field exists to
+   prevent.
+
+Two further edits removed a **second rounding rule**: `csv.ts` originally carried
+its own decimal-to-minor conversion and now imports `parseAmountToMinor` from
+`money.ts`, so ADR-031's rounding answer exists in exactly one place. And
+`CsvCurrency` is now an alias of `CurrencyCode` rather than a third copy of the
+currency list — a currency that imported but could not be stored would have been
+the failure mode.
+
+**Honest limits of this verification.** The harness drives the public surface and
+proves *stored* values by reading them back; it does not inspect the database.
+There is no public query over `activity`, so the single `import.applied` row is
+asserted through the mutation's return and **not read back**. `4B-2a` has **no
+mutation pass yet** — the 59 invariants are positive evidence, but a deliberate
+break-and-confirm run is outstanding and is listed as the next verification item.
+
+**What is deliberately NOT here.** **No XLSX, no PDF, no OCR, no scanned-PDF
+support** — each remains a future, separately approved increment with its own
+ADR-016 package, and nothing in this increment hints at them. No agent may apply
+an import: `AgentAction` remains `{kind:"flag"} | {kind:"log"}`. No fuzzy
+matching (ADR-024, ADR-031). No automatic column mapping, no heuristics on
+header shapes, no "just import it and correct it afterwards". No upload UI yet:
+`prepareImport` and `applyImport` exist and are verified, and the screen that
+calls them is the next bounded increment.
+
+Related: ADR-031, ADR-028, ADR-009, ADR-011, ADR-014, ADR-016, ADR-024, Q-008
+Budget: 7 of 7 files (`src/lib/csv.ts`, `src/lib/csv.test.ts`,
+`src/lib/sha256.ts`, `src/lib/sha256.test.ts`, `src/convex/transactions.ts`,
+`scripts/conformance-4b2.ts`, schema) · **0 deps** · 2 pure modules
 
 ---
 
@@ -4176,7 +4386,7 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
 | **3** | **IMPLEMENTED** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | environment only: the 07:00 cron delivery is declared and its runner exercised live, but the firing itself is not observable from here | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. **Feature 5 (Subscriptions + Account Labels) VERIFIED** — CHANGE-0017. A subscription is a number until its renewal is an action, so a subscription carries a `documentId` pointing at a real `documents` row **created in the same mutation** (ADR-029): the cost of a subscription in the feed is **zero new attention code**, and "one renewal, one item" stays structurally true rather than re-argued. An account is a label and a closed kind with **no balance column anywhere in the schema** (ADR-028) — an account with a balance is a ledger with extra steps, and §2.3 names the ledger as the thing Panel must not become. Annual cost is derived, never stored. Money stays `v.number()`; the floats were **not** migrated to minor units, because that would rewrite the input to a verified tax estimate, and the consequence is accepted and guarded instead (D44). 4 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 27 unit fixtures, a **74-check live conformance run with 0 skips**, and a proof that a subscription moves no weight while the whole feature runs. The harness found **D46** (`subscription.updated` was never written for a date-only edit, because the date lives on the document). **Feature 6 (Deterministic Agents) VERIFIED** — CHANGE-0018. Panel had intelligence and **no *when***: everything it knows is computed at query time, so a user who does not open the app is never told anything. Delivered as ADR-030 — **one Convex cron function** (`agents/daily`, `0 7 * * *`) and **one registered agent**, because five of the six §6.1 names already had producers and building them would have violated feature 3's *one renewal, one item* criterion in the name of following the specification. The scheduler answers *when* and never *what*: the tier is a **return type**, and the `automatic` variant's action union is `{flag} | {log}` — there is no variant that can write a financial row, so an agent that tried would not compile. The one agent (`finreview`) sums what rests on unconfirmed deduction categories and states the swing by calling `estimateTax` **twice** rather than applying a rate of its own, and its wording is constrained never to claim a category is wrong. **Overflow is counted, observable and audited** — all three, which needed a query (`getLastRun`) rather than a column, because a cap that silently discards work is a cap nobody can debug. 5 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 26 unit fixtures (**448 pass, 0 fail across 16 files**) and a **52-check live conformance run with 0 skips over 61 mutations**, whose headline check drives the per-space daily cap to its exact boundary and proves the 51st execution is refused, counted as overflow, reported `capped` rather than successful, and observable by the owner — with every financial figure byte-identical afterwards. **Cron firing itself is recorded as UNVERIFIED** rather than as a pass, because a 07:00 delivery cannot be observed inside a test run and the CLI cannot read the schedule back; likewise the thrown-failure path is a `[NOTE]`, not a pass. Remaining gaps in phase 3 are all product decisions or environment: Q-001, Q-006, Q-007 and the phase-2 handshake. |
-| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A) and CHANGE-0020 (4B-1), the latter by the explicit Q-008 answer | 2026-10-02 | 4B-2 needs its two parsing dependencies — an ADR-016 stop condition, so its own approval | **Built and verified:** 4B-1 (transactions: `transactions` + `imports`, `src/lib/money.ts`, a derived per-currency balance, 22 fixtures + 34 live invariants) and 4A workstream C (commitments and waiting-on in General as well as Relationships, gate removed, unresolvable-counterparty rows no longer dropped). **Not built:** the Finance workspace, contextual add, Home's honesty, and the import pipeline. D50 stands: the Health area is a mock and is not counted as capability. |
+| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A) and CHANGE-0020 (4B-1 and 4B-2a), the latter by the explicit Q-008 answer and the ADR-016 zero-dependency decision | 2026-10-02 | XLSX and PDF ingestion each need their own ADR-016 approval; the import **UI** is not built | **Built and verified:** 4B-1 (transactions: `transactions` + `imports`, `src/lib/money.ts`, a derived per-currency balance, 22 fixtures + 34 live invariants), **4B-2a** (CSV statement import: `src/lib/csv.ts`, `src/lib/sha256.ts`, `prepareImport`/`applyImport`, 57 + 9 fixtures and **59 live invariants, 0 dependencies**), and 4A workstream C. **Not built:** the import screen, XLSX, PDF, and Home's domain model. D50 stands: the Health area is a mock and is not counted as capability. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
 (People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting

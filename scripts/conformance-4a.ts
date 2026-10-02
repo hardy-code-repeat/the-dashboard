@@ -324,6 +324,70 @@ async function main() {
   );
 
   // -------------------------------------------------------------------------
+  section("A9 — Money at a glance on the Main Panel");
+  // -------------------------------------------------------------------------
+  // The overview is a product claim (balance first, feed second, no KPI wall)
+  // and an architectural one (reuse only, no new query, no stored balance).
+  // The second kind can be checked against source, so it is checked.
+  const areasSource = readFileSync(new URL("../src/components/Areas.tsx", import.meta.url), "utf8");
+  const dashboardSource = readFileSync(new URL("../src/pages/Dashboard.tsx", import.meta.url), "utf8");
+  // Bounded to the constants and the component only. Slicing to end-of-file
+  // would sweep in every component after it, and then "no mutation anywhere
+  // below this line" would be a claim about the file rather than about the
+  // overview.
+  const panelStart = areasSource.indexOf("const PANEL_TRANSACTIONS");
+  const panelBody = areasSource.indexOf("export function MoneyAtAGlance");
+  const panelEnd = areasSource.indexOf("\nexport function ", panelBody);
+  const panel = areasSource.slice(panelStart, panelEnd);
+
+  check("A9 — the panel is exported from the shared area module", panelBody > -1 && panel.length > 0);
+  check(
+    "A9 — and it is mounted on the cross-domain view, not inside the Finance area",
+    /activeArea === "general"[\s\S]{0,80}<MoneyAtAGlance/.test(dashboardSource) &&
+      !/activeArea === "finance"[\s\S]{0,80}<MoneyAtAGlance/.test(dashboardSource),
+  );
+  check(
+    "A9 — it reads the three queries the Finance workspace already reads, and adds no fourth",
+    panel.includes("api.transactions.listBalances") &&
+      panel.includes("api.transactions.listTransactions") &&
+      panel.includes("api.subscriptions.listSubscriptions"),
+  );
+  check(
+    "A9 — it writes nothing: no mutation, so the overview cannot create money",
+    !panel.includes("useMutation") && !panel.includes("api.transactions.applyImport"),
+  );
+  check(
+    "A9 — the recent feed is bounded on the client, not just by the query default",
+    panel.includes("PANEL_TRANSACTIONS = 5") && /limit: PANEL_TRANSACTIONS/.test(panel),
+  );
+  check(
+    "A9 — currencies are accumulated in a keyed map, so two currencies cannot be summed into one figure",
+    /new Map<string, number>\(\)/.test(panel) && panel.includes("totals.set(balance.currency"),
+  );
+  check(
+    "A9 — and the panel states that the figure is summed rather than stored",
+    panel.includes("not stored"),
+  );
+  check(
+    "A9 — it renders nothing at all when there is nothing to say",
+    /balances !== undefined && balances\.length === 0[\s\S]{0,120}return null/.test(panel),
+  );
+  check(
+    "A9 — it links into the Finance area rather than growing into a workspace",
+    panel.includes("onOpenFinance") && dashboardSource.includes("onOpenFinance={() => setActiveArea(\"finance\")}"),
+  );
+  check(
+    "A9 — no new backend function was added for the overview",
+    !readFileSync(new URL("../src/convex/transactions.ts", import.meta.url), "utf8").includes(
+      "getFinanceOverview",
+    ),
+  );
+  note(
+    "A9 — rendered output",
+    "the nine checks above are source anchors, not HTTP observations. The figures they describe were read in a browser; no API call can observe what the Main Panel chose to render, so they are not counted as live invariants.",
+  );
+
+  // -------------------------------------------------------------------------
   observations.push("");
   observations.push("=".repeat(66));
   observations.push(`Mutations written by this run: ${writes}.`);

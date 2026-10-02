@@ -16,20 +16,44 @@
  * a user's transactions and filters afterwards — the collect-then-filter shape
  * recorded as D42, D43 and D48 is designed out rather than reviewed for.
  *
+ * ## Import (phase 4B-2a)
+ *
+ * Two mutations, in this order, and the order is the feature:
+ *
+ * 1. `prepareImport` — reads a CSV, produces a **preview**, and writes exactly
+ *    one row to `imports`. It writes no transaction. Nothing about the file
+ *    becomes durable except a record that someone tried it.
+ * 2. `applyImport` — takes the same text, verifies it still hashes to the same
+ *    value, and only then writes transactions, one per confirmed candidate.
+ *
+ * The caller therefore has to do two things to import a statement, and the
+ * second one is the one that writes money. That is the whole safety story: there
+ * is no code path from "a file arrived" to "transactions exist" that does not go
+ * through a person asking for it.
+ *
+ * Why the text is passed twice rather than cached: the `imports` row stores
+ * aggregates only — totals, a period, a row count, and the words of anything
+ * uncertain — and the schema says so. Caching the rows there to avoid a second
+ * parse would mean storing someone's raw statement in the one table that gets
+ * listed and exported. Re-parsing the text the caller already holds is cheaper
+ * than that, and the sha256 check means the bytes applied are provably the
+ * bytes that were previewed.
+ *
  * ## What is deliberately absent
  *
  * No agent writes a transaction: `AgentAction` remains
  * `{kind:"flag"} | {kind:"log"}`, so the tier system cannot express a financial
- * write at all. There is no reconciliation, no transfer pairing, no import
- * pipeline — the `imports` table exists because the pipeline needs a schema to
- * be designed against, and filling it is its own change with its own
- * dependencies.
+ * write at all. There is no reconciliation against a bank, no transfer pairing,
+ * and no XLSX or PDF pipeline — those are separate changes with their own
+ * approvals, and this module does not hint at them.
  */
 
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
+import { buildImportPreview, LIMITS } from "../lib/csv";
 import { isCurrencyCode, signedMinor, transactionKey } from "../lib/money";
+import { sha256Hex } from "../lib/sha256";
 import type { Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
 import { mutation, query } from "./_generated/server";
@@ -47,6 +71,14 @@ const MAX_IMPORTS = 20;
 /** Accounts are user-created and few; the cap exists so the fan-out is bounded. */
 const MAX_ACCOUNTS = 20;
 const MAX_LABEL = 120;
+/**
+ * How many rows one import may write.
+ *
+ * Referenced rather than restated: the cap lives in `csv.ts` so that the preview
+ * and the apply cannot truncate at different rows, and this constant exists only
+ * so the write loop has a bound to state in its own documentation.
+ */
+const MAX_IMPORT_ROWS = LIMITS.maxCandidates;
 
 /**
  * Rejects an amount that is not a whole number of minor units.
@@ -329,5 +361,228 @@ export const getImport = query({
     const row = await ctx.db.get(args.id);
     if (!row || row.ownerUserId !== userId) return null;
     return row;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// import — preview first, apply on request
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads a statement and shows the user what it contains. **Writes no
+ * transaction.**
+ *
+ * The single row it does write is the audit record: one row per attempt,
+ * including attempts that failed, because "I uploaded it and nothing happened"
+ * is the state a person cannot otherwise explain to themselves. A failed attempt
+ * stores the reason in words and never stores the file.
+ *
+ * `LIMITS.maxCandidates` has already truncated the candidate list inside the
+ * pure parser, so the response is bounded by construction rather than by this
+ * function remembering to bound it.
+ */
+export const prepareImport = mutation({
+  args: {
+    accountId: v.optional(v.id("accounts")),
+    filename: v.string(),
+    text: v.string(),
+    currency: currencyValidator,
+    contentType: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const spaceId = await ensurePersonalSpace(ctx, userId);
+
+    if (args.accountId && !(await ownedAccount(ctx, args.accountId, userId))) {
+      throw new Error("That account is not yours.");
+    }
+    if (!isCurrencyCode(args.currency)) throw new Error("Unknown currency.");
+
+    const preview = buildImportPreview(args.text, { currency: args.currency });
+
+    // A total that has outgrown an exact integer is refused even as a total:
+    // "approximately right" is not a thing Panel is willing to store.
+    const overflow =
+      preview.ok && !Number.isSafeInteger(preview.computedTotalMinor)
+        ? "The amounts in that file add up to more than Panel can represent exactly."
+        : null;
+    const readable = preview.ok && overflow === null;
+
+    const period =
+      readable && preview.candidates.length > 0
+        ? preview.candidates.reduce(
+            (acc, c) => ({ lo: Math.min(acc.lo, c.postedAt), hi: Math.max(acc.hi, c.postedAt) }),
+            { lo: Infinity, hi: -Infinity },
+          )
+        : null;
+
+    const importId = await ctx.db.insert("imports", {
+      ownerUserId: userId,
+      spaceId,
+      filename: args.filename.trim().slice(0, 200) || "statement.csv",
+      byteSize: new TextEncoder().encode(args.text).length,
+      contentType: args.contentType ?? "text/csv",
+      sha256: sha256Hex(args.text),
+      status: readable ? ("extracted" as const) : ("failed" as const),
+      kind: "csv" as const,
+      // Aggregates only. The rows stay in the caller's hands until they ask for
+      // them to be written, so the one table that gets listed holds no statement.
+      detected: readable
+        ? {
+            periodStart: period?.lo,
+            periodEnd: period?.hi,
+            totals: [{ currency: args.currency, amountMinor: preview.computedTotalMinor }],
+            rowCount: preview.candidates.length,
+          }
+        : undefined,
+      uncertainty: preview.ok ? preview.uncertainty : undefined,
+      reason: preview.ok ? (overflow ?? undefined) : preview.reason,
+      createdAt: Date.now(),
+    });
+
+    if (!preview.ok) return { ok: false as const, importId, reason: preview.reason };
+    if (!readable) return { ok: false as const, importId, reason: overflow as string };
+
+    return {
+      ok: true as const,
+      importId,
+      sha256: sha256Hex(args.text),
+      currency: args.currency,
+      candidates: preview.candidates,
+      rejected: preview.rejected,
+      uncertainty: preview.uncertainty,
+      computedTotalMinor: preview.computedTotalMinor,
+      openingBalanceMinor: preview.openingBalanceMinor,
+      closingBalanceMinor: preview.closingBalanceMinor,
+      totalsMatch: preview.totalsMatch,
+      truncated: preview.truncated,
+      columnMap: preview.columnMap,
+    };
+  },
+});
+
+/**
+ * Writes the transactions a person confirmed.
+ *
+ * Four things have to be true before this writes anything, and each one is a
+ * refusal rather than a repair:
+ *
+ * 1. The import is the caller's, and has not already been applied. Retrying an
+ *    applied import returns what it did rather than writing it twice.
+ * 2. The text still hashes to the sha256 that was previewed. If the file
+ *    changed underneath, the confirmation was given about different bytes.
+ * 3. If the statement's own balance disagrees with its own rows, the caller has
+ *    said so out loud with `acknowledgeMismatch`.
+ * 4. The account, if given, is the caller's.
+ *
+ * Rows already present are skipped by `externalId`, which is derived from the
+ * row's content, so uploading the same statement twice writes once.
+ */
+export const applyImport = mutation({
+  args: {
+    importId: v.id("imports"),
+    text: v.string(),
+    currency: currencyValidator,
+    accountId: v.optional(v.id("accounts")),
+    acknowledgeMismatch: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const spaceId = await ensurePersonalSpace(ctx, userId);
+
+    const file = await ctx.db.get(args.importId);
+    if (!file || file.ownerUserId !== userId) throw new Error("That import is not yours.");
+
+    // Retrying an applied import is not an error and is not a second write.
+    if (file.status === "applied") {
+      return { ok: true as const, alreadyApplied: true as const, written: 0, skipped: 0 };
+    }
+    if (file.status === "failed") {
+      throw new Error("That file was never read, so there is nothing to apply. Upload it again.");
+    }
+    if (file.kind !== "csv") {
+      throw new Error("That kind of file cannot be applied yet.");
+    }
+
+    if (sha256Hex(args.text) !== file.sha256) {
+      throw new Error("That file has changed since you previewed it. Preview it again.");
+    }
+    if (args.accountId && !(await ownedAccount(ctx, args.accountId, userId))) {
+      throw new Error("That account is not yours.");
+    }
+    if (!isCurrencyCode(args.currency)) throw new Error("Unknown currency.");
+
+    const preview = buildImportPreview(args.text, { currency: args.currency });
+    if (!preview.ok) throw new Error(`That file can no longer be read: ${preview.reason}`);
+    if (preview.candidates.length === 0) throw new Error("There is nothing in that file to import.");
+
+    // `totalsMatch === null` means there was no balance to check against, which
+    // is not the same as a failure and does not need acknowledging.
+    if (preview.totalsMatch === false && !args.acknowledgeMismatch) {
+      throw new Error(
+        "These rows do not agree with the statement's own balance. Look at the difference, then confirm to apply anyway.",
+      );
+    }
+
+    // The same cap the preview used, so what was reviewed is what gets written.
+    const rows = preview.candidates.slice(0, MAX_IMPORT_ROWS);
+
+    // One point read per row on a two-field index prefix — the narrowest read
+    // Convex offers, and issued in parallel rather than in a loop. This is
+    // deliberately *not* "read the owner's transactions and filter in memory":
+    // that shape is D48, and it would read every row the user has ever imported
+    // to answer a question about 200 of them.
+    const already = await Promise.all(
+      rows.map(async (row) => {
+        const found = await ctx.db
+          .query("transactions")
+          .withIndex("by_owner_externalId", (q) =>
+            q.eq("ownerUserId", userId).eq("externalId", row.externalId),
+          )
+          .unique();
+        return found ? row.externalId : null;
+      }),
+    );
+    const present = new Set(already.filter((id): id is string => id !== null));
+
+    let written = 0;
+    let skipped = 0;
+    for (const row of rows) {
+      if (present.has(row.externalId)) {
+        skipped += 1;
+        continue;
+      }
+      await ctx.db.insert("transactions", {
+        ownerUserId: userId,
+        spaceId,
+        accountId: args.accountId,
+        postedAt: row.postedAt,
+        amountMinor: row.amountMinor,
+        currency: args.currency,
+        direction: row.direction,
+        label: row.label.slice(0, MAX_LABEL),
+        source: "import" as const,
+        externalId: row.externalId,
+        importId: args.importId,
+      });
+      written += 1;
+    }
+
+    await ctx.db.patch(args.importId, { status: "applied" as const, appliedAt: Date.now() });
+
+    // One activity row for the file, not one per transaction: an import of 200
+    // rows is a single event, and 200 feed entries would bury the thing that
+    // actually happened.
+    if (written > 0) {
+      await ctx.db.insert("activity", {
+        spaceId,
+        actor: "user",
+        kind: "import.applied",
+        objectId: file.sha256,
+        at: Date.now(),
+      });
+    }
+
+    return { ok: true as const, alreadyApplied: false as const, written, skipped };
   },
 });

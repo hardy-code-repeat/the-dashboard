@@ -24,7 +24,7 @@ import { AttentionFeed } from "@/components/AttentionFeed";
 import { CalendarStrip } from "@/components/CalendarStrip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { AreaPicker, Commitments, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
+import { AreaPicker, Commitments, HealthArea, IntegrationsArea, MoneyAtAGlance, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
 import { FinanceArea } from "@/components/FinanceArea";
 import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
@@ -762,6 +762,17 @@ export default function Dashboard() {
         </div>
 
         )}
+
+        {/* ---------- MONEY ----------
+            Same reasoning as Commitments below, and the same architectural
+            line: Main Panel is the cross-domain *overview*, the Finance area is
+            the *workspace*. This reuses the three queries FinanceArea already
+            reads and adds no fourth — the currency totals are summed in the
+            component from data already fetched, so the number here and the
+            number in Finance are the same arithmetic and cannot disagree. */}
+        {activeArea === "general" ? (
+          <MoneyAtAGlance onOpenFinance={() => setActiveArea("finance")} />
+        ) : null}
 
         {/* ---------- COMMITMENTS + WAITING ON ----------
             General is the cross-domain view, and an object does not stop

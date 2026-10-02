@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "convex/react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowUpRight,
   Calendar,
   CalendarClock,
   Check,
@@ -29,7 +30,9 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatMinor, isCurrencyCode } from "@/lib/money";
 import { describeDue, parseTaskInput } from "@/lib/nlp";
+import { formatDay } from "@/lib/subscriptions";
 import { cn } from "@/lib/utils";
 
 /** Maps an area kind to its icon. */
@@ -575,6 +578,191 @@ function toDateInput(at: number | null): string {
  * because the user has not visited a particular tab. One component, one query,
  * two mounts — never a second commitment model.
  */
+/**
+ * How many recent transactions the overview shows.
+ *
+ * Five is a deliberate number. The challenger banks that made the feed their
+ * home screen — Monzo, Revolut, Starling — all chose restraint over density,
+ * and Starling's own description of the pattern is "a continuous feed rather
+ * than monthly statements". A feed a person can finish is an overview; a feed
+ * they have to scroll past is a database dump, which is the thing this panel is
+ * explicitly not.
+ */
+const PANEL_TRANSACTIONS = 5;
+/** Accounts named individually before the rest become a count. */
+const PANEL_ACCOUNTS = 4;
+
+/**
+ * Money at a glance — the Finance signal inside the cross-domain overview.
+ *
+ * ## What the research said, and what was kept
+ *
+ * Every comparable product puts one figure first and makes it the largest
+ * thing on the screen; the feed of recent activity is the second thing; and the
+ * strong advice is to keep the home screen from competing with itself for space
+ * — Revolut shows a basic-account user only what they need, and Monzo holds its
+ * home screen to five actions. That is adopted wholesale.
+ *
+ * The generic dashboard advice — net worth, budget against actual, spending by
+ * category — is **rejected**, because every one of those needs a number Panel
+ * has refused to keep. Net worth needs stored balances (ADR-031), a budget needs
+ * a budget model that does not exist, and a spending-by-category chart would
+ * mean inventing an aggregation the backend deliberately does not have.
+ *
+ * What is left is the part Panel can answer honestly: what the accounts are
+ * worth, what money recently moved, and what is about to come out.
+ *
+ * ## Why there is no new query here
+ *
+ * Three `useQuery` calls, all of them functions that already existed and were
+ * already read by the Finance workspace. No new backend query, no new model, no
+ * stored balance, no dependency. The currency totals below are summed in the
+ * component from data already fetched — the same way `FinanceArea`'s Overview
+ * composes its figures — so the number on the overview is the same arithmetic
+ * as the number in Finance, and the two cannot disagree.
+ *
+ * `listBalances` is the most expensive read in the finance module: it sums each
+ * account's transactions to derive a balance, because ADR-031 forbids storing
+ * one. Putting it on the landing surface is a real cost and it is paid
+ * deliberately — a derived balance is the one figure that cannot drift from the
+ * bank, and hiding it behind a tab would waste the most trustworthy number in
+ * the product. It is capped at twenty accounts and issued in parallel.
+ */
+export function MoneyAtAGlance({ onOpenFinance }: { onOpenFinance: () => void }) {
+  const balances = useQuery(api.transactions.listBalances);
+  const recent = useQuery(api.transactions.listTransactions, { limit: PANEL_TRANSACTIONS });
+  const subs = useQuery(api.subscriptions.listSubscriptions);
+
+  /**
+   * One figure per currency, never one total.
+   *
+   * An account row carries a label and a kind but no currency (ADR-028), so a
+   * person can hold two currencies in one account. Adding pounds to dollars
+   * would be a small, confident, unsourceable lie, and it is the same class of
+   * lie as a stored balance — so the currencies are shown side by side instead.
+   */
+  const totals = new Map<string, number>();
+  for (const account of balances ?? []) {
+    for (const balance of account.balances) {
+      totals.set(balance.currency, (totals.get(balance.currency) ?? 0) + balance.amountMinor);
+    }
+  }
+
+  // The soonest thing money leaves for. Backward-looking balances plus one
+  // forward-looking date is the most a person can act on from this data.
+  const nextRenewal = (subs?.subscriptions ?? [])
+    .filter((s) => s.status === "active" && typeof s.renewsAt === "number")
+    .slice()
+    .sort((a, b) => (a.renewsAt ?? Infinity) - (b.renewsAt ?? Infinity))[0];
+
+  const accountsWithMoney = (balances ?? []).filter((a) =>
+    a.balances.some((b) => b.amountMinor !== 0),
+  );
+  const transactions = recent ?? [];
+
+  // Nothing to say means saying nothing. A panel that greets a new user with an
+  // empty balance box is teaching them that Panel has nothing to offer.
+  if (balances !== undefined && balances.length === 0 && subs?.subscriptions.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="mb-8">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <h2 className="flex items-center gap-2 font-display text-sm uppercase tracking-wide">
+          <Landmark className="size-4" />
+          Money
+        </h2>
+        <button
+          type="button"
+          onClick={onOpenFinance}
+          className="flex items-center gap-1 text-[11px] font-bold uppercase underline-offset-4 hover:underline"
+        >
+          Open Finance <ArrowUpRight className="size-3" />
+        </button>
+      </div>
+
+      <div className="brutal-flat bg-card p-5">
+        {/* ---------- BALANCES: the one figure, largest on the panel ---------- */}
+        {balances === undefined ? (
+          <div className="flex items-center gap-2 text-[11px] uppercase text-muted-foreground">
+            <Loader2 className="size-3 animate-spin" />
+            Summing your accounts…
+          </div>
+        ) : totals.size === 0 ? (
+          <p className="text-[11px] uppercase text-muted-foreground">
+            No transactions recorded yet — accounts are ready, the figures arrive when you add some.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+            {[...totals.entries()]
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([currency, amountMinor]) => (
+                <div key={currency}>
+                  {/* The headline. Greatest emphasis, as every comparable
+                      product does — the difference is that this one is a sum
+                      rather than a stored field, and says so. */}
+                  <p className="font-display text-3xl leading-none">
+                    {isCurrencyCode(currency) ? formatMinor(amountMinor, currency) : `${amountMinor} ${currency}`}
+                  </p>
+                  <p className="mt-1 text-[10px] uppercase text-muted-foreground">{currency}</p>
+                </div>
+              ))}
+            <p className="text-[10px] uppercase text-muted-foreground">
+              Summed from your transactions, not stored
+            </p>
+          </div>
+        )}
+
+        {/* ---------- ACCOUNTS: enough context, no table ---------- */}
+        {accountsWithMoney.length > 0 && (
+          <ul className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t-2 border-border pt-3">
+            {accountsWithMoney.slice(0, PANEL_ACCOUNTS).map((account) => (
+              <li key={account.accountId} className="text-[11px] uppercase text-muted-foreground">
+                {account.label}
+              </li>
+            ))}
+            {accountsWithMoney.length > PANEL_ACCOUNTS && (
+              <li className="text-[11px] uppercase text-muted-foreground">
+                +{accountsWithMoney.length - PANEL_ACCOUNTS} more
+              </li>
+            )}
+          </ul>
+        )}
+
+        {/* ---------- NEXT RENEWAL: the one forward-looking date ---------- */}
+        {nextRenewal && (
+          <p className="mt-4 border-t-2 border-border pt-3 text-[11px] uppercase text-muted-foreground">
+            {nextRenewal.label} — {nextRenewal.detail}
+          </p>
+        )}
+
+        {/* ---------- RECENT ACTIVITY: the feed, bounded ---------- */}
+        {transactions.length > 0 && (
+          <ul className="mt-4 space-y-1 border-t-2 border-border pt-3">
+            {transactions.map((t) => (
+              <li key={t._id} className="flex items-baseline justify-between gap-3 text-[11px]">
+                <span className="truncate">
+                  <span className="text-muted-foreground">{formatDay(t.postedAt)}</span>{" "}
+                  <span>{t.label}</span>
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 font-bold",
+                    t.direction === "out" ? "text-muted-foreground" : "text-foreground",
+                  )}
+                >
+                  {isCurrencyCode(t.currency) ? formatMinor(t.amountMinor, t.currency) : t.amountMinor}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function Commitments({ people }: { people: { id: Id<"people">; name: string }[] }) {
   const data = useQuery(api.commitments.listCommitments);
   const create = useMutation(api.commitments.createCommitment);

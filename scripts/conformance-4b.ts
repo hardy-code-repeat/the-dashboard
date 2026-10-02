@@ -436,7 +436,7 @@ async function main() {
 
   const importsAfter = await client.query(f.listImports);
   check(
-    "B8 — the imports table is honestly empty: Panel has no upload surface yet",
+    "B8 — feature 4B alone writes no import record (the pipeline is 4B-2a, harness 4b2)",
     importsBefore.length === 0 && importsAfter.length === 0,
     `${importsAfter.length} records`,
   );

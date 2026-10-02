@@ -153,6 +153,9 @@ export const ACTIVITY_KINDS = [
   // siblings below; the activity row is what makes a manual financial entry
   // auditable rather than silent.
   "transaction.created",
+  // Phase 4 feature 4B-2a. One row per *file*, not per transaction: an import of
+  // 200 rows is one event, and writing 200 activity rows would bury the feed.
+  "import.applied",
   "capture.committed",
   "person.created",
   "person.updated",
@@ -208,6 +211,7 @@ export const activityKindValidator = v.union(
   v.literal("note.created"),
   v.literal("expense.added"),
   v.literal("transaction.created"),
+  v.literal("import.applied"),
   v.literal("capture.committed"),
   v.literal("person.created"),
   v.literal("person.updated"),
