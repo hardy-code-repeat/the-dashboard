@@ -350,6 +350,14 @@ async function writeNormalizedBatch(
   const now = args.batch.fetchedAt;
   const stored = await loadStored(ctx, args.spaceId);
   const diff = diffBatch(args.batch, stored);
+  // The row behind each key, indexed once, from the read that already happened.
+  // `findByKey` re-read the entire space range for every patch and every delete,
+  // so a batch of n changes cost n full scans to look up rows `stored` was
+  // already holding. Each lookup returned one row, so the result looked bounded
+  // while the database access was not — D48's shape, in the one place its audit
+  // had not reached. A mutation is serialisable, so the re-read could only ever
+  // return what `stored` already had.
+  const rowsByKey = new Map(stored.map((s) => [s.key, s.fields as StoredRow] as const));
 
   const counts = {
     creates: diff.creates,
@@ -374,12 +382,12 @@ async function writeNormalizedBatch(
     if (entry.action === "unchanged") continue;
 
     if (entry.action === "delete") {
-      await applyUpstreamDelete(ctx, args.spaceId, entry.kind, entry.key, now, counts);
+      await applyUpstreamDelete(ctx, rowsByKey.get(entry.key), entry.kind, now, counts);
       continue;
     }
 
     if (entry.action === "patch") {
-      const existing = await findByKey(ctx, args.spaceId, entry.kind, entry.key);
+      const existing = rowsByKey.get(entry.key);
       if (!existing) continue;
       // Only the differing fields. Never a row replacement: a value the user
       // or another integration wrote must not be reverted by a sync.
@@ -430,17 +438,18 @@ async function writeNormalizedBatch(
  */
 async function applyUpstreamDelete(
   ctx: Ctx,
-  spaceId: Id<"spaces">,
+  existing: StoredRow | undefined,
   kind: string,
-  key: string,
   now: number,
   counts: { written: number; deletes: number; cancelled: number },
 ): Promise<void> {
-  const existing = await findByKey(ctx, spaceId, kind, key);
+  // A key the diff engine produced always came out of `stored`, so this is
+  // never absent in practice — the branch is kept because it was here first and
+  // a delete that cannot find its row must stay a no-op rather than a throw.
   if (!existing) return;
 
   if (kind === "calendarEvent") {
-    const startsAt = (existing as { startsAt?: number | null }).startsAt ?? null;
+    const startsAt = existing.startsAt ?? null;
     if (startsAt != null && startsAt >= now) {
       await ctx.db.patch(storedId(kind, existing), { cancelled: true });
       counts.written += 1;
@@ -687,25 +696,12 @@ function stored(kind: SyncedKind, externalId: string | undefined, row: unknown):
   };
 }
 
-async function findByKey(ctx: Ctx, spaceId: Id<"spaces">, kind: string, key: string) {
-  if (kind === "expense") {
-    const rows = await ctx.db
-      .query("expenses")
-      .withIndex("by_space_externalId", (q) => q.eq("spaceId", spaceId))
-      .collect();
-    return rows.find((r) => r.externalId != null && keyFor("expense", r.externalId) === key) ?? null;
-  }
-  if (kind === "calendarEvent") {
-    const rows = await ctx.db
-      .query("calendarEvents")
-      .withIndex("by_space_externalId", (q) => q.eq("spaceId", spaceId))
-      .collect();
-    return (
-      rows.find((r) => keyFor("calendarEvent", r.externalId) === key) ?? null
-    );
-  }
-  return null;
-}
+/**
+ * What the sync path needs from a stored row once it is inside a
+ * `StoredObject.fields`. The whole row is really there; this names the three
+ * fields the write paths actually read, so the cast happens in one place.
+ */
+type StoredRow = { _id: string; ownerUserId: Id<"users">; startsAt?: number | null };
 
 /**
  * The document id behind a stored row.
