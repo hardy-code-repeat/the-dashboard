@@ -6,6 +6,7 @@ import {
   Brain,
   Check,
   Circle,
+  Download,
   FileText,
   Loader2,
   LogOut,
@@ -26,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AreaPicker, Commitments, HealthArea, IntegrationsArea, MoneyAtAGlance, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
 import { FinanceArea } from "@/components/FinanceArea";
+import { DataExportPanel } from "@/components/DataExportPanel";
 import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
 import { planCapture } from "@/lib/capture";
@@ -307,6 +309,20 @@ export default function Dashboard() {
               </summary>
               <div className="border-t-2 border-border p-4">
                 <IntegrationsArea />
+              </div>
+            </details>
+
+            {/* Data portability lives here rather than in a Finance or People
+                area: it spans every area, so burying it in one of them would
+                misrepresent where the data actually is. Collapsed by default so
+                it reads as a control, not as a feature competing for attention. */}
+            <details className="brutal-flat mt-3 bg-card">
+              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
+                <Download className="size-4" />
+                Your data
+              </summary>
+              <div className="border-t-2 border-border p-4">
+                <DataExportPanel />
               </div>
             </details>
           </section>

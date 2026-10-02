@@ -2196,6 +2196,286 @@ ADR-030
 
 ---
 
+## CHANGE-0025
+
+**Data export: a real, bounded, owner-scoped portability surface — and the case for deleting is still a human decision**
+
+Severity: MINOR
+Status: **EXPORT IMPLEMENTED, ATTACKED AND VERIFIED. DELETION DELIBERATELY NOT IMPLEMENTED.**
+
+**Trigger.** D56 from CHANGE-0023 — Panel had no way for a user to obtain
+their own data. That is the first half of data portability; the second half is
+deletion, and the two were separated here on purpose.
+
+**The separation is the decision.** A commit that adds a download *and*
+invents deletion semantics would bundle a reversible feature with an
+irreversible one. Deletion also needs answers Panel does not have: what
+happens to rows a user owns inside a space other people are in, whether audit
+records are retained or redacted, and what happens to learned model state.
+Those are legal and product calls. The export ships; deletion stops at the
+boundary with the questions written down.
+
+**What was built.** 3 files, 0 new tables, 0 new dependencies, 1 abstraction
+(the inventory).
+
+- `src/lib/export.ts` — the **data inventory**, pure and table-testable.
+- `src/convex/export.ts` — `exportMyData`, a **read-only** query.
+- `src/components/DataExportPanel.tsx` — the surface, on the general tab.
+
+### The four tiers, as code rather than prose
+
+A privacy policy written as paragraphs drifts from the schema the moment anyone
+adds a column. So every table is classified in one array, and:
+
+- **userOwned** — emitted in full.
+- **securityAudit** — `spaceMembers`, `grants`, `accessLog`, `activity`,
+  `agentRuns`, `agentProposals`, `links`. **Counted, never emitted.** These name
+  other data subjects or exist as evidence; a count tells the user they exist
+  without disclosing whose.
+- **systemSecret** — `connectionTokens`, `oauthStates`, `syncCursors`,
+  `featureFlags`, `attentionState`, `assistantState`, `modelSnapshots`. **Never
+  read at all**, so absence is structural rather than filtered.
+- **shared** — currently empty, and deliberately so. Every product table is
+  owner-scoped today; adding a co-owned row to this tier requires deciding
+  whether a co-member's private note should be exported *to* them, which would
+  be a fresh disclosure rather than a portability right.
+
+**`classifyTable` returns `null` for an unknown table.** That is the
+load-bearing part: adding a table without classifying it fails the export
+loudly instead of leaking it. A fixture asserts every one of the 31 schema
+tables is classified, and it **caught a real omission on first run** —
+`connections` was unclassified, which is the fail-closed design working rather
+than a test being satisfied.
+
+### Why the reads are written out one by one
+
+The first draft looped over `table: string`. It does not type-check, and the
+reason it does not is the point: Convex resolves table and index names
+statically, so a dynamic name **erases the guarantee that the index exists**.
+An index that does not exist is a silent full scan — precisely the
+collect-then-filter shape D48 forbids. Written out explicitly, each read is
+checked against its real index at compile time.
+
+That paid for itself immediately. The three log tables index `by_space_at`, not
+`by_space`, and writing the wrong one was a **compile error** rather than a
+reviewer's judgement call. The same reasoning removed an `any` that had been
+carrying the dynamic lookup, which the lint gate had (correctly) flagged.
+
+### Read discipline (D48)
+
+Every table is read through an owner index with `.take(MAX_ROWS_PER_TABLE + 1)`
+— one row past the cap, so "exactly full" is distinguishable from "more". A
+reached cap is **reported** as `<key>.capped`, because a silent truncation is
+the privacy equivalent of a wrong number: the user would hold a partial file
+that claims to be complete.
+
+### `scripts/conformance-export.ts` — 26 live boundaries, 0 failed
+
+Two authenticated users plus an anonymous caller, driven from outside.
+
+- **E1 — no identity argument exists.** Passing `userId: "someone-else"` is
+  **rejected by Convex's validator** (`extra field ... not in the validator`),
+  so the request never reaches the handler. This is stronger than "the handler
+  ignores it", and a **control** immediately after it proves the same query with
+  no arguments still succeeds — otherwise E1 could pass on a broken function.
+- **E2 — a populated export really contains the caller's own rows** (person,
+  task, note, transaction). Without this, E3–E5 would pass on an empty export.
+- **E3 — owner scope.** Bob's export contains none of Alice's rows, and the
+  manifest names Bob.
+- **E4 — no secret leaves the system, scanned as bytes not asserted from the
+  tier map.** Two independent controls: a recursive walk for
+  credential-shaped *keys*, and a search for the **literal email-relay key read
+  out of `emailOtp.ts`**. Reading the literal from source rather than pasting it
+  means the check tracks the real key and cannot rot into a stale constant. The
+  two can disagree — a future refactor could read a secret table while the
+  classification still claims it never does — and scanning the payload catches
+  that regardless of what the map says.
+- **E5 — an anonymous caller gets zero rows** and a manifest naming them
+  `anonymous`, rather than an error that would confirm the function exists.
+- **E6 — a brand-new account exports successfully** with empty arrays, and two
+  exports of unchanged data are **byte-identical** at the same timestamp.
+- **E7 — the manifest tells the truth**, including that it says nothing about
+  co-member data.
+
+### False-confidence test: the owner filter was removed, and caught
+
+`people`' owner index was pointed at a different user id and redeployed. The
+harness **failed** — `E2 — the export includes the caller's own person` — and
+exited 1. The control is load-bearing and is proven so, not assumed. Mutant
+reverted; `grep -c MUTANT` = 0 in `src/`.
+
+### D56 — deletion — **still a human decision, and the boundary is now concrete**
+
+Export makes one half of the story true and leaves the other visibly false.
+The questions, narrowed by what the inventory now reveals:
+
+1. **Shared space.** A user owns a task in a space two others are in. Deleting
+   the account removes their copy of a row two people can still see. Retain
+   anonymised, or delete and accept the disappearance?
+2. **Audit records.** `accessLog` and `activity` name actors. Art. 17 does not
+   require deleting evidence of a security event, and most regimes permit
+   retention — but "we kept it" must be a stated decision, not a default.
+3. **Model state.** `assistantState` / `modelSnapshots` are behavioural
+   fingerprints. Deleting them changes what Panel predicts next; retaining them
+   means keeping derived data about someone who asked to be forgotten.
+
+No deletion code was written. `export.ts` is a read path and contains no
+mutation, which is stated at the top of the file so the absence is deliberate
+rather than an oversight someone later "fixes".
+
+### What the export deliberately does not do
+
+- **No deletion**, no account closure, no "clear my data" — see above.
+- **No co-member data**, even in a shared space.
+- **No credentials**, in any form, including hashed.
+- **No import.** A backup you cannot restore is a download, not a backup.
+
+---
+
+## CHANGE-0024
+
+**Auth upgrade, dependency reconciliation, and D59: sign-out does not revoke a token**
+
+Severity: SECURITY
+Status: **UPGRADE APPLIED AND VERIFIED; D59 RECORDED AS A BOUNDED PLATFORM
+LIMITATION WITH A NAMED MITIGATION; D54 STILL BLOCKED ON THE OWNER.**
+
+**Trigger.** D55 from CHANGE-0023 — the homoglyph-`@` advisory in `@auth/core`
+was unfixable while `@convex-dev/auth@0.0.90` pinned `@auth/core ^0.37.0` (a
+caret on a 0.x range that can never reach a patched release).
+
+**Executed.**
+
+- `@convex-dev/auth` 0.0.90 → **0.0.96**, which moves `@auth/core` from a
+  pinned dependency to a **peer dependency at `^0.41.1`**.
+- `@auth/core` **0.37.x → 0.41.3**, added explicitly to `package.json` so the
+  peer range is satisfied visibly rather than by accident.
+- `axios` 1.18.1 → **1.20.0**, `react-router` 7.18.1 → **7.18.4**, `hono`
+  4.12.27 → **4.13.12**, `postcss` 8.5.16 → **8.5.28**, `nanoid` 3.3.15 →
+  **3.3.19**.
+
+**No dependency was added and no version *range* was widened.** All five bumps
+resolve inside the ranges `package.json` already declared, so the constraint
+set is unchanged; this is a security patch level, not a new dependency, and it
+does not engage ADR-016.
+
+**A correction to the record.** `package-lock.json` was dated 25 September and
+had never been maintained, because the project installs with Bun. Every
+`npm audit` result in this project was therefore partly measured against a
+stale tree. The lockfile has been regenerated, and the previously reported
+counts should be read as *upper bounds*, not as findings. The honest statement
+of the pre-upgrade state is: `@auth/core <=0.41.2` critical, **plus** axios,
+hono, nanoid, postcss and react-router advisories that had been invisible
+behind the stale lock.
+
+**Result: `npm audit --omit=dev` reports 0 vulnerabilities**, and the remaining
+packages are accounted for rather than assumed away — `nanoid` and `postcss`
+are build-time transitives of Vite/Tailwind and never reach the browser bundle;
+`axios` reaches the server only, in the one email-relay call; `hono` is
+imported nowhere in `src/` (earlier grep hits were the substring "honour");
+`react-router` is client-side routing.
+
+**Not accepted as sufficient.** A green audit is a claim about a dependency
+tree, not about the auth flows. Those were verified against the live deployment
+instead, by a new permanent harness.
+
+### `scripts/conformance-auth.ts` — auth-lifecycle attacks (new)
+
+`conformance-sec.ts` proved that user B cannot reach user A's *objects*. It
+proved nothing about the *credential*. This harness attacks the session
+directly: **18 boundaries**, all made through the public API of a live
+deployment, exit 0.
+
+- **A1** — a real token resolves to a real identity, and that identity can
+  write. This is the precondition: a harness in which nothing authenticates
+  would "pass" every later refusal for the wrong reason.
+- **A2** — four forged or malformed tokens are refused: empty string, a bare
+  word, a structurally valid unsigned JWT, and an `alg: none` JWT carrying a
+  real subject. The last two are refused with *`Missing issuer claim`* rather
+  than a generic parse failure, which is the correct discrimination.
+- **A3** — a second, genuinely signed token resolves to a distinct identity and
+  cannot see the first user's rows. This is the session analogue of the IDOR
+  checks, and it is the property the upgrade could most plausibly have broken
+  by changing how a token maps back to a user record.
+- **A4** — sign-out behaviour, measured (below).
+- **A5** — sign-in refuses a missing provider, an unknown provider name, a
+  prototype-shaped provider and a wrongly-typed provider. The unknown-provider
+  error names the configured set (`email-otp`, `anonymous`), which is
+  enumeration of *providers* — not of users — and is appropriate here.
+
+### A false-confidence test that caught a test, not a bug
+
+The first draft of this harness passed 16/16. It was wrong.
+
+`ConvexHttpClient.setAuth` takes a **raw JWT string** and interpolates it as
+`Bearer ${this.auth}`. The draft passed `{ getToken: async () => token }` —
+which is the *React provider* shape — so every forged token and every replayed
+token was sent as the literal header `Bearer [object Object]`. The deployment
+never saw the payload. Six green checks proved nothing.
+
+The symptom that gave it away: the sign-out refusal produced **exactly the same
+error** as a forged token (`Could not parse JWT payload`), which is the
+signature of a test unable to tell a revoked token from a malformed one.
+
+**The control is now permanent.** Immediately above every replay assertion, an
+untouched token is replayed through the identical mechanism and **must
+succeed**. If it does not, the replay path is broken and the refusal beneath it
+is meaningless, and the run fails with `REPLAY BROKEN`. This is the general
+lesson of D48 applied to tests rather than to queries: a boundary test that
+cannot distinguish "the control refused" from "my probe never worked" is not
+evidence.
+
+### D59 — sign-out does not revoke an issued token — **MEDIUM — RECORDED, MITIGATION NAMED**
+
+**Finding, measured not assumed.** With a valid token, calling `auth:signOut`,
+then replaying that exact token from a *fresh* client, still authenticates and
+still writes:
+
+```
+[A4 — a token replayed after sign-out no longer authenticates
+      — returned {"_id":"jx71cttpddj6apc2hsmd506kgs8fhd6h","isAnonymous":true}]
+[A4 — and it cannot write either — returned {"created":true,"id":"nn7fw3qt5…"}]
+```
+
+**This is correct behaviour for this platform, not a Panel defect.** Convex
+Auth's advanced documentation states: *"when an existing session is invalidated
+(deleted), the user is not automatically signed out until the JWT expires… you
+need to actually load the current session in your queries/mutations/actions."*
+The token is self-contained and signed by the deployment; nothing short of a
+per-call session lookup can revoke it. The harness asserts the measured truth
+rather than the reassuring falsehood.
+
+**Exposure, quantified by decoding a real token rather than assuming a default:**
+
+```
+{ "sub": "<userId>|<sessionId>", "iss": "https://little-pelican-326.convex.site",
+  "aud": "convex", "iat": …, "exp": … }   lifetime = 3600s
+```
+
+The blast radius is exactly one already-issued bearer token, bounded at **60
+minutes**, after which it is dead on its own. `sub` carries a **session id**,
+so the mitigation Convex documents — check the session on each call — is
+implementable against this schema.
+
+**Not fixed here, deliberately.** Adding a session lookup to every query,
+mutation and action is a real architectural change with a per-call cost, and
+`auth.ts` carries an explicit do-not-modify notice. The residual risk is
+accepted for a personal operating system whose session is already anonymous or
+email-verified, and **escalated rather than silently accepted**: D59 is listed
+in the open-decision set with the mitigation spelled out, because the point at
+which a 60-minute replay window stops being acceptable is a product judgement
+about who can reach a Panel space, not a technical one.
+
+### D54 — the email-relay key — **still blocked on the owner, unchanged**
+
+Not remediated and not worked around. Removing the literal from
+`src/convex/auth/emailOtp.ts` would break live email sign-in, and the
+replacement must be created by the owner. `conformance-sec.ts` S11 remains a
+canary that deliberately reports red, so the finding stays visible in every
+run rather than being closed by a code change that makes the warning disappear.
+
+---
+
 ## CHANGE-0023
 
 **Hardening pass: four defects found, three fixed, two human decisions required**

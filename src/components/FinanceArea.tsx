@@ -22,6 +22,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { AreaAdd } from "@/components/AreaAdd";
 import { Button } from "@/components/ui/button";
 import { CsvImportPanel } from "@/components/CsvImportPanel";
+import { ImportHistory } from "@/components/ImportHistory";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMinor, parseAmountToMinor, type CurrencyCode } from "@/lib/money";
@@ -1229,6 +1230,12 @@ export function FinanceArea() {
         accounts={accounts ?? []}
         defaultCurrency={finance?.country?.currency ?? "GBP"}
       />
+
+      {/* ---------- IMPORT HISTORY ----------
+          Directly beneath the importer, because it is the other half of the same
+          capability: what Panel was offered and what became of it. Without it a
+          cancelled or unreadable statement is a silent row nobody can see. */}
+      <ImportHistory />
 
       <section id="finance-transaction" className="brutal-flat bg-card p-5">
         <h2 className="font-display mb-1 text-sm uppercase tracking-wide">Transactions</h2>

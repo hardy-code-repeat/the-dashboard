@@ -496,6 +496,52 @@ async function main() {
   );
 
   // -------------------------------------------------------------------------
+  section("A11 — the import audit trail is visible");
+  // -------------------------------------------------------------------------
+  // `listImports` has been written on every attempt since the pipeline shipped
+  // and nothing rendered it, which made the audit reference on the result screen
+  // a dead end and a cancelled import a silent row.
+  const historySource = readFileSync(
+    new URL("../src/components/ImportHistory.tsx", import.meta.url),
+    "utf8",
+  );
+  check(
+    "A11 — the Finance area renders the import history",
+    financeFull.includes("<ImportHistory />"),
+  );
+  check(
+    "A11 — it reads the owner-scoped query rather than a new one",
+    historySource.includes("api.transactions.listImports") &&
+      !/useQuery\(api\.(?!transactions\.listImports)/.test(historySource),
+    "no second read invented for the history",
+  );
+  check(
+    "A11 — a cancelled import is described as having written nothing",
+    /wrote nothing/.test(historySource),
+  );
+  check(
+    "A11 — a refused file keeps the backend's own reason",
+    historySource.includes("row.reason"),
+  );
+  check(
+    "A11 — the audit reference and the content hash are both shown",
+    historySource.includes("Reference {row._id}") && historySource.includes("sha-256 {row.sha256}"),
+  );
+  check(
+    "A11 — an empty history says so plainly rather than rendering a bare list",
+    historySource.includes("No statement has been offered yet"),
+  );
+  check(
+    "A11 — it renders no statement rows, only the stored aggregates",
+    !historySource.includes("candidates") && historySource.includes("row.detected"),
+    "the imports table stores aggregates only, and so does this view",
+  );
+  note(
+    "A11 — rendered output",
+    "seven source anchors. The rows themselves are produced live by conformance-4b2 (J3 — an abandoned preview stays on the record as an attempt, never marked applied).",
+  );
+
+  // -------------------------------------------------------------------------
   observations.push("");
   observations.push("=".repeat(66));
   observations.push(`Mutations written by this run: ${writes}.`);

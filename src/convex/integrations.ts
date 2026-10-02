@@ -266,6 +266,32 @@ export const internalFinishOAuth = internalMutation({
  * from it is marked orphaned rather than deleted.
  */
 /**
+ * The normalised object, as a validator rather than `v.any()`.
+ *
+ * `v.any()` was doing no work: `NormalizedObject` is a closed shape with a
+ * closed `kind` vocabulary and **scalar fields only** (ADR-008), so the contract
+ * was already fully specified and `any` simply declined to enforce it. The
+ * practical consequence was that ADR-008 was a *convention* at the writer
+ * rather than a guarantee at the boundary — a caller could nest an object
+ * inside `fields` and the writer would be the one to discover it.
+ *
+ * Enforcing it here means a malformed batch is refused before any read, any
+ * diff and any write, rather than half-processed.
+ */
+const normalizedObjectValidator = v.object({
+  kind: v.union(v.literal("calendarEvent"), v.literal("expense"), v.literal("task")),
+  /** Never blank: a blank external id is not idempotent. Checked, not assumed. */
+  externalId: v.string(),
+  changedAt: v.optional(v.number()),
+  // Scalars only. This is ADR-008 written down, and it is why there is no
+  // generic object table to hide an arbitrary tree in.
+  fields: v.record(
+    v.string(),
+    v.union(v.string(), v.number(), v.boolean(), v.null()),
+  ),
+});
+
+/**
  * The largest batch a single call may carry.
  *
  * Applied on the public path, which is the one a client can reach directly.
@@ -275,7 +301,7 @@ const MAX_BATCH_OBJECTS = 500;
 export const applyBatch = mutation({
   args: {
     provider: providerSlugValidator,
-    objects: v.array(v.any()),
+    objects: v.array(normalizedObjectValidator),
     complete: v.boolean(),
   },
   handler: async (ctx, args) => {
@@ -330,7 +356,7 @@ export const internalApplyBatch = internalMutation({
   args: {
     userId: v.id("users"),
     provider: providerSlugValidator,
-    objects: v.array(v.any()),
+    objects: v.array(normalizedObjectValidator),
     complete: v.boolean(),
     cursor: v.optional(v.union(v.null(), v.string())),
   },

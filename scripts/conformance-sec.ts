@@ -763,6 +763,38 @@ const survived = stored.filter((u) => !/^https?:/i.test(u) || /[\u0000-\u001f]/.
   );
 
   // -------------------------------------------------------------------------
+  section("S13 — the batch schema is enforced, not merely documented");
+  // -------------------------------------------------------------------------
+  // `applyBatch` took `v.array(v.any())`, which made ADR-008 ("scalars only") a
+  // convention at the writer rather than a guarantee at the boundary. It is now
+  // a real validator. A guard that only refuses would be an outage, so the
+  // valid object is checked in the same breath.
+  const validObject = {
+    kind: "calendarEvent",
+    externalId: `schema-ok-${Date.now()}`,
+    fields: { title: "legitimate", startsAt: NOW + 86_400_000 },
+  };
+  const accepted = await attacker
+    .mutation(f.applyBatch, { provider: "google-calendar", objects: [validObject], complete: false })
+    .then(() => true)
+    .catch(() => false);
+  check("S13 — a well-formed normalised object is still accepted", accepted);
+
+  const malformed: [string, Record<string, unknown>][] = [
+    ["a nested object inside fields", { kind: "calendarEvent", externalId: "m1", fields: { meta: { a: 1 } } }],
+    ["an array inside fields", { kind: "calendarEvent", externalId: "m2", fields: { tags: ["a"] } }],
+    ["a kind outside the closed vocabulary", { kind: "genericThing", externalId: "m3", fields: {} }],
+    ["an object with no externalId", { kind: "calendarEvent", fields: {} }],
+  ];
+  for (const [name, obj] of malformed) {
+    const ok = await attacker
+      .mutation(f.applyBatch, { provider: "google-calendar", objects: [obj], complete: false })
+      .then(() => false)
+      .catch(() => true);
+    check(`S13 — refused: ${name}`, ok);
+  }
+
+  // -------------------------------------------------------------------------
   console.log("");
   console.log("=".repeat(70));
   const passed = observations.filter((l) => l.includes("[PASS]")).length;
