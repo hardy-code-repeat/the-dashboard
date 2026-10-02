@@ -2196,6 +2196,96 @@ ADR-030
 
 ---
 
+## CHANGE-0022
+
+**The statement import screen: review, then an explicit ask**
+
+Severity: PRODUCT
+Status: **BUILT AND VERIFIED 2026-10-02.** No new model, no new dependency, no
+new page, no new route, no new navigation system.
+
+**Trigger.** 4B-2a built and proved the import backend — `prepareImport` writes
+one audit row and no transaction, `applyImport` writes only when asked. What did
+not exist was the screen a person actually uses, and a verified backend with no
+way to reach it is not a shipped capability.
+
+**The flow, and why it is two steps.**
+
+```
+choose file → prepareImport → review → explicit confirmation → applyImport → result
+```
+
+The two mutations stay separate because that separation *is* the safety
+property: asking for the part that writes money has to be possible to decline.
+The only control in the component that calls `applyImport` is the button reading
+**"Import these N transactions"**, and it is disabled until a file has been read
+and — where the statement disagrees with itself — until the disagreement has been
+acknowledged. There is no "Continue" and no bare "Apply" anywhere in the flow,
+asserted by conformance check A10.
+
+**What the review screen shows, and why each item is there.** The preview shows
+file, target account, currency, detected period, rows to import, rows that will
+**not** be imported, rows repeated inside the file, the calculated total, the
+statement's own opening/closing balance and movement, and the reconciliation
+result. Uncertainty and every rejected row are rendered in the parser's own
+words. The rule behind all of it: **uncertainty is never behind a green success
+state.** A screen that showed only the good rows would be the same as telling a
+person a half-understood file was fine.
+
+**The one thing the review screen deliberately cannot show.** Whether a row is
+*already held* from an earlier statement. Two different things are called a
+duplicate and only one is knowable here: rows repeated **inside the file** are
+visible, because the parser already holds them; rows Panel already holds would
+need a fourth read whose only purpose is to pre-announce a number `applyImport`
+already reports accurately as `skipped`. So the review screen names which of the
+two it is showing, and the result reports the rest honestly. This is a stated
+trade, not an oversight.
+
+**Result, stated without inflation.** Written, skipped as already held, not
+imported, the audit reference and the sha-256. A **failed** apply shows the
+backend's own reason, leaves the review on screen so the person can read it, and
+is never styled as success — `toast.error("Nothing was imported")`, not a
+success with a footnote.
+
+**Backend change — one field, and why it was needed.** `prepareImport` now also
+returns `periodStart`, `periodEnd`, `rowCount` and `rejectedCount`. The period
+was already computed and already stored in `detected`; a review screen that
+cannot state the extent it detected is asking someone to judge a statement whose
+boundaries they have not been shown. **No new query, no new table, no new field
+in the schema.**
+
+**Security posture, unchanged and re-asserted.** Space isolation, account
+ownership, authorisation, deterministic idempotency and sha-256 verification are
+enforced by the mutations, which the UI cannot bypass; the panel passes the
+account it was given and adds no query of its own. No raw statement text is
+written anywhere new — the bytes live in a component ref for the duration of the
+flow and in the caller's own memory, and only aggregates reach `imports`.
+
+**Verification.** 14 new source anchors in `scripts/conformance-4a.ts` (now
+**68 invariants, 0 failed**, up from 53) covering the flow structure, the single
+apply path, the explicit label, the cancel path, uncertainty visibility, the
+result fields and the absence of any route. 5 new live invariants in
+`conformance-4b2.ts` (now **64, 0 failed**): sha-256 mismatch refuses and writes
+nothing, an unreadable import cannot be applied, and an abandoned preview leaves
+the record as an attempt that was never applied. These are marked as source
+anchors where they are source anchors rather than counted as live observations.
+
+Full gates: `tsc` 0 errors; `bun test` 555 pass / 0 fail across 20 files; lint at
+the stock 3 errors / 19 warnings baseline; `spec-drift` 18 passed / 1 warning /
+0 failures; all **16 harnesses exit 0** (`occ` still not run by design).
+
+**4B-2 status.** The 8-mutation break-and-confirm pass is complete and recorded
+under CHANGE-0020, so **4B-2 is now VERIFIED**: backend, screen and mutation
+evidence together. XLSX and PDF remain separately approved future increments and
+are still unimplemented.
+
+Related: ADR-031, ADR-028, ADR-009, ADR-016, ADR-024, CHANGE-0020, CHANGE-0021
+Budget: 4 of 4 files (`src/components/CsvImportPanel.tsx`,
+`src/components/FinanceArea.tsx`, `src/convex/transactions.ts`,
+`scripts/conformance-4a.ts`) · 0 tables · 0 new queries · 0 deps
+
+---
+
 ## CHANGE-0021
 
 **Money at a glance on the Main Panel: a cross-domain overview, not a second Finance area**
@@ -2535,18 +2625,54 @@ the failure mode.
 **Honest limits of this verification.** The harness drives the public surface and
 proves *stored* values by reading them back; it does not inspect the database.
 There is no public query over `activity`, so the single `import.applied` row is
-asserted through the mutation's return and **not read back**. `4B-2a` has **no
-mutation pass yet** — the 59 invariants are positive evidence, but a deliberate
-break-and-confirm run is outstanding and is listed as the next verification item.
+asserted through the mutation's return and **not read back**.
+
+**Mutation / break-and-confirm pass — 8 deliberate breaks, 2026-10-02.** Positive
+invariants prove a thing holds; a mutation pass proves the check would have
+noticed if it stopped holding. Each guard below was removed or inverted in the
+real source, pushed to the live deployment, and the harness re-run. **All eight
+were caught**, and the source was restored and re-verified afterwards.
+
+| # | Deliberate break | Invariant that caught it |
+|---|---|---|
+| M1 | `prepareImport` writes a transaction | **I9** — "prepareImport wrote no transaction — 0 before, 1 after" |
+| M2 | `applyImport` drops the sha-256 comparison | **J1** — the tampered apply wrote a row |
+| M3 | `applyImport` drops the `alreadyApplied` return | **I12** — a second apply was not idempotent |
+| M4 | `applyImport` drops the account-ownership check | **I11** — a foreign-account apply was accepted |
+| M5 | `applyImport` ignores the `externalId` de-duplication lookup | **I5** — the table grew 2 → 4 |
+| M6 | the parser tolerates an unclosed quote | **I2** — a malformed file "was accepted" |
+| M7 | `applyImport` drops the totals-mismatch gate | **I6** — rows that disagree were applied |
+| M8 | `applyImport` throws after its first write | **confirmed safe** — 0 rows survived a mid-loop failure |
+
+Three findings from the pass are worth more than the eight confirmations:
+
+1. **M2 initially passed, and that was a real defect in the test.** The tampered
+   file used to prove the sha-256 guard also broke the totals reconciliation, so
+   the *reconciliation gate* refused it and the hash check was never the thing
+   under test. A passing check that was passing for the wrong reason is worse
+   than a failing one. The fixture now appends a row that keeps the file
+   reconciling, so only the hash can refuse it, and M2 fails correctly.
+2. **M3 was caught by I12 but I5 still passed** — the per-row `externalId`
+   de-duplication caught the same mistake independently of the import-level
+   idempotency return. Two guards, one mutation, one survivor: defence in depth
+   confirmed rather than assumed.
+3. **M4 detected the removal of the guard rather than a completed cross-tenant
+   write**, because per-row de-duplication then masked the write. Reported as
+   what it is: the guard's absence was detected; this run did not demonstrate an
+   actual cross-account write.
+
+M8 was verified separately rather than through the harness, because a mid-loop
+throw would have crashed the run rather than reported a failure: a 3-row
+statement was applied with an injected throw after the first write, and the
+account held **0 transactions** afterwards. A failed import leaves nothing
+partial.
 
 **What is deliberately NOT here.** **No XLSX, no PDF, no OCR, no scanned-PDF
 support** — each remains a future, separately approved increment with its own
 ADR-016 package, and nothing in this increment hints at them. No agent may apply
 an import: `AgentAction` remains `{kind:"flag"} | {kind:"log"}`. No fuzzy
 matching (ADR-024, ADR-031). No automatic column mapping, no heuristics on
-header shapes, no "just import it and correct it afterwards". No upload UI yet:
-`prepareImport` and `applyImport` exist and are verified, and the screen that
-calls them is the next bounded increment.
+header shapes, no "just import it and correct it afterwards".
 
 Related: ADR-031, ADR-028, ADR-009, ADR-011, ADR-014, ADR-016, ADR-024, Q-008
 Budget: 7 of 7 files (`src/lib/csv.ts`, `src/lib/csv.test.ts`,
@@ -4386,7 +4512,7 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
 | **3** | **IMPLEMENTED** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | environment only: the 07:00 cron delivery is declared and its runner exercised live, but the firing itself is not observable from here | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. **Feature 5 (Subscriptions + Account Labels) VERIFIED** — CHANGE-0017. A subscription is a number until its renewal is an action, so a subscription carries a `documentId` pointing at a real `documents` row **created in the same mutation** (ADR-029): the cost of a subscription in the feed is **zero new attention code**, and "one renewal, one item" stays structurally true rather than re-argued. An account is a label and a closed kind with **no balance column anywhere in the schema** (ADR-028) — an account with a balance is a ledger with extra steps, and §2.3 names the ledger as the thing Panel must not become. Annual cost is derived, never stored. Money stays `v.number()`; the floats were **not** migrated to minor units, because that would rewrite the input to a verified tax estimate, and the consequence is accepted and guarded instead (D44). 4 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 27 unit fixtures, a **74-check live conformance run with 0 skips**, and a proof that a subscription moves no weight while the whole feature runs. The harness found **D46** (`subscription.updated` was never written for a date-only edit, because the date lives on the document). **Feature 6 (Deterministic Agents) VERIFIED** — CHANGE-0018. Panel had intelligence and **no *when***: everything it knows is computed at query time, so a user who does not open the app is never told anything. Delivered as ADR-030 — **one Convex cron function** (`agents/daily`, `0 7 * * *`) and **one registered agent**, because five of the six §6.1 names already had producers and building them would have violated feature 3's *one renewal, one item* criterion in the name of following the specification. The scheduler answers *when* and never *what*: the tier is a **return type**, and the `automatic` variant's action union is `{flag} | {log}` — there is no variant that can write a financial row, so an agent that tried would not compile. The one agent (`finreview`) sums what rests on unconfirmed deduction categories and states the swing by calling `estimateTax` **twice** rather than applying a rate of its own, and its wording is constrained never to claim a category is wrong. **Overflow is counted, observable and audited** — all three, which needed a query (`getLastRun`) rather than a column, because a cap that silently discards work is a cap nobody can debug. 5 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 26 unit fixtures (**448 pass, 0 fail across 16 files**) and a **52-check live conformance run with 0 skips over 61 mutations**, whose headline check drives the per-space daily cap to its exact boundary and proves the 51st execution is refused, counted as overflow, reported `capped` rather than successful, and observable by the owner — with every financial figure byte-identical afterwards. **Cron firing itself is recorded as UNVERIFIED** rather than as a pass, because a 07:00 delivery cannot be observed inside a test run and the CLI cannot read the schedule back; likewise the thrown-failure path is a `[NOTE]`, not a pass. Remaining gaps in phase 3 are all product decisions or environment: Q-001, Q-006, Q-007 and the phase-2 handshake. |
-| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A) and CHANGE-0020 (4B-1 and 4B-2a), the latter by the explicit Q-008 answer and the ADR-016 zero-dependency decision | 2026-10-02 | XLSX and PDF ingestion each need their own ADR-016 approval; the import **UI** is not built | **Built and verified:** 4B-1 (transactions: `transactions` + `imports`, `src/lib/money.ts`, a derived per-currency balance, 22 fixtures + 34 live invariants), **4B-2a** (CSV statement import: `src/lib/csv.ts`, `src/lib/sha256.ts`, `prepareImport`/`applyImport`, 57 + 9 fixtures and **59 live invariants, 0 dependencies**), and 4A workstream C. **Not built:** the import screen, XLSX, PDF, and Home's domain model. D50 stands: the Health area is a mock and is not counted as capability. |
+| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A), CHANGE-0020 (4B), CHANGE-0021 (Main Panel money), CHANGE-0022 (import screen) | 2026-10-02 | XLSX and PDF ingestion each need their own ADR-016 approval; Home still needs a domain model | **Built and verified:** 4B-1 (transactions + derived per-currency balance), **4B-2a** (CSV import backend, 0 dependencies, 57 + 9 fixtures, 64 live invariants), **4B-2b** (the import screen, 68 invariants in 4a), the Main Panel money surface, and 4A workstream C. **4B-2 is VERIFIED**, with an 8-mutation break-and-confirm pass recorded under CHANGE-0020. **Not built:** XLSX, PDF, OCR, Home's domain model. D50 stands: the Health area is a mock and is not counted as capability. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
 (People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting

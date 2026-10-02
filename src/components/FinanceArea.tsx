@@ -21,6 +21,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AreaAdd } from "@/components/AreaAdd";
 import { Button } from "@/components/ui/button";
+import { CsvImportPanel } from "@/components/CsvImportPanel";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { formatMinor, parseAmountToMinor, type CurrencyCode } from "@/lib/money";
@@ -1218,6 +1219,17 @@ export function FinanceArea() {
           drift from the bank. There is no edit button either — changing a fact
           you already recorded would be recording a different fact, and the
           honest way to correct one is to delete it and write it again. */}
+      {/* ---------- STATEMENT IMPORT ----------
+          Placed immediately above Transactions because it is how transactions
+          arrive in bulk, and a person reading this area should meet the import
+          before the manual-entry form it duplicates at a larger scale. Accounts
+          and the default currency are passed in rather than re-queried, so this
+          adds no fourth read to the workspace. */}
+      <CsvImportPanel
+        accounts={accounts ?? []}
+        defaultCurrency={finance?.country?.currency ?? "GBP"}
+      />
+
       <section id="finance-transaction" className="brutal-flat bg-card p-5">
         <h2 className="font-display mb-1 text-sm uppercase tracking-wide">Transactions</h2>
         <p className="mb-4 text-[10px] leading-relaxed uppercase text-muted-foreground">

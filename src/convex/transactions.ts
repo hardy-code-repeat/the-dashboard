@@ -457,6 +457,13 @@ export const prepareImport = mutation({
       totalsMatch: preview.totalsMatch,
       truncated: preview.truncated,
       columnMap: preview.columnMap,
+      // Returned as well as stored: a review screen that cannot state the
+      // period it detected is asking the person to judge a statement whose
+      // extent they have not been shown.
+      periodStart: period?.lo,
+      periodEnd: period?.hi,
+      rowCount: preview.candidates.length,
+      rejectedCount: preview.rejected.length,
     };
   },
 });

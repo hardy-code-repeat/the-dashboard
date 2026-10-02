@@ -334,6 +334,7 @@ async function main() {
     ["binary file", `${HEADER}\n2026-01-02,Co\u0000ffee,-3.50,96.50\n`, /null bytes/i],
   ];
 
+  let firstFailedImportId: string | null = null;
   for (const [name, text, pattern] of malformed) {
     const before = (await client.query(f.listTransactions, { accountId })).length;
     const res = await client.mutation(f.prepareImport, {
@@ -344,6 +345,7 @@ async function main() {
     });
     writes += 1;
     const after = (await client.query(f.listTransactions, { accountId })).length;
+    if (firstFailedImportId === null) firstFailedImportId = res.importId;
     check(
       `I2 — a ${name} is refused with a readable reason`,
       res.ok === false && pattern.test(res.reason),
@@ -704,6 +706,74 @@ async function main() {
     JSON.stringify(modelAfter?.weights) === JSON.stringify(modelBefore?.weights) &&
       modelAfter?.samples === modelBefore?.samples,
   );
+
+  // -------------------------------------------------------------------------
+  section("J — the three refusals that stop an import being faked");
+  // -------------------------------------------------------------------------
+  // Each of these is a place where a well-meaning implementation would happily
+  // write something. They are the reason the two mutations are kept separate.
+  if (ownImport.ok) {
+    const rowsBeforeJ = (await client.query(f.listTransactions, { accountId })).length;
+
+    const tampered = await refused(() =>
+      client.mutation(f.applyImport, {
+        importId: ownImport.importId,
+        // The appended row keeps the file reconciling on purpose: a tampered file that
+        // also broke the totals would be refused by the reconciliation gate
+        // instead, and the hash check would never be the thing under test.
+        // Found by the mutation pass, which passed while the guard was broken.
+        text: `${clean}2026-06-01,Injected row,-100.00,996.50\n`,
+        currency: "GBP",
+        accountId,
+      }),
+    );
+    check(
+      "J1 — text that is not the text previewed is refused (sha-256)",
+      tampered === null,
+      tampered === null ? "refused" : `wrote ${tampered.written} rows`,
+    );
+    const rowsAfterJ = (await client.query(f.listTransactions, { accountId })).length;
+    check("J1 — and the refused apply wrote nothing at all", rowsBeforeJ === rowsAfterJ, `${rowsBeforeJ} → ${rowsAfterJ}`);
+
+    // Abandoning a preview is the cancel path. It must leave nothing behind.
+    const abandoned = await client.mutation(f.prepareImport, {
+      accountId,
+      filename: "abandoned.csv",
+      text: clean,
+      currency: "GBP",
+    });
+    writes += 1;
+    check(
+      "J3 — a preview that is never applied writes no transaction",
+      abandoned.ok === true &&
+        (await client.query(f.listTransactions, { accountId })).length === rowsBeforeJ,
+      "cancelled before confirmation",
+    );
+    if (abandoned.ok) {
+      const record = await client.query(f.getImport, { id: abandoned.importId });
+      check(
+        "J3 — and it stays on the record as an attempt, never marked applied",
+        record?.status === "extracted" && record?.appliedAt === undefined,
+        `status ${record?.status}`,
+      );
+    }
+  }
+
+  if (firstFailedImportId) {
+    const failedApply = await refused(() =>
+      client.mutation(f.applyImport, {
+        importId: firstFailedImportId,
+        text: `${HEADER}\n2026-01-02,Coffee,-3.50,96.50\n`,
+        currency: "GBP",
+        accountId,
+      }),
+    );
+    check(
+      "J2 — an import that was never readable cannot be applied",
+      failedApply === null,
+      failedApply === null ? "refused" : "accepted",
+    );
+  }
 
   // -------------------------------------------------------------------------
   // The checks above printed as they happened; only the summary is new here.

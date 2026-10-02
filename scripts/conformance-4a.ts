@@ -388,6 +388,114 @@ async function main() {
   );
 
   // -------------------------------------------------------------------------
+  section("A10 — the statement import flow");
+  // -------------------------------------------------------------------------
+  // The guarantee is structural: a person has to ask for the part that writes
+  // money, and the control that asks is named for what it does. Those are
+  // claims about source, so they are checked against source.
+  const importSource = readFileSync(
+    new URL("../src/components/CsvImportPanel.tsx", import.meta.url),
+    "utf8",
+  );
+  const financeFull = readFileSync(new URL("../src/components/FinanceArea.tsx", import.meta.url), "utf8");
+
+  check(
+    "A10 — it lives inside the Finance area, and added no page or route",
+    financeFull.includes("<CsvImportPanel") &&
+      !readFileSync(new URL("../src/main.tsx", import.meta.url), "utf8").includes("CsvImportPanel") &&
+      !importSource.includes("react-router") &&
+      !importSource.includes("useNavigate"),
+  );
+  check(
+    "A10 — preparation goes through prepareImport, never through a hand-rolled write",
+    importSource.includes("api.transactions.prepareImport") &&
+      !/prepareImport[\s\S]{0,400}createTransaction/.test(importSource),
+  );
+  check(
+    "A10 — applyImport is reachable from exactly one place",
+    (importSource.match(/api\.transactions\.applyImport/g) ?? []).length === 1,
+    "one hook, one handler, one button",
+  );
+  const applyHandler = importSource.slice(
+    importSource.indexOf("const handleApply"),
+    importSource.indexOf("const blocksConfirmation"),
+  );
+  check(
+    "A10 — and that place is the explicit confirmation handler",
+    applyHandler.includes("await applyImport("),
+    "the only write path is the one the person pressed",
+  );
+  check(
+    "A10 — the confirmation names the action and the number of records it creates",
+    importSource.includes("Import these ${review.candidates.length} transaction"),
+  );
+  check(
+    "A10 — no vague confirmation button anywhere in the flow",
+    // Matched as a button's whole text, not as a word: the file's header
+    // deliberately names "Continue" while explaining why there is not one.
+    !/>\s*Continue\s*</.test(importSource) && !/>\s*Apply\s*</.test(importSource),
+    "a button that says only 'Continue' does not say it creates records",
+  );
+  check(
+    "A10 — the flow cannot apply without a review first",
+    importSource.includes('phase === "review"') &&
+      importSource.includes('disabled={phase === "applying" || blocksConfirmation'),
+  );
+  check(
+    "A10 — a mismatched reconciliation blocks the button until it is acknowledged",
+    importSource.includes("blocksConfirmation") &&
+      /review\.totalsMatch === false && !acknowledgeMismatch/.test(importSource) &&
+      importSource.includes("acknowledgeMismatch"),
+  );
+  check(
+    "A10 — there is an explicit cancel that writes nothing, and it says so",
+    importSource.includes("Cancel — write nothing") &&
+      /onClick=\{reset\}/.test(importSource) &&
+      !/reset[\s\S]{0,600}applyImport/.test(importSource),
+    "reset clears local state and never calls a mutation",
+  );
+  check(
+    "A10 — uncertainty is rendered in its own block, not folded into a success state",
+    importSource.includes("Before you decide") &&
+      importSource.includes("review.uncertainty.length > 0"),
+  );
+  check(
+    "A10 — rejected rows are listed with their reasons",
+    importSource.includes("Rows that will not be imported") &&
+      importSource.includes("row.reason"),
+  );
+  check(
+    "A10 — in-file duplicates, the period, and the reconciliation are all shown",
+    importSource.includes("Repeated in this file") &&
+      importSource.includes("label=\"Period\"") &&
+      importSource.includes("label=\"Reconciliation\""),
+  );
+  check(
+    "A10 — the result reports written, skipped, rejected and the audit reference",
+    importSource.includes('label="Written"') &&
+      importSource.includes('label="Skipped as already held"') &&
+      importSource.includes('label="Not imported"') &&
+      importSource.includes('label="Audit reference"'),
+  );
+  check(
+    "A10 — a failed apply is reported as a failure and leaves the review on screen",
+    importSource.includes("The import did not complete") &&
+      importSource.includes('setPhase("review")') &&
+      importSource.includes("Nothing was imported"),
+  );
+  check(
+    "A10 — the panel added no persistence model and no dependency",
+    !importSource.includes("useQuery(api.transactions") &&
+      !importSource.includes("from \"exceljs\"") &&
+      !importSource.includes("from \"unpdf\""),
+    "accounts are passed in, so the panel issues no query of its own",
+  );
+  note(
+    "A10 — rendered output",
+    "these are source anchors, not HTTP observations. The behaviour they protect is exercised for real in conformance-4b2 (I9, I10, I12, J1, J2, J3); what no API call can observe is what the screen said and what it was called.",
+  );
+
+  // -------------------------------------------------------------------------
   observations.push("");
   observations.push("=".repeat(66));
   observations.push(`Mutations written by this run: ${writes}.`);
