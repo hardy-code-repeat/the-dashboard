@@ -2106,7 +2106,79 @@ person row are visible in General; that Finance tasks and documents render from
 existing reads; and that a second account sees none of it. Plus the 13 existing
 harnesses, `bun test`, `tsc`, the lint baseline and `spec-drift`.
 
-**Implementation status 2026-10-02.** Workstream **C is built and verified**:
+**Implementation status 2026-10-02 — ALL FIVE WORKSTREAMS BUILT AND VERIFIED.**
+- **A — Finance is a workspace.** An **Overview** opens the area (income,
+  estimated tax, recurring-per-year, expenses logged, and a per-account
+  **derived balance** grouped by currency), composed entirely from figures
+  `getFinance`, `listSubscriptions` and the new `listBalances` already return,
+  so the Overview adds **no database read**. Accounts stopped being a collapsed
+  disclosure. A **Transactions** section records money facts through
+  `transactions.createTransaction`; a **financial document** can be created from
+  Finance through the existing `documents.createDocument` and is owned by Life
+  Admin, because a document's lifecycle belongs to one domain and a second list
+  would only be a second place for the two to disagree.
+- **B — contextual Add.** `src/lib/areaActions.ts` declares the verbs as **data**,
+  each bound to a `module:function` target; `src/components/AreaAdd.tsx` renders
+  the menu and calls back into the area, which already owns the form. Finance
+  leads with a transaction; no area leads with a task; capture is universal.
+- **C — commitments in General**, gate removed, unresolvable-counterparty rows no
+  longer dropped (see below).
+- **D — Home is honest.** An area with no domain model now says so in its own
+  heading rather than silently presenting a task list as a workspace.
+  **No persistence was invented** — Health stays D50, and both areas are listed
+  in `AREAS_WITHOUT_A_DOMAIN_MODEL` so a test can tell the moment one of them
+  grows a real model.
+- **E — capture unchanged.** The Finance capture box calls the same
+  `assistant.capture` and the same pure parser; only the destination area
+  differs (REQ-068).
+
+**Verification.** `src/lib/areaActions.test.ts` — **13 fixtures**, including two
+that caught real mistakes in the descriptor table while it was being written:
+Health and Home had *identical* verb lists (the very sameness this change exists
+to remove), and capture was simultaneously meant to lead in General and trail
+everywhere else. `scripts/conformance-4a.ts` — **43 live invariants, 0 failed**:
+every verb target is asserted to be **really exported** by reading the Convex
+sources (the structural form of "no fake actions"), the verb lists are
+domain-shaped, `getFinance` carries the ISO currency, capture is area-scoped and
+owner-isolated, the document verb writes through the existing domain, and four
+source anchors pin the rendered hierarchy. Full suite: `tsc` 0 errors, `bun test`
+**483 pass / 0 fail** across 18 files, lint at the stock 3/19 baseline,
+`spec-drift` 18 passed / 0 failures, and **all 15 harnesses green** including the
+two new ones.
+
+**Two defects this increment found in itself, both fixed.** `getAreaTasks`
+collected an area's whole task list with no bound — an unbounded read behind a
+correct index, which is the D48 lesson in a place the audit had not reached; it
+now takes 200, stated as a list surface rather than an export. And `getFinance`
+never sent the **ISO currency** to the client, so the transaction form would have
+sent `UK` where a currency belongs; the country already declares its currency, so
+the projection now carries it rather than the UI guessing a second copy of that
+table.
+
+**Workstream C detail.** `Commitments` is exported from `Areas.tsx` and mounted in
+**General** as well as Relationships — one component, one query, one model, two
+surfaces — and the `people.length > 0` gate that hid the whole object from anyone
+with no people is gone. A second defect surfaced while doing it: `listCommitments`
+**dropped any row whose counterparty could not be resolved**, so a commitment
+about a merged or removed person vanished instead of showing up with nobody
+named. `describeCommitment` now takes `string | null` and the copy degrades to
+"You said you would" / "Waiting on this" rather than an empty gap in a sentence
+about a third party.
+
+**Also worth recording:** a capture aimed at an area the user has *not* enabled
+falls back to General rather than creating a task in a tab that does not exist.
+The 4A harness asserted the opposite on its first run and was wrong; both branches
+are now asserted, because the fallback is the security property and the filing is
+the feature.
+
+Related: Q-008, Q-009, D50 (Health), ADR-025, ADR-027, ADR-028, ADR-029,
+ADR-030, ADR-031
+Budget: 3 of 3 new files (`src/lib/areaActions.ts`, `src/lib/areaActions.test.ts`,
+`src/components/AreaAdd.tsx`) + `scripts/conformance-4a.ts` as verification ·
+0 tables · 0 deps · 1 abstraction. `FinanceArea.tsx`, `Areas.tsx` and
+`Dashboard.tsx` were edited in place rather than duplicated.
+
+**Earlier partial status (superseded by the above).** Workstream **C is built and verified**:
 `Commitments` is exported from `Areas.tsx` and mounted in **General** as well as
 Relationships — one component, one query, one model, two surfaces — and the
 `people.length > 0` gate that hid the whole object from anyone with no people is
@@ -2116,9 +2188,8 @@ a commitment about a merged or removed person vanished from the list instead of
 showing up with nobody named. `describeCommitment` now takes `string | null` and
 the copy degrades to "You said you would" / "Waiting on this" rather than an
 empty gap in a sentence about a third party. Verified by `conformance-4f`
-(132 invariants, unchanged). **Workstreams A, B, D and E are not built** — the
-Finance workspace, contextual add, Home's honesty and the unchanged-capture
-check are the next increment, not a claim.
+(132 invariants, unchanged). **Workstreams A, B, D and E were not built at this
+point** — they landed in the following increment, recorded above.
 
 Related: Q-008, Q-009, D50 (Health), ADR-025, ADR-027, ADR-028, ADR-029,
 ADR-030
@@ -2208,6 +2279,58 @@ passed / 0 failures, and harnesses 2, 3, 3f, 4, 4f, 5f, 6f all still PASS.
   and the practical consequence is that extraction must be deterministic and
   in-house, so "upload and the AI understands it" is unavailable by
   architecture rather than by policy.
+
+### 4B-2 dependency decision package — required by ADR-016, awaiting approval
+
+ADR-016 makes a new dependency a stop condition. This is the package that
+condition asks for, researched 2026-10-02. **Nothing has been installed.**
+
+**The recommendation is narrower than expected: the first useful import needs
+zero dependencies.**
+
+| Format | Package | Verdict |
+|---|---|---|
+| **CSV** | **none — hand-written RFC 4180 parser** | **RECOMMENDED.** ~80 lines, deterministic, no supply chain, and it is the format banks actually export. |
+| XLSX | `exceljs` (MIT) | Candidate for a later increment. Vetted, actively maintained, pure JS. |
+| XLSX | `xlsx` / SheetJS (Apache 2.0) | **REJECTED.** The npm build is stuck at 0.18.5, last published ~5 years ago, with published high-severity advisories (ReDoS, prototype pollution) and **no fixed version available on npm**. Taking an unmaintained parser with known advisories for financial data is indefensible. |
+| PDF (text layer) | `unpdf` (MIT) or `pdfjs-dist` (Apache 2.0) | Candidate for a later increment. |
+| PDF (scanned) | — | **OUT OF SCOPE.** OCR requires an inference service, which ADR-001 forbids. A scanned PDF is refused with a stated reason. |
+
+**Per-package detail for the two candidates.**
+
+- `exceljs` — MIT; actively maintained; formats: xlsx/xlsm read and write;
+  no native dependencies; server-side pure JS. Cost: ~1 MB unpacked, pulled
+  into a Convex **action** bundle only (never into a query or the client), so it
+  does not touch the browser bundle. Limitations: no `.xls` (the old binary
+  format), and a maliciously crafted workbook can consume memory — mitigated by a
+  size cap and a parse timeout.
+- `unpdf` — MIT; built on `pdfjs-dist`; extracts the **text layer** only, which
+  is exactly the scope wanted; no native dependencies (the upstream pdf.js build
+  optionally wants a canvas polyfill, which `unpdf` avoids server-side).
+  Limitations: a scanned PDF yields no text and must be refused rather than
+  guessed; column reconstruction from a statement layout is Panel's own bounded
+  parser, not the library's job.
+
+**Does a dependency-free alternative exist?** Yes, and it is the recommended
+path. RFC 4180 is a small, fully specified format: quoted fields, escaped quotes,
+delimited rows. The *interesting* part of statement ingestion is never the CSV
+grammar — it is identifying which columns are the date, the description and the
+amount, and checking that the rows sum to the printed total. Both of those are
+Panel's own deterministic code either way, so a dependency would be paying a
+supply-chain cost for the easy third of the problem.
+
+**Security considerations.** No parser runs on anything but a file the user
+uploaded, in a Convex action with no network access, behind a size cap and a type
+allowlist, with file identification by magic bytes rather than by the declared
+content type. Nothing extracted is persisted without user confirmation, and low
+confidence is surfaced rather than written (ADR-031, REQ-070, REQ-072).
+
+**What is being asked.** Approval to build 4B-2a — **CSV only, zero
+dependencies** — with XLSX and PDF left unbuilt until each is separately asked
+for. The alternative is to approve the two candidates now and take the bundle and
+maintenance cost in exchange for formats most banks do not export.
+
+---
 
 **Implementation status 2026-10-02.** 4B-1 is **built and verified**:
 `src/lib/money.ts`, `src/lib/money.test.ts`, `src/convex/transactions.ts` and

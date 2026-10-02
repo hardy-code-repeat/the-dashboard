@@ -1185,17 +1185,18 @@
       nots:["anything without its own spec section, ADR, budget and approval","automatic person merging (RJD-004)","contact import","inbound email parsing","anything that writes to a provider","person sharing","prose-conjunction splitting in capture","fuzzy or embedding matching","creating a person from a capture"],
       risks:"R7, R19" },
     { id:"4", status:"IN PROGRESS",
-      obj:"Areas that show the state of a part of life, not a filtered task list. 4A is a presentation correction to work already built; 4B (transactions and document ingestion) is architecture only and is blocked on Q-008, which asks whether §2.3 and ADR-028 should be amended.",
-      deps:"4A: nothing — reuses every existing query and mutation. 4B: two deterministic parsing dependencies",
-      budget:{files:"4A 3 · 4B 6",tables:"4A 0 · 4B 2",deps:"4A 0 · 4B 2",abstractions:"4A 1 · 4B 1"},
+      obj:"Areas that show the state of a part of life, not a filtered task list. 4A (area-native surfaces) is built and verified; 4B-1 (transactions as facts, with a derived balance) is built and verified; the import pipeline awaits its dependency decision.",
+      deps:"4A: nothing — reuses every existing query and mutation. 4B-1: nothing. 4B-2: the decision package recommends ZERO dependencies (hand-written RFC 4180) and rejects SheetJS xlsx as unmaintained with known advisories",
+      budget:{files:"4A 3 + 4B-1 4",tables:"4A 0 · 4B 2",deps:"0 so far",abstractions:"4A 1 · 4B 1"},
       criteria:["Finance is a workspace: Overview, then objects, then attention, then actions, then tasks",
                 "General remains task-centric and gains commitments and waiting-on as objects",
-                "Commitments with no person row are visible",
-                "Every add verb resolves to a mutation that already exists",
+                "A commitment whose counterparty cannot be resolved is visible, not dropped",
+                "Every add verb resolves to a mutation that already exists — asserted against the source",
+                "An area with no domain model says so in its own heading",
                 "No new page, route or navigation tier",
-                "4B is BLOCKED on Q-008: no table, no dependency and no parser before that question is answered"],
-      nots:["a second page or navigation system","a new attention kind","a new table in 4A","double-entry, journals or a stored balance column in 4B","OCR or any inference service","converting a domain object into a task to make it visible"],
-      risks:"Q-008 · Q-009 · D50" }
+                "Money is an integer in minor units; a balance is derived and never stored"],
+      nots:["a second page or navigation system","a new attention kind","a new table in 4A","double-entry, journals or a stored balance column in 4B","OCR or any inference service","the SheetJS xlsx package","converting a domain object into a task to make it visible"],
+      risks:"Q-008 · Q-009 · D50 · the 4B-2 dependency decision" }
   ];
 
   var ADRS = [

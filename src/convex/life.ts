@@ -342,6 +342,14 @@ export const getFinance = query({
     const countrySummary = {
       code: country.code,
       name: country.name,
+      /**
+       * The ISO 4217 code, which the country *code* is not: `UK` is a country,
+       * `GBP` is a currency. Phase 4 needs it to write a transaction, whose
+       * minor-unit exponent is a property of the currency — sending `UK` as a
+       * currency would be a write the validator refuses, and guessing the
+       * mapping in the UI would be a second copy of this table.
+       */
+      currency: country.currency,
       currencySymbol: country.currencySymbol,
       authority: country.authority,
       authorityUrl: country.authorityUrl,
@@ -629,6 +637,9 @@ export const setTaskArea = mutation({
   },
 });
 
+/** An area's task list is a surface, not an export. The bound belongs to the read. */
+const MAX_AREA_TASKS = 200;
+
 export const getAreaTasks = query({
   args: { area: v.string() },
   handler: async (ctx, args) => {
@@ -636,9 +647,13 @@ export const getAreaTasks = query({
     if (!userId) return [];
     const area = requireAreaSlug(args.area);
 
+    // An explicit bound rather than `collect()`. The index is scope-first and
+    // correct, but an area's task list is still unbounded in principle — and the
+    // D48 lesson is that a bounded *result* is not the claim; the read itself
+    // has to be bounded. 200 is a list surface, not an export.
     return await ctx.db
       .query("tasks")
       .withIndex("by_owner_area", (q) => q.eq("ownerUserId", userId).eq("area", area))
-      .collect();
+      .take(MAX_AREA_TASKS);
   },
 });

@@ -83,6 +83,20 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {/* An area with no domain model says so, in the place the user looks
+          first. Home and a custom area both land here, and until either has an
+          approved domain model the honest heading is the one that describes what
+          is on screen: tasks. Anything else would be a title promising a
+          workspace the area does not have — the same dishonesty as D50's
+          habit card, in a different costume. */}
+      <div>
+        <h1 className="font-display text-lg uppercase">Tasks in {label}</h1>
+        <p className="mt-1 max-w-2xl text-[11px] leading-relaxed uppercase text-muted-foreground">
+          {label} has no domain objects of its own yet, so this is its whole
+          surface: tasks you filed under {label}. Add would grow when there is
+          something real to add.
+        </p>
+      </div>
       <form onSubmit={handleAdd} className="brutal-flat bg-card p-4">
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input

@@ -44,6 +44,8 @@ import { ensurePersonalSpace } from "./spaces";
 /** A surface is a list, not an export. The bound belongs to the read. */
 const MAX_TRANSACTIONS = 100;
 const MAX_IMPORTS = 20;
+/** Accounts are user-created and few; the cap exists so the fan-out is bounded. */
+const MAX_ACCOUNTS = 20;
 const MAX_LABEL = 120;
 
 /**
@@ -246,6 +248,55 @@ export const getAccountBalance = query({
         .map(([currency, e]) => ({ currency, amountMinor: e.amountMinor, count: e.count }))
         .sort((a, b) => a.currency.localeCompare(b.currency)),
     };
+  },
+});
+
+/**
+ * Every account the caller owns, each with its derived balance.
+ *
+ * **This reads more rows than any other read in the module, and that is the
+ * honest price of ADR-031.** A derived balance is a sum, and a sum needs every
+ * row; a stored balance would make this query cheap by introducing a number
+ * that can be wrong. The trade is taken deliberately, and it is contained in
+ * three ways: the account list is **capped**, every read is **index-scoped to
+ * one account**, and they are issued **in parallel** rather than in a loop.
+ * The access is bounded by *this user's own* history — the same per-user bound
+ * already accepted as A6 for the attention feed and the dashboard.
+ */
+export const listBalances = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
+
+    const accounts = await ctx.db
+      .query("accounts")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+      .take(MAX_ACCOUNTS);
+
+    return await Promise.all(
+      accounts.map(async (account) => {
+        const rows = await ctx.db
+          .query("transactions")
+          .withIndex("by_account_postedAt", (q) => q.eq("accountId", account._id))
+          .collect();
+        const byCurrency = new Map<string, number>();
+        for (const row of rows) {
+          byCurrency.set(
+            row.currency,
+            (byCurrency.get(row.currency) ?? 0) + signedMinor(row.amountMinor, row.direction),
+          );
+        }
+        return {
+          accountId: account._id,
+          label: account.label,
+          kind: account.kind,
+          balances: [...byCurrency.entries()]
+            .map(([currency, amountMinor]) => ({ currency, amountMinor }))
+            .sort((a, b) => a.currency.localeCompare(b.currency)),
+        };
+      }),
+    );
   },
 });
 

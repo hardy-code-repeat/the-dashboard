@@ -19,8 +19,11 @@ import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { AreaAdd } from "@/components/AreaAdd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { formatMinor, parseAmountToMinor, type CurrencyCode } from "@/lib/money";
 import { formatAmount, isValidAmount } from "@/lib/subscriptions";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +83,17 @@ export function FinanceArea() {
   // and deliberately changes nothing about any expense: confirming a category
   // is an act the user performs in the Expenses list, where they can see what
   // they are confirming.
+  // Phase 4. Money facts, not a filtered task list: transactions are their own
+  // object, a balance is *derived* (ADR-031) and never a stored column, and the
+  // finance-scoped task list exists so tasks are one section rather than the
+  // area's whole identity.
+  const transactions = useQuery(api.transactions.listTransactions, { limit: 25 });
+  const balances = useQuery(api.transactions.listBalances);
+  const financeTasks = useQuery(api.life.getAreaTasks, { area: "finance" });
+  const createTransaction = useMutation(api.transactions.createTransaction);
+  const createDocument = useMutation(api.documents.createDocument);
+  const capture = useMutation(api.assistant.capture);
+
   const proposals = useQuery(api.agents.listProposals);
   const agentStatus = useQuery(api.agents.getAgentStatus);
   const lastRun = useQuery(api.agents.getLastRun);
@@ -103,12 +117,82 @@ export function FinanceArea() {
   const [accountLabel, setAccountLabel] = useState("");
   const [accountKind, setAccountKind] = useState("checking");
 
+  const [txnLabel, setTxnLabel] = useState("");
+  const [txnAmount, setTxnAmount] = useState("");
+  const [txnDirection, setTxnDirection] = useState<"out" | "in">("out");
+  const [txnDate, setTxnDate] = useState("");
+  const [txnAccount, setTxnAccount] = useState("");
+  // Which object sections the contextual Add reveals. A verb that opens a form
+  // nobody can see is not an affordance, so the section it belongs to is
+  // expanded rather than merely scrolled to.
+  const [showAccounts, setShowAccounts] = useState(false);
+  const [showAddDocument, setShowAddDocument] = useState(false);
+  const [financeCapture, setFinanceCapture] = useState("");
+  const [docLabel, setDocLabel] = useState("");
+  const [docExpiry, setDocExpiry] = useState("");
+
+  /**
+   * A financial document — an insurance policy, a tax letter, a statement.
+   *
+   * The row is created by the **existing** `documents.createDocument` and shows
+   * up in Life Admin, which owns a document's lifecycle (ADR-025). Finance does
+   * not get a second document list, a second state machine or a copy of the
+   * expiry logic: it offers the creation, and the domain that owns the object
+   * keeps it. That is the whole of "expose a capability that genuinely exists".
+   */
+  const handleAddDocument = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const label = docLabel.trim();
+    if (!label) {
+      toast.error("Give the document a name");
+      return;
+    }
+    setBusy(true);
+    try {
+      await createDocument({
+        label,
+        expiresAt: docExpiry ? (new Date(`${docExpiry}T12:00:00`).getTime() ?? undefined) : undefined,
+        leadDays: docExpiry ? 30 : undefined,
+      });
+      setDocLabel("");
+      setDocExpiry("");
+      setShowAddDocument(false);
+      toast.success("Tracked in Life Admin");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not track that");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Capture is unchanged in behaviour: the same `assistant.capture` the whole
+  // product uses, the same pure parser, no area-specific interpretation. Only
+  // the area it files into differs — which is what context means here
+  // (REQ-068), and it is the one thing a Finance area must not reinvent.
+  const handleFinanceCapture = async () => {
+    const input = financeCapture.trim();
+    if (!input) return;
+    setBusy(true);
+    try {
+      const res = await capture({ input, area: "finance" });
+      setFinanceCapture("");
+      const made = res?.created?.length ?? 0;
+      toast.success(made > 0 ? `Captured into Finance (${made})` : "Nothing to capture");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not capture that");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (finance === undefined) {
     return <div className="brutal-flat bg-card p-8 text-center text-xs uppercase text-muted-foreground">Loading finance…</div>;
   }
   if (finance === null) return null;
 
   const { country, taxYearLabel, profile, estimate, readiness, deadlines, documents, expenses, buckets } = finance;
+  /** The ISO currency the country declares — `country.code` is a country, not a currency. */
+  const currency = country.currency as CurrencyCode;
 
   const handleCountry = async (code: string) => {
     try {
@@ -212,6 +296,40 @@ export function FinanceArea() {
     }
   };
 
+  // ---- transactions (phase 4, ADR-031) ---------------------------------
+  //
+  // The amount is parsed to **integer minor units** by the same pure function the
+  // server's boundary uses, so a value the UI would accept cannot be one the
+  // mutation rejects — and a figure that cannot survive the round trip is
+  // refused here rather than silently rounded into a different amount of money.
+  const handleAddTransaction = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const amountMinor = parseAmountToMinor(txnAmount, currency);
+    if (!txnLabel.trim() || amountMinor === null || amountMinor <= 0) {
+      toast.error("Add a label and an amount");
+      return;
+    }
+    setBusy(true);
+    try {
+      await createTransaction({
+        accountId: asAccountId(txnAccount),
+        postedAt: txnDate ? (new Date(`${txnDate}T12:00:00`).getTime() ?? Date.now()) : Date.now(),
+        amountMinor,
+        currency,
+        direction: txnDirection,
+        label: txnLabel.trim(),
+      });
+      setTxnLabel("");
+      setTxnAmount("");
+      toast.success(txnDirection === "out" ? "Money out recorded" : "Money in recorded");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not record that");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** A transaction's removal: there is no edit, because an edited fact is a new fact. */
   const handleDeleteAccount = async (id: Id<"accounts">) => {
     try {
       const res = await deleteAccount({ id });
@@ -276,6 +394,102 @@ export function FinanceArea() {
         </p>
       </div>
 
+      {/* ---------- OVERVIEW ----------
+          The section that answers "what is my financial situation" before it
+          asks the user to do anything. Every figure below is either already
+          returned by `getFinance` / `listSubscriptions` / `listBalances` or is a
+          count of rows the area already fetched — so the Overview adds **no
+          database read**, which is the D42/D48 lesson applied in advance. */}
+      <section className="brutal-flat bg-card p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display text-sm uppercase tracking-wide">Overview</h2>
+          <AreaAdd
+            area="finance"
+            label="Add"
+            onSelect={{
+              transaction: () => document.getElementById("finance-transaction")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              expense: () => document.getElementById("finance-expense")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              account: () => setShowAccounts((v) => !v),
+              subscription: () => document.getElementById("finance-subscription")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              income: () => document.getElementById("finance-income")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              document: () => setShowAddDocument((v) => !v),
+              task: () => document.getElementById("finance-task")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+              capture: () => document.getElementById("finance-capture")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+            }}
+          />
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="border-2 border-border bg-background p-3">
+            <p className="text-[10px] uppercase text-muted-foreground">Income this year</p>
+            <p className="font-display mt-1 text-2xl leading-none">
+              {country.currencySymbol}
+              {formatAmount(profile.grossIncome)}
+            </p>
+          </div>
+          <div className="border-2 border-border bg-background p-3">
+            <p className="text-[10px] uppercase text-muted-foreground">Estimated tax</p>
+            <p className="font-display mt-1 text-2xl leading-none">
+              {country.currencySymbol}
+              {formatAmount(estimate.estimatedTax)}
+            </p>
+          </div>
+          <div className="border-2 border-border bg-background p-3">
+            <p className="text-[10px] uppercase text-muted-foreground">Recurring a year</p>
+            <p className="font-display mt-1 text-2xl leading-none">
+              {country.currencySymbol}
+              {formatAmount(subs?.summary.activeAnnualTotal ?? 0)}
+            </p>
+            <p className="mt-0.5 text-[9px] uppercase text-muted-foreground">
+              {subs?.summary.activeCount ?? 0} active
+            </p>
+          </div>
+          <div className="border-2 border-border bg-background p-3">
+            <p className="text-[10px] uppercase text-muted-foreground">Expenses logged</p>
+            <p className="font-display mt-1 text-2xl leading-none">{expenses.length}</p>
+            <p className="mt-0.5 text-[9px] uppercase text-muted-foreground">for {taxYearLabel}</p>
+          </div>
+        </div>
+
+        {/* Balances are derived per currency, never blended (ADR-031). Two
+            currencies in one account is representable, and adding pounds to
+            dollars would be a small lie. */}
+        {balances !== undefined && balances.length > 0 && (
+          <div className="mt-4">
+            <p className="mb-2 text-[10px] font-bold uppercase text-muted-foreground">
+              Account balances · derived, never stored
+            </p>
+            <ul className="flex flex-col gap-2">
+              {balances.map((b) => (
+                <li
+                  key={b.accountId}
+                  className="flex flex-wrap items-baseline justify-between gap-2 border-2 border-border bg-background px-3 py-2"
+                >
+                  <span className="flex items-center gap-2 text-[11px] font-bold uppercase">
+                    <Landmark className="size-3 text-muted-foreground" />
+                    {b.label}
+                    <span className="text-[9px] font-normal text-muted-foreground">{b.kind}</span>
+                  </span>
+                  <span className="flex flex-wrap gap-x-4 gap-y-1">
+                    {b.balances.length === 0 ? (
+                      <span className="text-[10px] uppercase text-muted-foreground">
+                        nothing recorded
+                      </span>
+                    ) : (
+                      b.balances.map((entry) => (
+                        <span key={entry.currency} className="font-display text-sm">
+                          {formatMinor(entry.amountMinor, entry.currency as CurrencyCode)}
+                        </span>
+                      ))
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
       {/* ---------- COUNTRY + YEAR ---------- */}
       <section className="brutal-flat bg-card p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -309,6 +523,7 @@ export function FinanceArea() {
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <Input
+            id="finance-income"
             type="number"
             min={0}
             value={income ?? String(profile.grossIncome || "")}
@@ -605,6 +820,7 @@ export function FinanceArea() {
 
             <form
               onSubmit={handleAddSubscription}
+              id="finance-subscription"
               className="mb-4 flex flex-col gap-2 sm:flex-row"
             >
               <Input
@@ -744,11 +960,24 @@ export function FinanceArea() {
               </ul>
             )}
 
-            <details className="mb-2">
-              <summary className="cursor-pointer text-[10px] uppercase text-muted-foreground">
-                Accounts ({accounts?.length ?? 0})
-              </summary>
-              <div className="mt-3 flex flex-col gap-3">
+            <section
+              className="mb-2 border-t-2 border-dashed border-border pt-3"
+              aria-label="Accounts"
+            >
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[11px] font-bold uppercase">
+                  Accounts ({accounts?.length ?? 0})
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowAccounts((v) => !v)}
+                  aria-expanded={showAccounts}
+                  className="brutal-flat border-2 border-border bg-background px-2 py-1 text-[10px] uppercase"
+                >
+                  {showAccounts ? "Hide" : "Add an account"}
+                </button>
+              </div>
+              <div className="flex flex-col gap-3">
                 <p className="flex items-start gap-2 border-2 border-dashed border-border bg-background p-2.5 text-[10px] leading-relaxed uppercase text-muted-foreground">
                   <Info className="mt-px size-3 shrink-0" />
                   An account is a name, nothing more. There is no balance column
@@ -756,7 +985,7 @@ export function FinanceArea() {
                   that can be wrong.
                 </p>
 
-                <form onSubmit={handleAddAccount} className="flex flex-col gap-2 sm:flex-row">
+                <form onSubmit={handleAddAccount} className={cn("flex flex-col gap-2 sm:flex-row", !showAccounts && "hidden")}>
                   <Input
                     value={accountLabel}
                     onChange={(e) => setAccountLabel(e.target.value)}
@@ -814,7 +1043,7 @@ export function FinanceArea() {
                   </ul>
                 )}
               </div>
-            </details>
+            </section>
           </>
         )}
       </section>
@@ -823,7 +1052,7 @@ export function FinanceArea() {
       <section className="brutal-flat bg-card p-5">
         <h2 className="font-display mb-4 text-sm uppercase tracking-wide">Expenses</h2>
 
-        <form onSubmit={handleAddExpense} className="mb-5 flex flex-col gap-2 sm:flex-row">
+        <form onSubmit={handleAddExpense} id="finance-expense" className="mb-5 flex flex-col gap-2 sm:flex-row">
           <Input
             value={expenseLabel}
             onChange={(e) => setExpenseLabel(e.target.value)}
@@ -942,6 +1171,164 @@ export function FinanceArea() {
         )}
       </section>
 
+      {/* ---------- FINANCIAL DOCUMENTS ----------
+          Creation only. A document is a label, an expiry and a lead time
+          (ADR-025); Life Admin owns its seven derived states, so Finance offers
+          the creation and not a second list that could disagree with the first. */}
+      {showAddDocument && (
+        <section className="brutal-flat border-dashed bg-card p-5">
+          <h2 className="font-display mb-1 text-sm uppercase tracking-wide">
+            Track a financial document
+          </h2>
+          <p className="mb-3 text-[10px] leading-relaxed uppercase text-muted-foreground">
+            A policy, a letter, a statement. Panel stores the name and the expiry
+            — never the file — and Life Admin is where you will see it.
+          </p>
+          <form onSubmit={handleAddDocument} className="flex flex-col gap-2 sm:flex-row">
+            <Input
+              value={docLabel}
+              onChange={(e) => setDocLabel(e.target.value)}
+              placeholder="Contents insurance"
+              maxLength={80}
+              aria-label="Document name"
+              className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+            />
+            <Input
+              type="date"
+              value={docExpiry}
+              onChange={(e) => setDocExpiry(e.target.value)}
+              aria-label="Expiry date"
+              className="h-11 w-40 border-2 border-border bg-background px-1 text-[10px] focus-visible:ring-0"
+            />
+            <Button
+              type="submit"
+              disabled={busy}
+              className="brutal h-11 gap-2 bg-primary px-5 font-bold uppercase"
+            >
+              <Plus className="size-4" />
+              Track
+            </Button>
+          </form>
+        </section>
+      )}
+
+      {/* ---------- TRANSACTIONS (phase 4, ADR-031) ----------
+          Money facts. Deliberately **not** a balance: the figure shown per
+          account is summed at read time, so there is no stored number that can
+          drift from the bank. There is no edit button either — changing a fact
+          you already recorded would be recording a different fact, and the
+          honest way to correct one is to delete it and write it again. */}
+      <section id="finance-transaction" className="brutal-flat bg-card p-5">
+        <h2 className="font-display mb-1 text-sm uppercase tracking-wide">Transactions</h2>
+        <p className="mb-4 text-[10px] leading-relaxed uppercase text-muted-foreground">
+          What actually happened to your money. Amounts are whole pence or cents,
+          never a fraction of one, and Panel keeps no balance of its own — the
+          figure is worked out from these rows every time you look.
+        </p>
+
+        <form onSubmit={handleAddTransaction} className="mb-4 flex flex-col gap-2 sm:flex-row">
+          <select
+            value={txnDirection}
+            onChange={(e) => setTxnDirection(e.target.value as "in" | "out")}
+            aria-label="Which way the money went"
+            className="h-11 border-2 border-border bg-background px-2 text-[11px] uppercase focus-visible:ring-0"
+          >
+            <option value="out">Out</option>
+            <option value="in">In</option>
+          </select>
+          <Input
+            value={txnLabel}
+            onChange={(e) => setTxnLabel(e.target.value)}
+            placeholder="What it was"
+            maxLength={120}
+            aria-label="Transaction description"
+            className="h-11 flex-1 border-2 border-border bg-background focus-visible:ring-0"
+          />
+          <Input
+            value={txnAmount}
+            onChange={(e) => setTxnAmount(e.target.value)}
+            placeholder="0.00"
+            inputMode="decimal"
+            aria-label="Amount"
+            className="h-11 w-28 border-2 border-border bg-background focus-visible:ring-0"
+          />
+          <Input
+            type="date"
+            value={txnDate}
+            onChange={(e) => setTxnDate(e.target.value)}
+            aria-label="Date"
+            className="h-11 w-40 border-2 border-border bg-background px-1 text-[10px] focus-visible:ring-0"
+          />
+          <select
+            value={txnAccount}
+            onChange={(e) => setTxnAccount(e.target.value)}
+            aria-label="Account"
+            className="h-11 border-2 border-border bg-background px-2 text-[11px] uppercase focus-visible:ring-0"
+          >
+            <option value="">No account</option>
+            {(accounts ?? []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+          <Button
+            type="submit"
+            disabled={busy}
+            className="brutal h-11 gap-2 bg-primary px-5 font-bold uppercase"
+          >
+            <Plus className="size-4" />
+            Add
+          </Button>
+        </form>
+
+        {transactions === undefined ? (
+          <p className="border-2 border-dashed border-border px-3 py-6 text-center text-[11px] uppercase text-muted-foreground">
+            Loading transactions…
+          </p>
+        ) : transactions.length === 0 ? (
+          <p className="border-2 border-dashed border-border px-3 py-6 text-center text-[11px] uppercase text-muted-foreground">
+            Nothing recorded yet
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {transactions.map((t) => (
+              <li
+                key={t._id}
+                className="flex items-center gap-3 border-2 border-border bg-background px-3 py-2.5"
+              >
+                <span
+                  className={cn(
+                    "shrink-0 border-2 border-border px-1.5 py-0.5 text-[9px] font-bold uppercase",
+                    t.direction === "out" ? "bg-secondary text-secondary-foreground" : "bg-primary text-primary-foreground",
+                  )}
+                >
+                  {t.direction === "out" ? "Out" : "In"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[12px]">{t.label}</p>
+                  <p className="text-[9px] uppercase text-muted-foreground">
+                    {new Date(t.postedAt).toLocaleDateString()}
+                    {t.accountId
+                      ? ` · ${(accounts ?? []).find((a) => a.id === t.accountId)?.label ?? "account"}`
+                      : " · no account"}
+                    {t.source === "import" ? " · imported" : ""}
+                  </p>
+                </div>
+                <span className="shrink-0 font-display text-sm">
+                  {formatMinor(t.direction === "out" ? -t.amountMinor : t.amountMinor, t.currency as CurrencyCode)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {transactions !== undefined && transactions.length >= 25 && (
+          <p className="mt-2 text-[9px] uppercase text-muted-foreground">
+            Showing the most recent 25. Balances above count every row, not just these.
+          </p>
+        )}
+      </section>
+
       {/* ---------- ESTIMATE ---------- */}
       <section className="brutal bg-foreground p-5 text-background">
         <div className="mb-4 flex items-center gap-2">
@@ -1002,6 +1389,65 @@ export function FinanceArea() {
             </li>
           ))}
         </ul>
+      </section>
+
+      {/* ---------- FINANCE TASKS ----------
+          Deliberately the **last** section. Tasks have always existed in Finance;
+          what was missing was any sign of them, so the area quietly implied they
+          did not. Showing them here — one small, plainly-labelled section, after
+          the money — is the difference between "Finance is a workspace" and
+          "Finance is a task list with extra steps", and putting them last is
+          what stops them becoming the area's identity again. */}
+      <section id="finance-task" className="brutal-flat bg-card p-5">
+        <h2 className="font-display mb-1 text-sm uppercase tracking-wide">
+          Tasks in Finance ({financeTasks?.length ?? 0})
+        </h2>
+        <p className="mb-3 text-[10px] leading-relaxed uppercase text-muted-foreground">
+          The last section on purpose. Everything above is money; this is the one
+          place in Finance where a task is the right shape.
+        </p>
+
+        <div className="mb-3">
+          <Textarea
+            id="finance-capture"
+            value={financeCapture}
+            onChange={(e) => setFinanceCapture(e.target.value)}
+            placeholder="Capture in Finance — parsed as usual, filed here"
+            aria-label="Capture in Finance"
+            className="min-h-16 border-2 border-border bg-background focus-visible:ring-0"
+          />
+          <Button
+            type="button"
+            disabled={busy || !financeCapture.trim()}
+            onClick={() => void handleFinanceCapture()}
+            className="brutal mt-2 h-9 gap-2 bg-primary px-4 text-[10px] font-bold uppercase"
+          >
+            <Plus className="size-3.5" />
+            Capture
+          </Button>
+        </div>
+
+        {financeTasks === undefined ? null : financeTasks.length === 0 ? (
+          <p className="border-2 border-dashed border-border px-3 py-4 text-center text-[11px] uppercase text-muted-foreground">
+            No tasks in Finance
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {financeTasks.map((t) => (
+              <li
+                key={t._id}
+                className="flex items-center gap-3 border-2 border-border bg-background px-3 py-2"
+              >
+                <span className={cn("text-[12px]", t.completed && "text-muted-foreground line-through")}>
+                  {t.title}
+                </span>
+                {t.completed && (
+                  <span className="ml-auto text-[9px] uppercase text-muted-foreground">done</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );
