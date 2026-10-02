@@ -41,6 +41,7 @@ import {
   validateLeadDays,
   type RenewalRef,
 } from "../lib/documents";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { completeTask, requireUserId } from "./assistant";
@@ -48,7 +49,7 @@ import { mutation, query } from "./_generated/server";
 import { ensurePersonalSpace } from "./spaces";
 
 /** Documents returned per query. The surface is a list; it is not an export. */
-const MAX_DOCUMENTS = 200;
+const MAX_DOCUMENTS = READ_LIMITS.DOCUMENTS;
 
 /**
  * How much activity `documentAudit` reads.
@@ -57,7 +58,7 @@ const MAX_DOCUMENTS = 200;
  * `assistant.ts` is the precedent, and so is its reason: an unbounded read on a
  * query a client may call is the shape of D39.
  */
-const AUDIT_SCAN_LIMIT = 500;
+const AUDIT_SCAN_LIMIT = READ_LIMITS.AUDIT_SCAN_LIMIT;
 
 type Ctx = GenericMutationCtx<DataModel> | GenericQueryCtx<DataModel>;
 
@@ -100,7 +101,7 @@ async function renewalsOf(
   return await ctx.db
     .query("tasks")
     .withIndex("by_owner_document", (q) => q.eq("ownerUserId", userId).eq("documentId", documentId))
-    .collect();
+    .take(READ_LIMITS.ASSOCIATED_TASKS);
 }
 
 /**
@@ -123,7 +124,7 @@ async function renewalsByDocument(
   const rows = await ctx.db
     .query("tasks")
     .withIndex("by_owner_document", (q) => q.eq("ownerUserId", userId))
-    .collect();
+    .take(READ_LIMITS.ASSOCIATED_TASKS);
 
   const grouped = new Map<Id<"documents">, RenewalTask[]>();
   for (const row of rows) {
@@ -220,7 +221,7 @@ export const listDocuments = query({
     const rows = await ctx.db
       .query("documents")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(MAX_DOCUMENTS);
 
     // One read for every renewal this user owns, not one per document.
     const renewals = await renewalsByDocument(ctx, userId);
@@ -281,7 +282,7 @@ export const getExpiring = query({
     const rows = await ctx.db
       .query("documents")
       .withIndex("by_owner_expiry", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(MAX_DOCUMENTS);
 
     // One read for the renewals, not one per document (see `renewalsByDocument`).
     const renewals = await renewalsByDocument(ctx, userId);
@@ -315,7 +316,7 @@ export const documentAudit = query({
     const spaces = await ctx.db
       .query("spaces")
       .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
-      .collect();
+      .take(READ_LIMITS.SPACES);
     if (spaces.length === 0) return { kinds: [], tasks: [] };
 
     const kinds: string[] = [];

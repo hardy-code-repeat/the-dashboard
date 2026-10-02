@@ -11,6 +11,7 @@ import {
   filingYearFor,
   readinessScore,
 } from "../lib/tax";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
@@ -216,7 +217,7 @@ export const disableArea = mutation({
     const orphaned = await ctx.db
       .query("tasks")
       .withIndex("by_owner_area", (q) => q.eq("ownerUserId", userId).eq("area", slug))
-      .collect();
+      .take(MAX_AREA_TASKS);
     for (const task of orphaned) {
       await ctx.db.patch(task._id, { area: DEFAULT_AREA });
     }
@@ -274,11 +275,11 @@ export const getFinance = query({
         .withIndex("by_owner_spentAt", (q) =>
           q.eq("ownerUserId", userId).gte("spentAt", yearStart).lte("spentAt", yearEnd),
         )
-        .collect(),
+        .take(MAX_EXPENSES),
       ctx.db
         .query("taxDocuments")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(READ_LIMITS.DOCUMENTS),
     ]);
 
     const estimate = estimateTax({
@@ -554,7 +555,7 @@ export const listConnections = query({
     const rows = await ctx.db
       .query("connections")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.CONNECTIONS);
 
     const connectedByProvider = new Set<string>(rows.map((r) => r.provider));
     return {
@@ -639,6 +640,17 @@ export const setTaskArea = mutation({
 
 /** An area's task list is a surface, not an export. The bound belongs to the read. */
 const MAX_AREA_TASKS = 200;
+
+/**
+ * Expenses behind the tax estimate.
+ *
+ * This one feeds a *number* — the same class of problem as a truncated balance,
+ * and it deserves the same suspicion. The read is a `spentAt` range over one
+ * tax year, so it is bounded in time, and 2000 expenses in a year is far past
+ * anything a real person files. It is capped anyway, because a cap that only
+ * holds because the estimate is probably small is not a cap.
+ */
+const MAX_EXPENSES = READ_LIMITS.EXPENSES;
 
 export const getAreaTasks = query({
   args: { area: v.string() },

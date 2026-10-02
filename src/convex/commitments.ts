@@ -40,6 +40,18 @@ import {
   type CommitmentDirection,
   type FollowUpRef,
 } from "../lib/commitments";
+import { READ_LIMITS } from "../lib/readLimits";
+
+/**
+ * Follow-up tasks read for the caller's commitments.
+ *
+ * The `by_owner_commitment` range holds only tasks that chase a waiting item —
+ * Convex drops a row from an index when the indexed field is absent — so it is
+ * already much narrower than "every task". It is not, however, bounded, and a
+ * user who has chased the same thing for two years should not make every
+ * commitments read scale with how long they have been waiting.
+ */
+const MAX_FOLLOW_UP_TASKS = READ_LIMITS.ASSOCIATED_TASKS;
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
@@ -48,7 +60,7 @@ import { peopleById, resolvePersonName } from "./people";
 import { ensurePersonalSpace } from "./spaces";
 
 /** Commitments returned per query. The surface is a list; it is not an export. */
-const MAX_COMMITMENTS = 200;
+const MAX_COMMITMENTS = READ_LIMITS.COMMITMENTS;
 
 /**
  * The commitments that can possibly be attention, read as an index range.
@@ -78,7 +90,7 @@ function openOverdueRange(ctx: GenericQueryCtx<DataModel>, userId: Id<"users">, 
  * A read, so it is bounded — an unbounded read on a query a client may call is
  * the shape of D39, and `assistant:captureAudit` is the precedent.
  */
-const AUDIT_SCAN_LIMIT = 500;
+const AUDIT_SCAN_LIMIT = READ_LIMITS.AUDIT_SCAN_LIMIT;
 
 type Ctx = GenericMutationCtx<DataModel> | GenericQueryCtx<DataModel>;
 
@@ -180,7 +192,7 @@ export const listCommitments = query({
       ctx.db
         .query("tasks")
         .withIndex("by_owner_commitment", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(MAX_FOLLOW_UP_TASKS),
     ]);
 
     const followUpByCommitment = new Map<string, FollowUpRef>();
@@ -259,7 +271,7 @@ export const getAttentionCommitments = query({
       ctx.db
         .query("tasks")
         .withIndex("by_owner_commitment", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(MAX_FOLLOW_UP_TASKS),
     ]);
 
     const followUpByCommitment = new Map<string, FollowUpRef>();
@@ -303,7 +315,7 @@ export const getCommitment = query({
       .withIndex("by_owner_commitment", (q) =>
         q.eq("ownerUserId", userId).eq("commitmentId", args.id),
       )
-      .collect();
+      .take(MAX_FOLLOW_UP_TASKS);
 
     return viewOf(row, person.name, followUps[0] ?? null, Date.now());
   },
@@ -326,7 +338,7 @@ export const commitmentAudit = query({
     const spaces = await ctx.db
       .query("spaces")
       .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
-      .collect();
+      .take(READ_LIMITS.SPACES);
     if (spaces.length === 0) return { kinds: [], followUps: [] };
 
     const kinds: string[] = [];
@@ -549,7 +561,7 @@ export const followUp = mutation({
         .withIndex("by_owner_commitment", (q) =>
           q.eq("ownerUserId", userId).eq("commitmentId", row._id),
         )
-        .collect()
+        .take(MAX_FOLLOW_UP_TASKS)
     ).find((t) => !t.completed);
     if (existing) return { taskId: existing._id, created: false };
 
@@ -605,7 +617,7 @@ export const deleteCommitment = mutation({
       .withIndex("by_owner_commitment", (q) =>
         q.eq("ownerUserId", userId).eq("commitmentId", row._id),
       )
-      .collect();
+      .take(MAX_FOLLOW_UP_TASKS);
     for (const task of tasks) {
       await ctx.db.patch(task._id, { commitmentId: undefined });
     }

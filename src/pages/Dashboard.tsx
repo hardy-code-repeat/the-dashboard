@@ -172,8 +172,19 @@ export default function Dashboard() {
 
   const handleClearCompleted = async () => {
     try {
-      const removed = await clearCompleted();
-      toast.success(`Cleared ${removed} completed ${removed === 1 ? "task" : "tasks"}`);
+      // The mutation clears one bounded batch and says whether more remain.
+      // Reporting "cleared 200" to someone with 400 finished tasks — and
+      // leaving the rest behind without a word — is the failure this return
+      // shape exists to prevent.
+      const { cleared, moreRemain } = await clearCompleted();
+      if (moreRemain) {
+        toast.message(
+          `Cleared ${cleared} completed ${cleared === 1 ? "task" : "tasks"}. ` +
+            `More remain — press again to continue.`,
+        );
+      } else {
+        toast.success(`Cleared ${cleared} completed ${cleared === 1 ? "task" : "tasks"}`);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not clear tasks");
     }

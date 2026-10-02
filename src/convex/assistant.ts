@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { DEFAULT_AREA_SLUG, areaBySlug } from "../lib/areas";
 import { planCapture } from "../lib/capture";
 import { nextOccurrence, parseTaskInput } from "../lib/nlp";
+import { READ_LIMITS } from "../lib/readLimits";
 import {
   dueBucketKey,
   emptyBehaviour,
@@ -43,10 +44,27 @@ export const AUTO_SNAPSHOT_EVERY = 25;
  * the audit row get written, and with what count", not an export, and an
  * unbounded read on a query a client may call is the shape of defect D37.
  */
-const AUDIT_SCAN_LIMIT = 500;
+const AUDIT_SCAN_LIMIT = READ_LIMITS.AUDIT_SCAN_LIMIT;
 
 /** Snapshots retained per user; the oldest are pruned. */
 export const MAX_SNAPSHOTS = 10;
+
+/**
+ * How many tasks of each kind the dashboard reads.
+ *
+ * Open and finished are separate index ranges (`by_owner_open`), each ordered
+ * newest-first and each capped. Fetching one extra row is how a truncation is
+ * *detected* rather than guessed at: if the extra row comes back, the board
+ * holds more than the cap and the payload says so in `truncated`.
+ *
+ * The consequence, stated plainly: for a user with more than this many open
+ * tasks, "what should I do next" is answered from their most recent
+ * {@link READ_LIMITS.DASHBOARD_TASKS}, not from all of them. That is a real
+ * trade — the ranking is a computed score, and no index can return the top N by
+ * a score it has not computed. It is recorded as D61 because the right number is
+ * a product call, not an engineering one.
+ */
+const MAX_DASHBOARD_TASKS = READ_LIMITS.DASHBOARD_TASKS;
 
 /**
  * Cap on each explicit suppression set (RJD-006).
@@ -88,9 +106,15 @@ export async function takeSnapshot(
   const existing = await ctx.db
     .query("modelSnapshots")
     .withIndex("by_owner_modelVersion", (q) => q.eq("ownerUserId", state.ownerUserId))
-    .collect();
+    .take(READ_LIMITS.MODEL_SNAPSHOTS + 1);
 
+  // `take` is not decoration here. The read was unbounded, so a user who had
+  // somehow accumulated extra snapshots paid for all of them on every version
+  // bump, and the prune below could only delete what it had read. Bounding the
+  // read is what lets the delete converge: everything past the cap is seen,
+  // everything within it is left alone.
   const surplus = existing
+    .slice()
     .sort((a, b) => b.modelVersion - a.modelVersion)
     .slice(MAX_SNAPSHOTS);
   for (const old of surplus) await ctx.db.delete(old._id);
@@ -202,14 +226,50 @@ function currentWeights(state: AssistantDoc | null): number[] {
  */
 const MAX_DASHBOARD_NOTES = 50;
 
+/**
+ * The dashboard's finished half.
+ *
+ * `completedTotal` and `completionRate` are lifetime aggregates, and a
+ * truthful count of N rows requires reading N rows — there is no shortcut. So
+ * this is a **bounded sample of the most recent finished tasks**, and the stats
+ * are marked `sampled` when it bites.
+ *
+ * That is a deliberate semantic change from "every task you have ever finished",
+ * and it is an improvement for a real reason: a lifetime ratio is dominated by
+ * old history and moves so slowly it stops meaning anything. A recent-window
+ * ratio answers the question a person actually has. The alternative — keeping
+ * the lifetime number — means keeping an unbounded read on the hottest query in
+ * the product, which is the defect this increment exists to close.
+ */
+
 export const getDashboard = query({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
 
-    const [tasks, notes, state, spaces] = await Promise.all([
-      ctx.db.query("tasks").withIndex("by_owner", (q) => q.eq("ownerUserId", userId)).collect(),
+    const [openRows, completedRows, notes, state, spaces] = await Promise.all([
+      // Open work: an index **range** on (owner, completed=false), ordered
+      // newest-first and capped. `take(n + 1)` rather than `take(n)` so that
+      // hitting the cap is an observable fact and not a silent lie about how
+      // complete the board is.
+      ctx.db
+        .query("tasks")
+        .withIndex("by_owner_open", (q) =>
+          q.eq("ownerUserId", userId).eq("completed", false),
+        )
+        .order("desc")
+        .take(MAX_DASHBOARD_TASKS + 1),
+      // Finished work, same shape, bounded separately. See the note on
+      // `completedTotal` below: these feed two aggregates, and an unbounded
+      // read to compute a lifetime count is the defect, not the fix.
+      ctx.db
+        .query("tasks")
+        .withIndex("by_owner_open", (q) =>
+          q.eq("ownerUserId", userId).eq("completed", true),
+        )
+        .order("desc")
+        .take(MAX_DASHBOARD_TASKS + 1),
       // Newest first, from an index range, capped. Previously this collected **every
       // note the user had ever written**, sorted them in memory, and returned the
       // whole set to the browser on every single dashboard load — an unbounded
@@ -220,8 +280,18 @@ export const getDashboard = query({
         .order("desc")
         .take(MAX_DASHBOARD_NOTES),
       loadState(ctx, userId),
-      ctx.db.query("spaces").withIndex("by_createdBy", (q) => q.eq("createdBy", userId)).collect(),
+      ctx.db
+        .query("spaces")
+        .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
+        .take(READ_LIMITS.SPACES),
     ]);
+
+    // The extra row is the receipt. If it is there, the cap bit and the board
+    // is not the whole board — and the client is told, rather than being shown
+    // a confident list that happens to stop at 200.
+    const openTruncated = openRows.length > MAX_DASHBOARD_TASKS;
+    const completedTruncated = completedRows.length > MAX_DASHBOARD_TASKS;
+    const tasks = [...openRows.slice(0, MAX_DASHBOARD_TASKS), ...completedRows.slice(0, MAX_DASHBOARD_TASKS)];
 
     const now = new Date();
     const behaviour = toBehaviour(state);
@@ -271,7 +341,7 @@ export const getDashboard = query({
           .withIndex("by_space_at", (q) =>
             q.eq("spaceId", personalSpaceId).gte("at", todayStart - 6 * DAY_MS),
           )
-          .collect()
+          .take(READ_LIMITS.AUDIT_SCAN_LIMIT)
       : [];
 
     const completionsIn = (from: number, to: number): number =>
@@ -319,9 +389,22 @@ export const getDashboard = query({
       // sorting the database should have been doing.
       notes,
       brief,
+      /**
+       * True when the board holds more work than the cap allows. The client
+       * shows this as a "showing your 200 most recent" note. It is reported
+       * rather than absorbed because a silently truncated ranking is worse
+       * than an unbounded read: the user would be told to do the wrong task
+       * first and have no way to know.
+       */
+      truncated: openTruncated || completedTruncated,
       stats: {
         open: open.length,
         overdue: overdue.length,
+        /**
+         * Count of *recently finished* tasks, bounded. Not a lifetime count —
+         * see the note above the read. `sampled` says which of the two numbers
+         * below are over a bounded window rather than over everything.
+         */
         completedTotal: completed.length,
         completedToday,
         completedThisWeek,
@@ -329,6 +412,8 @@ export const getDashboard = query({
         completionRate:
           tasks.length === 0 ? 0 : Math.round((completed.length / tasks.length) * 100),
         samples: state?.samples ?? 0,
+        openTruncated,
+        completedTruncated,
       },
     };
   },
@@ -426,7 +511,7 @@ export const capture = mutation({
     const ownPeople = await ctx.db
       .query("people")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.PEOPLE);
     const byId = new Map(ownPeople.map((p) => [p._id, p] as const));
 
     const known = ownPeople
@@ -527,7 +612,7 @@ export const captureAudit = query({
     const spaces = await ctx.db
       .query("spaces")
       .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
-      .collect();
+      .take(READ_LIMITS.SPACES);
     if (spaces.length === 0) return { kinds: [], segments: [] };
 
     const kinds: string[] = [];
@@ -938,14 +1023,25 @@ export const clearCompleted = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await requireUserId(ctx);
-    const tasks = await ctx.db
+    // A range on (owner, completed=true) — the database does the filtering —
+    // and a cap, because this is a *mutation*: unbounded, it scans and deletes
+    // without limit in one transaction.
+    //
+    // The read fetches one extra row so that hitting the cap is visible. A
+    // user with 400 finished tasks is told "cleared 200, more remain" and can
+    // press the button again; they are not told "cleared 200" and left with a
+    // pile of tasks they believed were gone.
+    const cap = READ_LIMITS.CLEAR_COMPLETED_BATCH;
+    const rows = await ctx.db
       .query("tasks")
-      .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .withIndex("by_owner_open", (q) => q.eq("ownerUserId", userId).eq("completed", true))
+      .order("desc")
+      .take(cap + 1);
 
-    const done = tasks.filter((t) => t.completed);
+    const moreRemain = rows.length > cap;
+    const done = rows.slice(0, cap);
     for (const task of done) await ctx.db.delete(task._id);
-    return done.length;
+    return { cleared: done.length, moreRemain };
   },
 });
 

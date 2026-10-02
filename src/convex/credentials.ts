@@ -297,7 +297,7 @@ export async function deleteTokens(
     .withIndex("by_owner_provider", (q) =>
       q.eq("ownerUserId", args.userId).eq("provider", args.provider),
     )
-    .collect();
+    .take(50);
   for (const row of rows) await ctx.db.delete(row._id);
   return rows.length;
 }

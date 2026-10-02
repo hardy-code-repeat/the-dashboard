@@ -35,6 +35,7 @@ import { v } from "convex/values";
 import { PRIVATE_TITLE } from "../lib/integrations/google-calendar";
 import { adapterFor, definitionFor } from "../lib/integrations/registry";
 import { mapProviderError } from "../lib/integrations/types";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -47,6 +48,16 @@ const DAY = 86_400_000;
 
 /** How far ahead the dashboard looks. Beyond this, a meeting is "later". */
 const HORIZON_DAYS = 14;
+
+/**
+ * Ceiling on meetings read for the strip.
+ *
+ * The read was already a `startsAt` range, so it was bounded in *time* — but a
+ * range over 14 days still holds however many meetings someone packed into
+ * them, and this query is reactively subscribed. A busy fortnight is a normal
+ * thing, not an attack, and it should not be able to stall the dashboard.
+ */
+const MAX_UPCOMING_EVENTS = READ_LIMITS.UPCOMING_EVENTS;
 
 /** Hard ceiling on pages per sync. A provider cannot make this loop forever. */
 const MAX_PAGES = 5;
@@ -325,7 +336,7 @@ export const upcomingEvents = query({
       .withIndex("by_space_startsAt", (q) =>
         q.eq("spaceId", space._id).gte("startsAt", now).lte("startsAt", horizon),
       )
-      .collect();
+      .take(MAX_UPCOMING_EVENTS);
 
     const connection = await ctx.db
       .query("connections")

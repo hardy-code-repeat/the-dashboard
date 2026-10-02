@@ -3,9 +3,26 @@ import type { GenericMutationCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { DEFAULT_AREA_SLUG } from "../lib/areas";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
+
+/** One table's ownership counts. `owned` equals `total` on an index-bounded read. */
+interface TableAudit {
+  total: number;
+  owned: number;
+  missingSpace: number;
+}
+
+/**
+ * Cap on a single user's spaces and memberships.
+ *
+ * A user has one personal space plus whatever they have been invited to, so
+ * this is bounded by the product in practice — but "in practice" is not a cap,
+ * and the reads that use it are on the hot path.
+ */
+const MAX_SPACES = 100;
 
 /**
  * Ownership and access foundation (ADR-009, phase 0B).
@@ -136,7 +153,7 @@ export async function ensurePersonalSpace(
   const rows = await ctx.db
     .query("spaces")
     .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
-    .collect();
+    .take(MAX_SPACES);
 
   const personal = rows.find((s) => s.kind === "personal" && s.archivedAt == null);
   if (personal) {
@@ -242,7 +259,7 @@ export const listMySpaces = query({
     const memberships = await ctx.db
       .query("spaceMembers")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+      .take(MAX_SPACES);
 
     const spaces = await Promise.all(
       memberships.map((m) => ctx.db.get(m.spaceId)),
@@ -331,57 +348,131 @@ export const auditOwnership = query({
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
 
-    const tables: Record<string, { total: number; owned: number; missingSpace: number }> = {};
+    const tables: Record<string, TableAudit> = {};
     let spaces = 0;
     let memberships = 0;
     let links = 0;
     let activity = 0;
+    let activityTruncated = false;
 
-    for (const table of OWNED_TABLES) {
-      const rows = await ctx.db
-        .query(table)
-        .filter((q) => q.eq(q.field("ownerUserId"), userId))
-        .collect();
+    // Per-table, index-bounded, written out one by one.
+    //
+    // This used to loop `OWNED_TABLES` and call
+    // `.query(table).filter((q) => q.eq(q.field("ownerUserId"), userId)).collect()`.
+    // That is a **full scan of every table in the product**, eight times over,
+    // with the ownership test done in JavaScript after the database had already
+    // read every row — and it ran on a reactively-subscribed query any signed-in
+    // user could call. The cost scaled with *total rows in the deployment*, not
+    // with the caller's own data, so one user with one task could force a read
+    // of every other user's rows.
+    //
+    // Spelling the reads out is the same trade `export.ts` makes, for the same
+    // reason: `by_owner` is an index equality, so the database does the
+    // narrowing, the scan is proportional to the caller's own rows, and a table
+    // with no owner index cannot be read by accident.
+    const cap = READ_LIMITS.OWNERSHIP_AUDIT_ROWS;
 
-      let owned = 0;
+    const [tasks, notes, assistantState, areas, taxProfile, expenses, taxDocuments, connections] =
+      await Promise.all([
+        ctx.db
+          .query("tasks")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("notes")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("assistantState")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("areas")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("taxProfile")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("expenses")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("taxDocuments")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+        ctx.db
+          .query("connections")
+          .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
+          .take(cap),
+      ]);
+
+    const record = (rows: readonly { spaceId?: unknown }[]): TableAudit => {
       let missingSpace = 0;
-      for (const row of rows) {
-        const r = row as { ownerUserId?: string; spaceId?: string };
-        if (r.ownerUserId === userId) {
-          owned += 1;
-          if (!r.spaceId) missingSpace += 1;
-        }
+      for (const r of rows) if (r.spaceId == null) missingSpace += 1;
+      return { total: rows.length, owned: rows.length, missingSpace };
+    };
+
+    tables.tasks = record(tasks);
+    tables.notes = record(notes);
+    tables.assistantState = record(assistantState);
+    tables.areas = record(areas);
+    tables.taxProfile = record(taxProfile);
+    tables.expenses = record(expenses);
+    tables.taxDocuments = record(taxDocuments);
+    tables.connections = record(connections);
+
+    // Every table in `OWNED_TABLES` must appear above. The list is the
+    // contract: if a table is added to ownership and not to this read, the
+    // audit quietly stops reporting on it — which is the exact failure this
+    // query exists to detect, reported as a clean bill of health. Asserted
+    // rather than assumed.
+    for (const table of OWNED_TABLES) {
+      if (tables[table] === undefined) {
+        throw new Error(`auditOwnership: table "${table}" was not audited`);
       }
-      tables[table] = { total: rows.length, owned, missingSpace };
     }
 
     for (const space of await ctx.db
       .query("spaces")
       .withIndex("by_createdBy", (q) => q.eq("createdBy", userId))
-      .collect()) {
+      .take(MAX_SPACES)) {
       if (space.kind === "personal") spaces += 1;
     }
 
-    memberships = await ctx.db
+    const membershipRows = await ctx.db
       .query("spaceMembers")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect()
-      .then((rows) => rows.length);
+      .take(MAX_SPACES);
+    memberships = membershipRows.length;
+    const spaceIds = new Set(membershipRows.map((m) => m.spaceId));
 
-    const spaceIds = new Set(
-      (await ctx.db
-        .query("spaceMembers")
-        .withIndex("by_user", (q) => q.eq("userId", userId))
-        .collect()).map((m) => m.spaceId),
-    );
-
-    for (const link of await ctx.db.query("links").collect()) {
-      if (spaceIds.has(link.spaceId)) links += 1;
+    // Per-space index ranges instead of two whole-table scans.
+    //
+    // `ctx.db.query("links").collect()` read **every link belonging to every
+    // user on the deployment** and then threw away all but this user's. Same
+    // for `activity`, which is the append-only log of every action anyone has
+    // taken. Both are now `by_space` / `by_space_at` ranges over the caller's
+    // own spaces, so the scan is proportional to their data and no other user's
+    // rows are read at all.
+    for (const spaceId of spaceIds) {
+      const spaceLinks = await ctx.db
+        .query("links")
+        .withIndex("by_space", (q) => q.eq("spaceId", spaceId))
+        .take(cap);
+      links += spaceLinks.length;
     }
-    for (const event of await ctx.db.query("activity").collect()) {
-      if (spaceIds.has(event.spaceId)) activity += 1;
+
+    for (const spaceId of spaceIds) {
+      const seen = await ctx.db
+        .query("activity")
+        .withIndex("by_space_at", (q) => q.eq("spaceId", spaceId))
+        .take(cap + 1);
+      activity += Math.min(seen.length, cap);
+      if (seen.length > cap) activityTruncated = true;
     }
 
-    return { userId, spaces, memberships, links, activity, tables };
+    return { userId, spaces, memberships, links, activity, activityTruncated, tables };
   },
 });

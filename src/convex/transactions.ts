@@ -53,6 +53,7 @@ import { v } from "convex/values";
 
 import { buildImportPreview, LIMITS } from "../lib/csv";
 import { isCurrencyCode, signedMinor, transactionKey } from "../lib/money";
+import { READ_LIMITS } from "../lib/readLimits";
 import { sha256Hex } from "../lib/sha256";
 import type { Id } from "./_generated/dataModel";
 import { requireUserId } from "./assistant";
@@ -67,10 +68,17 @@ import { ensurePersonalSpace } from "./spaces";
 
 /** A surface is a list, not an export. The bound belongs to the read. */
 const MAX_TRANSACTIONS = 100;
-const MAX_IMPORTS = 20;
+const MAX_IMPORTS = READ_LIMITS.IMPORTS;
 /** Accounts are user-created and few; the cap exists so the fan-out is bounded. */
-const MAX_ACCOUNTS = 20;
+const MAX_ACCOUNTS = READ_LIMITS.ACCOUNTS;
 const MAX_LABEL = 120;
+
+/**
+ * Rows behind a derived balance. A **truncated sum is a wrong number**, so
+ * every query using this reports `provisional: true` when the cap bites. See
+ * `TRANSACTION_AGGREGATE` in src/lib/readLimits.ts for the full reasoning.
+ */
+const MAX_BALANCE_ROWS = READ_LIMITS.TRANSACTION_AGGREGATE;
 /**
  * How many rows one import may write.
  *
@@ -263,10 +271,12 @@ export const getAccountBalance = query({
           ? scoped.gte("postedAt", args.from).lt("postedAt", args.to)
           : scoped;
       })
-      .collect();
+      .order("desc")
+      .take(MAX_BALANCE_ROWS + 1);
 
+    const provisional = rows.length > MAX_BALANCE_ROWS;
     const byCurrency = new Map<string, { amountMinor: number; count: number }>();
-    for (const row of rows) {
+    for (const row of rows.slice(0, MAX_BALANCE_ROWS)) {
       const entry = byCurrency.get(row.currency) ?? { amountMinor: 0, count: 0 };
       entry.amountMinor += signedMinor(row.amountMinor, row.direction);
       entry.count += 1;
@@ -276,6 +286,13 @@ export const getAccountBalance = query({
     return {
       accountId: args.accountId,
       derived: true as const,
+      /**
+       * True when this figure is a sum over a capped set of rows rather than
+       * the account's whole history. A balance that might be wrong must say so;
+       * a balance that is confidently wrong is the worst output this product
+       * could produce.
+       */
+      provisional,
       balances: [...byCurrency.entries()]
         .map(([currency, e]) => ({ currency, amountMinor: e.amountMinor, count: e.count }))
         .sort((a, b) => a.currency.localeCompare(b.currency)),
@@ -311,9 +328,13 @@ export const listBalances = query({
         const rows = await ctx.db
           .query("transactions")
           .withIndex("by_account_postedAt", (q) => q.eq("accountId", account._id))
-          .collect();
+          .take(MAX_BALANCE_ROWS + 1);
+        // The extra row is the receipt. Without it a truncated sum would be
+        // indistinguishable from a real one, and the user would see a wrong
+        // balance presented as fact.
+        const provisional = rows.length > MAX_BALANCE_ROWS;
         const byCurrency = new Map<string, number>();
-        for (const row of rows) {
+        for (const row of rows.slice(0, MAX_BALANCE_ROWS)) {
           byCurrency.set(
             row.currency,
             (byCurrency.get(row.currency) ?? 0) + signedMinor(row.amountMinor, row.direction),
@@ -323,6 +344,7 @@ export const listBalances = query({
           accountId: account._id,
           label: account.label,
           kind: account.kind,
+          provisional,
           balances: [...byCurrency.entries()]
             .map(([currency, amountMinor]) => ({ currency, amountMinor }))
             .sort((a, b) => a.currency.localeCompare(b.currency)),

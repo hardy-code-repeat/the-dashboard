@@ -43,6 +43,7 @@ import {
   matchingKeys,
   resolvedIdentityKeys,
 } from "../lib/people";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
@@ -57,7 +58,7 @@ const MAX_NOTE = 2_000;
 const MAX_EMAIL = 200;
 
 /** People returned per query. The surface is a list; it is not an export. */
-const MAX_PEOPLE = 200;
+const MAX_PEOPLE = READ_LIMITS.PEOPLE;
 
 // ---------------------------------------------------------------------------
 // reads
@@ -80,7 +81,7 @@ export const listPeople = query({
     const rows = await ctx.db
       .query("people")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(MAX_PEOPLE);
 
     const live = rows.filter((r) => r.mergedIntoId === undefined);
     const byId = new Map(rows.map((r) => [r._id, r] as const));
@@ -95,7 +96,8 @@ export const listPeople = query({
     const tasks = await ctx.db
       .query("tasks")
       .withIndex("by_owner_person", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.ASSOCIATED_TASKS);
+
     const openByPerson = new Map<string, number>();
     for (const task of tasks) {
       if (task.completed || !task.personId) continue;
@@ -151,7 +153,7 @@ export const getPerson = query({
     const all = await ctx.db
       .query("people")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(MAX_PEOPLE);
     const byId = new Map(all.map((r) => [r._id, r] as const));
     const resolved = resolveThroughTombstone(byId, args.id);
     const person = resolved ? byId.get(resolved) : null;
@@ -162,7 +164,7 @@ export const getPerson = query({
     const tasks = await ctx.db
       .query("tasks")
       .withIndex("by_owner_person", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.ASSOCIATED_TASKS);
 
     const mine = tasks.filter((t) => {
       if (!t.personId) return false;
@@ -227,7 +229,7 @@ export const createPerson = mutation({
     const existing = await ctx.db
       .query("people")
       .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(MAX_PEOPLE);
 
     const live = existing.filter((r) => r.mergedIntoId === undefined);
     const byId = new Map(existing.map((r) => [r._id, r] as const));
@@ -436,7 +438,7 @@ export async function peopleById(
   const rows = await ctx.db
     .query("people")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-    .collect();
+    .take(MAX_PEOPLE);
   return new Map(rows.map((r) => [r._id, r]));
 }
 

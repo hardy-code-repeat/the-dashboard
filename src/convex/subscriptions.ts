@@ -54,6 +54,7 @@ import {
   type AccountKind,
   type SubscriptionInterval,
 } from "../lib/subscriptions";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import { requireUserId } from "./assistant";
 import { DEFAULT_LEAD_DAYS } from "../lib/documents";
@@ -75,11 +76,11 @@ async function requireQueryUserId(ctx: GenericQueryCtx<DataModel>): Promise<Id<"
 }
 
 /** Subscriptions returned per query. The surface is a list; it is not an export. */
-const MAX_SUBSCRIPTIONS = 200;
-const MAX_ACCOUNTS = 100;
+const MAX_SUBSCRIPTIONS = READ_LIMITS.SUBSCRIPTIONS;
+const MAX_ACCOUNTS = READ_LIMITS.ACCOUNTS;
 
 /** How much activity `financeAudit` reads. A read, so it is bounded. */
-const MAX_AUDIT_ROWS = 500;
+const MAX_AUDIT_ROWS = READ_LIMITS.AUDIT_SCAN_LIMIT;
 
 // ---------------------------------------------------------------------------
 // Argument guards
@@ -253,7 +254,7 @@ export const deleteAccount = mutation({
       .withIndex("by_owner_account", (q) =>
         q.eq("ownerUserId", userId).eq("accountId", args.id),
       )
-      .collect();
+      .take(MAX_SUBSCRIPTIONS);
 
     for (const sub of attached) {
       await ctx.db.patch(sub._id, { accountId: undefined });
@@ -300,7 +301,7 @@ export const listSubscriptions = query({
       ctx.db
         .query("documents")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(READ_LIMITS.DOCUMENTS),
     ]);
 
     const accountName = new Map(accounts.map((a) => [a._id, a.label]));
@@ -541,7 +542,7 @@ export const deleteSubscription = mutation({
       .withIndex("by_owner_document", (q) =>
         q.eq("ownerUserId", userId).eq("documentId", row.documentId),
       )
-      .collect();
+      .take(READ_LIMITS.ASSOCIATED_TASKS);
 
     for (const t of tasks) {
       await ctx.db.patch(t._id, { documentId: undefined });

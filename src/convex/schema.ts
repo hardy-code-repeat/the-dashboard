@@ -778,7 +778,25 @@ const schema = defineSchema(
        * index when the indexed field is absent, so this range holds only the
        * tasks that chase a waiting item.
        */
-      .index("by_owner_commitment", ["ownerUserId", "commitmentId"]),
+      .index("by_owner_commitment", ["ownerUserId", "commitmentId"])
+
+      /**
+       * Open work, and completed work, as two ranges the database separates.
+       *
+       * `getDashboard` used to read `by_owner` and collect every task the user
+       * had ever created — open *and* finished — on a query that every
+       * subscribed dashboard re-runs on every write. The ranking only scores
+       * open work; the finished rows were read to produce two numbers, and they
+       * arrived in whatever order the index happened to return, so the read
+       * grew without limit while contributing almost nothing.
+       *
+       * Splitting on `completed` is what makes the cap honest. Each half is a
+       * range, each can be ordered by `createdAt` and capped, and — the part
+       * that matters — a truncation is *detectable* because the extra row comes
+       * back. A `.take()` on `by_owner` would have looked bounded in a diff and
+       * silently changed which task the dashboard calls "next".
+       */
+      .index("by_owner_open", ["ownerUserId", "completed", "createdAt"]),
 
     /**
      * A person (phase 3, feature 1).

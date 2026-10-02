@@ -28,6 +28,7 @@ import { diffBatch, keyFor, syncActivityKey, type StoredObject } from "../lib/in
 import { googleCalendarAdapter } from "../lib/integrations/google-calendar";
 import { adapterFor, allIntegrations, definitionFor, registerAdapter } from "../lib/integrations/registry";
 import { IntegrationFailure, type NormalizedLink, type NormalizedObject } from "../lib/integrations/types";
+import { READ_LIMITS } from "../lib/readLimits";
 import { safeHttpUrl } from "../lib/url";
 
 import type { DataModel, Id } from "./_generated/dataModel";
@@ -80,7 +81,7 @@ export const listIntegrations = query({
       ? await ctx.db
           .query("connections")
           .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-          .collect()
+          .take(READ_LIMITS.CONNECTIONS)
       : [];
 
     const byProvider = new Map(rows.map((r) => [r.provider, r] as const));
@@ -725,6 +726,17 @@ const SYNCED_KINDS = ["expense", "calendarEvent"] as const;
 type SyncedKind = (typeof SYNCED_KINDS)[number];
 
 async function loadStored(ctx: Ctx, spaceId: Id<"spaces">): Promise<StoredObject[]> {
+  // KNOWN UNBOUNDED — D63, deliberately not capped.
+  //
+  // This reads every expense and every calendar event in a space to build the
+  // upsert lookup keyed by `externalId`. Capping it would be the easy fix and
+  // it would be **wrong**: a row beyond the cap would be invisible to the diff
+  // engine, the engine would decide it is new, and the sync would write a
+  // second row for an event that already exists. Duplicated ledger rows are a
+  // worse failure than a slow query, so the bound has to come from the batch
+  // rather than from a constant — which means N index-range lookups, which is
+  // D41. The real fix is a batched multi-key index read; until that exists this
+  // read stays unbounded on purpose, and the audit reports it.
   const expenses = await ctx.db
     .query("expenses")
     .withIndex("by_space_externalId", (q) => q.eq("spaceId", spaceId))
@@ -879,7 +891,7 @@ async function markDerivedOrphaned(ctx: Ctx, ownerUserId: Id<"users">): Promise<
   const tasks = await ctx.db
     .query("tasks")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", ownerUserId))
-    .collect();
+    .take(READ_LIMITS.DASHBOARD_TASKS);
 
   for (const task of tasks) {
     // `orphanedSource` is the flag §7.2 names. It is applied by origin, not by

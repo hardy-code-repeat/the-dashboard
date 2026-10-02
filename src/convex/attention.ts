@@ -28,6 +28,7 @@ import {
   trainOne,
 } from "../lib/scorer";
 import { filingYearFor, COUNTRIES, readinessScore } from "../lib/tax";
+import { DAY_MS, READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { pickRenewal, renewalRef } from "./documents";
@@ -78,11 +79,12 @@ async function loadFeedback(ctx: AnyCtx, userId: Id<"users">): Promise<StateRow[
   return await ctx.db
     .query("attentionState")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-    .collect();
+    .take(READ_LIMITS.ATTENTION_FEEDBACK);
 }
 
 /** Per-user feature switches. One read, cached for the life of the query. */
 async function loadFlags(ctx: AnyCtx, userId: Id<"users">) {
+  // Closed vocabulary: three known keys, upserted. See readLimits.ts.
   const rows = await ctx.db
     .query("featureFlags")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
@@ -147,10 +149,18 @@ export const getAttention = query({
       .first();
 
     const [tasks, areas, connections, gathered, profile, feedback, events] = await Promise.all([
+      // Open work only, newest-first, capped. Previously this collected every
+      // task the user had ever created — including every finished one — on the
+      // single most heavily subscribed query in the product. The feed scores
+      // open work, so the finished rows contributed nothing but cost.
       ctx.db
         .query("tasks")
-        .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .withIndex("by_owner_open", (q) => q.eq("ownerUserId", userId).eq("completed", false))
+        .order("desc")
+        .take(READ_LIMITS.ATTENTION_TASKS),
+      // Closed vocabulary: at most one row per area-catalogue slug. See
+      // CLOSED_VOCABULARY_READS in src/lib/readLimits.ts — bounded by the
+      // catalogue, not by anything the user can do, so it is not capped.
       ctx.db
         .query("areas")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
@@ -158,11 +168,11 @@ export const getAttention = query({
       ctx.db
         .query("connections")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(READ_LIMITS.CONNECTIONS),
       ctx.db
         .query("taxDocuments")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(READ_LIMITS.DOCUMENTS),
       ctx.db
         .query("taxProfile")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
@@ -172,8 +182,13 @@ export const getAttention = query({
       space
         ? ctx.db
             .query("calendarEvents")
-            .withIndex("by_space", (q) => q.eq("spaceId", space._id))
-            .collect()
+            .withIndex("by_space_startsAt", (q) =>
+              q
+                .eq("spaceId", space._id)
+                .gte("startsAt", now)
+                .lte("startsAt", now + READ_LIMITS.ATTENTION_CALENDAR_DAYS * DAY_MS),
+            )
+            .take(READ_LIMITS.ATTENTION_CALENDAR_EVENTS)
         : Promise.resolve([]),
     ]);
 
@@ -238,7 +253,7 @@ export const getAttention = query({
     const expiringDocs = await ctx.db
       .query("documents")
       .withIndex("by_owner_expiry", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.DOCUMENTS);
 
     // Every renewal task the user owns, in **one** indexed read. Querying per
     // document would be an N+1 on the hottest query in the product, and this
@@ -247,7 +262,7 @@ export const getAttention = query({
     const renewalRows = await ctx.db
       .query("tasks")
       .withIndex("by_owner_document", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.ASSOCIATED_TASKS);
     const renewalsByDoc = new Map<string, typeof renewalRows>();
     for (const row of renewalRows) {
       const key = String(row.documentId);
@@ -300,7 +315,7 @@ export const getAttention = query({
         .withIndex("by_owner_open", (q) =>
           q.eq("ownerUserId", userId).eq("completed", false).lte("expectedAt", now),
         )
-        .collect(),
+        .take(READ_LIMITS.COMMITMENTS),
       peopleById(ctx, userId),
     ]);
 

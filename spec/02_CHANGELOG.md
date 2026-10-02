@@ -2196,6 +2196,174 @@ ADR-030
 
 ---
 
+## CHANGE-0026
+
+**The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
+
+Severity: ARCHITECTURE
+Status: **AUDIT IMPLEMENTED AND MUTATION-TESTED. ZERO UNBOUNDED READS REMAIN
+OUTSIDE TWO NAMED, JUSTIFIED EXCEPTIONS.**
+
+**Trigger.** D57 from CHANGE-0023, which recorded three unbounded reads as
+INFO rather than fixing them. The instruction was to complete the audit, so
+this begins by *counting* rather than by reading code and trusting the eye.
+
+### The audit was wrong twice, and both times in the direction of false confidence
+
+`scripts/audit-bounded-reads.ts` is a static scan of every read chain in
+`src/convex/`. It is the deliverable here as much as the fixes are, because the
+first two versions of it were **wrong**:
+
+1. **It reported 4 unbounded reads when 10 existed.** It anchored on
+   `.withIndex(` and walked *backwards* for `.query("x")` to name the table,
+   which silently dropped every chain written in the ordinary multi-line style.
+   Re-anchoring on `.query("table")` and walking *forwards* with a
+   bracket-depth counter found all of them.
+2. **It reported 23 correctly-bounded chains as unbounded**, because it coerced
+   `.take(MAX_ACCOUNTS)` to a number and `Number("MAX_ACCOUNTS")` is `NaN`.
+   The verdict must not depend on whether a cap is a literal or a named
+   constant.
+
+A third bug was caught during the fixes: the scanner parsed **its own
+documentation**. The first fix to `auditOwnership` included a comment quoting
+the old `ctx.db.query("links").collect()` line, and the audit dutifully reported
+it as a live whole-table scan. Comments are now blanked (preserving offsets so
+line numbers stay true).
+
+**The audit ships with two permanent controls**, because a checker that reports
+zero because it silently stopped matching is indistinguishable from a checker
+that reports zero because the code is clean:
+
+- plant two unbounded chains (one inline, one multi-line) → it must find 2;
+- plant two reads inside comments plus one live read → it must find 1.
+
+### What it found
+
+**63 unbounded reads and 2 whole-table scans** across 14 backend files. The
+worst was `spaces:auditOwnership`, which ran
+
+```
+ctx.db.query(table).filter((q) => q.eq(q.field("ownerUserId"), userId)).collect()
+```
+
+for each of 8 owned tables — a **full scan of every table in the product**, with
+the ownership test done in JavaScript after the database had already read every
+row — and then two more:
+
+```
+ctx.db.query("links").collect()      // every link belonging to every user
+ctx.db.query("activity").collect()   // every action anyone has ever taken
+```
+
+on a reactively-subscribed query any signed-in user could call. The cost scaled
+with **total rows in the deployment**, not with the caller's own data, so a user
+with one task could force a read of every other user's rows. All eight are now
+explicit `by_owner` index reads, and links/activity are per-space `by_space` /
+`by_space_at` ranges. `auditOwnership` also now **throws** if a table in
+`OWNED_TABLES` is not audited, because a missing table reads as a clean bill of
+health — which is the exact failure the query exists to detect.
+
+### Caps were scattered, so they are now a registry
+
+`AUDIT_SCAN_LIMIT` was defined **three times** (assistant, commitments,
+documents) and `MAX_ACCOUNTS` twice, with nothing recording what any number was
+*for*. Duplicated constants drift and nothing fails when they disagree.
+`src/lib/readLimits.ts` now holds every cap once, each with its reasoning, and
+`readLimits.test.ts` asserts no cap is zero, NaN, fractional, or so large it is
+not a bound.
+
+### The two truncations that are not the same
+
+Most caps bound a **list**: showing the newest 200 of 300 tasks means the user
+sees 200, and the payload can say so.
+
+`TRANSACTION_AGGREGATE` bounds a **sum**. A truncated sum is not a smaller
+correct number — it is a **wrong balance wearing a currency symbol**. So both
+balance queries read `cap + 1` and return `provisional: true` when the extra
+row comes back. Recorded as **D62**: the real fix is a maintained balance or a
+rollup, not a bigger constant.
+
+`getDashboard` had the same shape in miniature. `completedTotal` and
+`completionRate` are lifetime aggregates fed by an unbounded read. They are now
+computed over the most recent finished tasks and flagged. **This is a deliberate
+semantic change** — a lifetime ratio is dominated by old history and stops
+meaning anything — and it is stated here rather than absorbed, because the file's
+own comment already argued the dashboard's counts should come from `activity`
+rather than from re-scanning tasks.
+
+### What a naive `.take()` would have got wrong
+
+The dashboard ranks tasks by a **computed score**, so "the top 200" cannot come
+from an index. A `.take(200)` on `by_owner` would look bounded in a diff and
+silently change which task the dashboard calls *next*, depending on index order.
+So a new index `tasks.by_owner_open = [ownerUserId, completed, createdAt]`
+separates open from finished **in the database**, each half ordered
+newest-first, each capped, and each fetching one extra row so that hitting the
+cap is a *detectable fact* rather than a guess. The payload reports `truncated`.
+
+`clearCompleted` is a mutation, so the same treatment matters more: it reads
+`cap + 1` and returns `{ cleared, moreRemain }`. It previously returned a bare
+number, which meant a user with 400 finished tasks would be told "cleared 200"
+and left with 200 more, believing they were gone.
+
+### D61 — the dashboard cap is a product question, not an engineering one
+
+`DASHBOARD_TASKS = 200`. It is raised as a decision rather than settled because
+the number is a trade the user should own: above ~200 open tasks, "what should I
+do next" is answered from the most recent 200, not from all of them.
+
+### D63 — one read left unbounded **on purpose**
+
+`integrations.loadStored` reads every expense and calendar event in a space to
+build the `externalId` upsert lookup. Capping it is the easy fix and it is
+**wrong**: a row beyond the cap would be invisible to the diff engine, which
+would treat an existing event as new and **write a duplicate row into a
+financial ledger**. Duplicated ledger rows are a worse failure than a slow
+query. The bound has to come from the batch (a multi-key index read), which is
+D41 again. Recorded in `KNOWN_UNBOUNDED_READS` with its reason, and the audit
+fails if the read is fixed without the entry being deleted.
+
+### The exception list, and the entry that was wrong in it
+
+Seven reads stay unbounded because they are bounded **by the product** rather
+than by a cap: `areas.by_owner` / `by_owner_order` (one row per catalogue slug)
+and `featureFlags.by_owner` (three known keys, upserted). Each carries its
+justification in code, and the audit fails an exception with no reason — because
+"this one is fine" is exactly the sentence that hides the next D48.
+
+`attentionState.by_owner` was added to that list **on a wrong argument**: it
+looked like `assistantState` one table away, which genuinely is one row per
+owner. It is one row per attention **fingerprint**, so it grows with how long
+someone has used the product. It was removed and capped, and
+`NOT_CLOSED_VOCABULARY` now records it so the mistake cannot be repeated. A
+manifest that absorbs a plausible wrong entry is not a control, it is a loophole
+with documentation.
+
+The audit also fails on a **stale** exception — one naming a read that no longer
+exists — because an exception that outlives its reason becomes a permanent pass.
+
+### Verification
+
+**Mutation testing, twice**, because the gate has to be able to go red:
+
+| Mutation | Expected | Result |
+|---|---|---|
+| Removed `.take()` from the Attention task read | FAIL | exit 1, reported `tasks.by_owner_open` |
+| Replaced the per-space activity range with `query("activity").collect()` | FAIL | exit 1, reported 1 table scan |
+| Fixing `loadStored` without deleting its D63 entry | FAIL | enforced by stale-debt check |
+
+Final state: `0 unbounded, 2 accepted as debt, 7 accepted by closed vocabulary,
+0 table scans, 144 bounded`, both controls passing, `0` mutants remaining.
+
+**Gate:** `convex dev --once` ready · `tsc -b --noEmit` clean · `bun test`
+**592 pass / 0 fail / 23 files** (was 580) · `bun run lint` **3 errors / 19
+warnings = exact stock baseline** · all **18 harnesses exit 0** · spec-drift
+18/1/0.
+
+Related: D48, D57, D61, D62, D63
+
+---
+
 ## CHANGE-0025
 
 **Data export: a real, bounded, owner-scoped portability surface — and the case for deleting is still a human decision**

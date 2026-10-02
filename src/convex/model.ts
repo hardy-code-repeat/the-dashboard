@@ -9,6 +9,7 @@ import {
   initialWeights,
   WEIGHTS_VERSION,
 } from "../lib/scorer";
+import { READ_LIMITS } from "../lib/readLimits";
 
 import type { DataModel, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
@@ -194,7 +195,7 @@ export const listSnapshots = query({
     const rows = await ctx.db
       .query("modelSnapshots")
       .withIndex("by_owner_modelVersion", (q) => q.eq("ownerUserId", userId))
-      .collect();
+      .take(READ_LIMITS.MODEL_SNAPSHOTS);
 
     return rows
       .sort((a, b) => b.modelVersion - a.modelVersion)
@@ -272,7 +273,8 @@ export const getModelControls = query({
       ctx.db
         .query("modelSnapshots")
         .withIndex("by_owner_modelVersion", (q) => q.eq("ownerUserId", userId))
-        .collect(),
+        .take(READ_LIMITS.MODEL_SNAPSHOTS),
+      // Closed vocabulary: three known keys, upserted. See readLimits.ts.
       ctx.db
         .query("featureFlags")
         .withIndex("by_owner", (q) => q.eq("ownerUserId", userId))
