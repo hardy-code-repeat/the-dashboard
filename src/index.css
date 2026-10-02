@@ -160,4 +160,53 @@
   .brutal-flat {
     @apply border-2 border-border;
   }
+
+  /* ---------- keyboard focus (A11Y-2, CHANGE-0028) ----------
+     A neobrutalist surface hides focus by accident, and this is the fix.
+
+     Three things conspire here, and each had to be dealt with separately:
+
+     1. `--ring` was the *same* value as `--border` (`oklch(0.16 0 0)`), and the
+        shadcn button applies it at 40% opacity. On a `.brutal` element — which
+        already has a 2px border in that exact colour — a 40%-opacity ring of the
+        same colour is indistinguishable from the border it overlaps. The focus
+        indicator was, functionally, absent.
+     2. `123` elements across `src/` use `.brutal` and **not one** of them
+        declared a focus style. The primitives in `src/components/ui/` do; the
+        app's own hand-written buttons did not.
+     3. The button variant sets `outline-none`, so the browser default was
+        removed as well. Nothing was left.
+
+     The rule below is deliberately **not** a colour change. It changes the
+     *geometry*: an outline with a real offset sits outside the border, so it
+     cannot be confused with it, and it inherits `currentColor`, so it works on
+     every surface the brutal palette produces without a per-component rule.
+
+     `focus-visible` rather than `focus` so a mouse click does not leave a ring
+     behind, while `:focus` alone is not usable here — clicking a shadcn button
+     focuses it, and a keyboard user must be the only one who sees the ring.
+
+     The offset matters as much as the colour. `outline-offset: 2px` puts the
+     ring in the gap between elements, which is what makes it visible on a dense
+     grid where adjacent borders are 4px apart.
+
+     `:where()` keeps specificity at zero. Without it this rule would outrank
+     component classes that legitimately set their own outline, and every
+     `outline-none` in `src/components/ui/` would need rewriting to restore
+     component-level control. */
+  :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+    outline: 3px solid currentColor;
+    outline-offset: 2px;
+  }
+
+  /* Radix and friends render focus rings with box-shadow on their own trigger
+     wrappers. This restores the outline underneath those, so a control is never
+     left with a shadow-only indicator that a high-contrast or forced-colours
+     mode may drop entirely. */
+  @media (forced-colors: active) {
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 3px solid CanvasText;
+      outline-offset: 2px;
+    }
+  }
 }

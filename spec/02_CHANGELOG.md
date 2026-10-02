@@ -2196,6 +2196,207 @@ ADR-030
 
 ---
 
+## CHANGE-0027
+
+**The Admin Control Centre: a server-authorised, read-only internal console — and four defects the verification found that reading the code would not have**
+
+Severity: SECURITY
+Status: **IMPLEMENTED AND VERIFIED. THE AUTHORISED PATH IS REPORTED `NOT
+VERIFIED` RATHER THAN PASSED, AND THE WHOLE SURFACE IS UNREACHABLE UNTIL A
+HUMAN ACTS (D64).**
+
+**Trigger.** `spec/05_PANEL_CONTROL_CENTER.html` has described an internal
+control centre since phase 0A. It is a static, hand-synced HTML file: useful,
+and not a thing a deployment can report on itself.
+
+### The authorisation research, done before anything was written
+
+The whole repository was searched first, because the instruction not to
+*assume* a field named admin exists is the whole point.
+
+1. **`users.role` exists and has never been used.** `src/convex/schema.ts:6-17`
+   declares `ROLES = { admin, user, member }` and a three-value
+   `roleValidator`; `schema.ts:503` declares `role: v.optional(roleValidator)`.
+   A repo-wide grep for `roleValidator|ROLES|isAdmin|superuser` returns **only**
+   those schema lines plus the words "life admin" in UI copy. It is never
+   written and never read.
+2. **No other admin primitive exists.** No admin tier in `permissions.ts`, no
+   operator concept, no internal API key, no superuser. The access model is
+   per-space and deny-by-default; a system-level role is a genuinely new axis.
+3. **The role survives a sign-in — verified in the installed library, not
+   assumed.** `@convex-dev/auth@0.0.96` creates a user with `db.insert` and
+   updates with `db.patch`; `grep -rn 'replace("users"' node_modules/@convex-dev/auth/dist`
+   returns **nothing**. `patch` merges, so a field the library never writes
+   survives. Had it been a `replace`, an operator's grant would have evaporated
+   on the user's next login and the Control Centre would have locked itself
+   out. That is the kind of assumption this project records rather than makes.
+
+**Decision: ADR-032.** Authorise on `users.role === ROLES.ADMIN`, checked
+server-side on every call, decided by a pure table-tested predicate, and
+**grantable by no code path in Panel** (D64).
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/lib/adminAccess.ts` | The whole authorisation rule as a pure function. No Convex import, no clock, no database. |
+| `src/lib/adminAccess.test.ts` | 40 fixtures, **including the allowed case**. |
+| `src/lib/adminFindings.ts` | Recorded findings and verification gaps, served only to admins. |
+| `src/convex/admin.ts` | Five independently-authorised read-only queries. No mutation, no action, no internal write. |
+| `src/pages/AdminControlCenter.tsx` | The console. Dense, no action buttons, three visibly different kinds of statement. |
+| `scripts/conformance-admin.ts` | 48 live boundaries, by an attacker. |
+| `scripts/spec-drift.ts` | Four new gates. |
+
+Five queries rather than one `getEverythingForAdmin()`, each with one purpose:
+`systemStatus`, `agentHealth`, `integrationHealth`, `dataModel`, `securityPosture`.
+Every one calls `requireAdmin` **in its own body** — a shared front door with
+unguarded queries would still be a hole, and this is what stops the *next* query
+from being added without it.
+
+### The disclosure rule, and where it stops
+
+The reads take bounded samples and emit **counts, result codes and timestamps**.
+Not one title, label, name, email or amount crosses the boundary. No identifier
+appears in any payload. Configuration is reported as a state from a closed
+vocabulary — `configured | missing | requires-rotation | not-observable` — and
+`process.env` is reduced to a state before it leaves the backend. The `users`
+table is **not read at all** beyond the authorisation check itself: an internal
+console has no operational need to enumerate accounts, and a read that lists
+users is the first step toward the user management this module must not become.
+That is recorded as `not-collected` rather than as `not-observable`, because the
+distinction is real and collapsing it would be its own small dishonesty.
+
+**The credential tables are not named in the payload at all.** The first draft
+listed them in a "we do not read this" array, and the credential-containment gate
+correctly failed the build — it cannot tell a disclosure from a read, and nor
+should it. Rather than relax the gate for a status page, the entry became a
+count and a reference to ADR-014. **The gate was right and the code was wrong.**
+
+### Four defects, none of which reading the code would have found
+
+**1. A prototype-chain hole in the authorisation predicate.** The first version
+used `"role" in user`, which walks the prototype chain, so
+`Object.create({ role: "admin" })` was **allowed**. No Convex document has that
+shape, but a predicate that would allow it depends on the database never
+producing one. Found by its own fixture; fixed with
+`Object.prototype.hasOwnProperty`.
+
+**2. `requireAdmin` returned the whole user row.** That made a leak one careless
+`return requireAdmin(ctx)` away — the caller's email, name and image into a
+payload for a single changed word. Found by a static check written for a
+different purpose. It now returns the **id only**, so there is no row in scope
+to hand back.
+
+**3. Two queries named indexes that do not exist.** The data-model survey read
+`transactions.by_owner` and `imports.by_owner`; neither exists. Both threw **at
+runtime, inside Convex** — and from outside, a throw is **indistinguishable from
+a correct authorisation refusal**, so the security harness logged green "refused"
+checks for two queries that were simply broken. This is the D60 failure mode
+reproduced in new code, and it is the single most important finding in this
+entry: *a harness that cannot tell "correctly denied" from "crashed" manufactures
+confidence.*
+
+The fix is a typed `(table, index)` allowlist plus a gate, because Convex's
+generated types do not carry index names. A deliberate typo in a table name is
+now caught by **the compiler, before the gate runs**. Writing that gate took
+three attempts, each of which was wrong in a way that would have produced a
+confident wrong answer: the first walked from the `defineTable({` brace and
+found **no indexes on any table**; the second terminated at a marker that had
+already been consumed, producing a one-character block. Both were caught because
+the gate failed on *valid* input — the only reliable signal that a static check
+is broken.
+
+**4. A disclosure gate that did not exist until it was needed.** A canary
+mutant that returned a connection's `accountHint` and a secret-shaped string was
+caught by the conformance harness — but the harness is run on demand, so between
+runs the code was wrong and the permanent gate was green. The disclosure rule
+now lives in `spec-drift.ts`, with its own control. A control that only runs when
+somebody remembers is not a control.
+
+### False-confidence testing, and what it found
+
+| Mutation | Expected | Result |
+|---|---|---|
+| Guard removed entirely | harness fails | **10 boundaries failed**; all five queries returned real payloads to a guest |
+| Plain `mutation` added | gate fails | caught |
+| Aliased `mutation as convexMutation` | gate fails | **NOT caught** — fixed the gate to resolve import bindings |
+| `ctx.db.patch` with no builder | gate fails | caught by the second net |
+| `accountHint` disclosure | gate fails | **not caught** — gate added |
+| Non-existent index | gate fails | caught (and caught earlier by the compiler) |
+| Unguarded new query | gate fails | caught |
+
+Two of the seven were **not** caught, which is the entire reason for running
+them. All mutants removed; `grep -c MUTANT` and `grep -c CANARY` both return 0.
+
+Two of the harness's own checks were also false positives and were fixed rather
+than the code being bent to satisfy them: one asserted `addTask` returns
+nothing (it legitimately returns the new task id — the real assertion is that
+the caller's *role* is unchanged), and one flagged the word "fingerprint" inside
+a disclosure sentence saying the query does not return one. A gate that cries
+wolf is a gate people learn to skip.
+
+### CURRENT REALITY vs TARGET STATE
+
+| | State |
+|---|---|
+| Authorisation | **Server-side, typed, verified.** 48 live boundaries; refusals proven for unauthenticated, guest, forged, malformed and cross-space callers. |
+| The allowed path | **NOT VERIFIED live.** No admin token exists. Covered by 40 unit fixtures instead. |
+| Reachability | **Nobody can reach it** until the owner sets `users.role` (D64). Correct, and useless, until then. |
+| Cron | **Declared, not verified.** Reported as two separate facts that are never merged. |
+| Numbers | **Bounded samples of index order, not counts.** Labelled in the payload and on screen. |
+| Health area | Still a mock (D50), reported as such. |
+| Export download | Backend verified; browser step unverified. |
+
+Every deployment-wide figure is a *sample* because the surface has no
+`ownerUserId` to narrow on — looking across tenants is the point. Each payload
+carries a `sampled` flag set when the cap was reached, and the UI renders it
+next to the number. A bounded read that silently looks like an exact one is D48
+wearing a new hat.
+
+### Acceptance criteria
+
+1. Authorisation decided server-side on every query, never in client state — **met**
+2. No `if (user.email === …)`, no route check, no hidden-nav reliance — **met**
+3. Direct backend invocation by a non-admin fails — **met**, proven live
+4. The allowed case is tested — **met in fixtures**, **NOT VERIFIED live**
+5. No mutation, action or internal write in the module — **met**, gated
+6. No code path can grant the role — **met**, by construction
+7. No secrets, no identifiers, no user-private data in any payload — **met**, gated
+8. Every read index-ranged and capped per CHANGE-0026 — **met**
+9. Not-observable is labelled rather than invented — **met**
+10. A future admin write fails the gate — **met**, proven
+
+### Costs and known gaps
+
+6 new files, 0 tables, **0 dependencies**, 0 new abstractions beyond the
+authorisation predicate. Four new drift gates, each with a control.
+
+- The 6 files are outside every declared phase budget (4A is spent, 4B has 2
+  used). This increment was directed, not budgeted, and is recorded as
+  **standing debt against ADR-016** rather than retrofitted into a phase.
+- The Control Centre is a **new page and route**, which 4A's must-not-introduce
+  list forbids — there deliberately is no settings screen, and this is not one.
+- The dashboard deliberately does **not** link to it. There is no reason for a
+  user Area to advertise an internal console, and a link is not a control.
+- `readLimits.test.ts` needed a real correction: the registry now holds values
+  that are **not row counts** (a recency window, a duration), and applying a
+  row-count floor to a duration is a category error. The kinds are now separated
+  explicitly rather than the bound being loosened for everything.
+
+### Verification
+
+`bun test` **634 pass / 0 fail / 24 files** (was 592; +42). Lint **3 errors / 19
+warnings** — the exact stock baseline, no new problems. `spec-drift` **21 passed
+/ 1 warning / 0 failures** (4 new gates). `audit-bounded-reads` **0 unbounded, 0
+table scans, 148 bounded**. All **19** conformance harnesses exit 0, including
+the new `conformance-admin` at 48 boundaries.
+
+**Not verified, and not being reported as verified:** the authorised path against
+a live deployment, and the console's visual rendering, which has never been
+observed in a browser.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
@@ -2312,6 +2513,26 @@ and left with 200 more, believing they were gone.
 the number is a trade the user should own: above ~200 open tasks, "what should I
 do next" is answered from the most recent 200, not from all of them.
 
+### D62 — a balance derived from a capped read is a provisional balance
+
+`TRANSACTION_AGGREGATE = 5000` bounds the transaction read behind
+`listBalances` and `getAccountBalance`, so a deployment with more than 5000
+transactions in a currency gets a figure computed from the first 5000 rather than
+from all of them.
+
+It is **not** resolved by raising the constant. A balance is a *derived* value
+whose correctness depends on the whole set; a cap on it produces a number that
+is wrong in a way nothing marks as wrong. The two balance queries therefore read
+`cap + 1` and return `provisional: true` when the extra row comes back, and the
+UI says the figure is partial — a truncated *list* can be reported honestly,
+because a shorter list is a shorter list, but a truncated *sum* is a wrong
+number wearing a currency symbol.
+
+The real fix is a maintained balance column or a rollup table, which is a schema
+decision and, on a product whose §2.3 forbids Panel becoming a ledger, a
+question the user should own. Until then it is recorded here so the provisional
+path is a known state rather than an accident.
+
 ### D63 — one read left unbounded **on purpose**
 
 `integrations.loadStored` reads every expense and calendar event in a space to
@@ -2322,6 +2543,47 @@ financial ledger**. Duplicated ledger rows are a worse failure than a slow
 query. The bound has to come from the batch (a multi-key index read), which is
 D41 again. Recorded in `KNOWN_UNBOUNDED_READS` with its reason, and the audit
 fails if the read is fixed without the entry being deleted.
+
+### D64 — the admin role is granted out of band, by the deployment owner
+
+`users.role` is checked server-side (ADR-032) and **no code path in Panel can
+write it**. That is deliberate, and it has a consequence that needs a human:
+**the Admin Control Centre stays unreachable until the deployment owner sets
+`users.role = "admin"` on their own user document, through Convex's own data
+tooling** — the dashboard's table editor, or `bunx convex data`. There is no
+`grantAdmin` mutation, no CLI helper committed to the repo, and no auth callback.
+
+**Why not add one.** A client-reachable grant is a privilege-escalation
+primitive, and "we will delete it later" is not a property any compiler
+enforces. The refusal is argued in full in ADR-032 §4.
+
+**What this costs, stated honestly.** Until the owner acts, the Control Centre
+is dead code from a user's point of view: the route renders, every query refuses,
+and the UI says so rather than showing an empty console. That is the correct
+failure mode — an inert internal console is not a breach — but it is a real
+limitation and the acceptance criteria state it rather than hiding it.
+
+**Verification consequence.** The live harness can prove every *refusal*
+(unauthenticated, guest, non-admin, forged identity, direct backend call) because
+those need no admin. It **cannot** prove the authorised path without an admin
+token, because minting one from inside a test would require the grant path the
+ADR refuses. So the harness reports the authorised case as `NOT VERIFIED` unless
+`PANEL_ADMIN_TOKEN` is supplied in the environment, and the unit table in
+`src/lib/adminAccess.test.ts` carries the allowed case as a real fixture. This is
+reported as a gap, not upgraded to a pass.
+
+**Procedure for the owner** (three steps, no code):
+
+1. Sign in to Panel, so your `users` document exists.
+2. In the Convex dashboard for this deployment, open the `users` table, find
+   your row, and set `role` to `admin`.
+3. Reload `/control-centre`. If the page still refuses, the value is not exactly
+   the string `admin` — the schema rejects anything else at write time.
+
+**Revisit when.** Never by adding a grant path. If the owner wants a different
+mechanism — a second role, an email allowlist, a per-space admin — that is a
+fresh decision to argue on its own merits, and it does not change ADR-032's rule
+that the check is server-side and type-closed.
 
 ### The exception list, and the entry that was wrong in it
 
@@ -4338,6 +4600,120 @@ again and worth reconsidering on its own merits; `loadState` stops reading
 
 ---
 
+### ADR-032 — Internal admin is a server-side role check on a field nothing writes, and no code path can grant it
+
+**Status:** Active. Recorded 2026-10-02, with CHANGE-0027 (the Admin Control
+Centre). Extends ADR-014, ADR-016, ADR-019, ADR-009.
+
+**Decision.** The Admin Control Centre is gated on
+`users.role === ROLES.ADMIN`, evaluated **server-side on every query**, and that
+is the only gate. Four properties are load-bearing.
+
+**1. The role already exists in the schema and is closed.** `src/convex/schema.ts`
+declares `ROLES = { ADMIN: "admin", USER: "user", MEMBER: "member" }` and
+`roleValidator`, and `users.role` is `v.optional(roleValidator)`. It is a
+three-value union, so "not admin" is a *type-level* fact rather than a string
+comparison that could be widened by a typo. A role was **not** invented here.
+
+**2. It is checked on the row, freshly, per call — never cached, never on the
+client.** Every Control Centre query resolves `getAuthUserId(ctx)` and then reads
+the user document itself. There is no `isAdmin` flag in client state, no
+`user.email === …` comparison, no route-name check, and no hidden navigation.
+A direct call to the query by a browser that is not signed in as an admin fails
+in the handler, before any read happens. Hiding a nav item is not a control and
+is not relied on as one.
+
+**3. The decision is a pure function, table-tested, for the same reason
+`permissions.ts` is.** `src/lib/adminAccess.ts` decides from a document
+snapshot and nothing else — no Convex import, no clock, no database. A security
+rule that exists only inside a query handler is a rule with no fixture, and this
+project has already been bitten by a green check that meant nothing (D60).
+
+**4. No code path in Panel can grant the role.** Not a query, not a mutation, not
+an HTTP route, not an auth callback, not a CLI script committed to the repo.
+**Consequence, stated plainly: the role is granted out of band, by the
+deployment owner, through Convex's own data tooling.** That is recorded as D64.
+
+**Why 4 is a feature and not an omission.** The tempting alternative is a
+`grantAdmin(email)` mutation. It is refused for three independent reasons, any
+one of which is sufficient:
+
+- It is a **public admin endpoint**, which is precisely what this increment is
+  forbidden from building ("do not invent a generic admin system"). A privilege
+  grant callable by a client is a privilege-escalation primitive whatever its
+  intent.
+- "Temporary" is not a property code can enforce. The only way a grant mutation
+  leaves the artifact is by someone remembering to delete it, and an
+  authorisation path that depends on a future edit is not an authorisation path.
+- It would make the *grant* the weak link. The check is server-side and
+  server-typed; the grant would be client-reachable. Every attack that matters
+  here would aim at the grant, not the check.
+
+**Context.** The whole repository was searched before any of this was written.
+`role` is referenced in exactly one place — its own schema declaration — and by
+nothing else. There is no admin tier in `permissions.ts`, no operator concept,
+no `internalApiKey`, no `superuser`. The access model is per-space and
+deny-by-default, and a system-level role is a genuinely new axis, not a
+re-papering of an existing one.
+
+**Durability — why an operator-set role is not clobbered by the next sign-in.**
+This was verified in the installed library rather than assumed, because the whole
+decision rests on it. In `@convex-dev/auth@0.0.96`,
+`dist/server/implementation/users.js` creates a user with
+`ctx.db.insert("users", userData)` (line 74) and updates one with
+`ctx.db.patch(userId, userData)` (line 64), inside a try/catch. There is **no
+`db.replace("users")` anywhere in the package** — `grep -rn 'replace("users"'`
+over `node_modules/@convex-dev/auth/dist` returns nothing. `db.patch` merges and
+omits absent fields, so a `role` the library never writes survives subsequent
+sign-ins. Had it been a `replace`, an operator's grant would silently evaporate
+on the user's next login and the Control Centre would lock itself out; that is
+the kind of assumption this project records rather than makes.
+
+**Alternatives considered.**
+
+- **A client-side `isAdmin` flag** — *rejected*: the flag is derived from data
+  the client already has, so hiding the page hides nothing. The browser is the
+  attacker's client.
+- **A route check (`if (pathname === "/admin")`)** — *rejected*: trivially
+  bypassed by calling the query directly, which is the only thing that matters.
+- **An `INTERNAL_API_KEY` env var compared in a query** — *rejected*: it puts a
+  bearer secret in a client to do the job a signed-in role already does, and
+  ADR-014's containment argument applies — a secret whose only job is to be
+  compared server-side is better compared against a typed role on a row.
+- **Promoting an existing `accessLog`-style system row** — *rejected*: it needs a
+  new table, and a table is a place a second authorisation path could later
+  grow. `users.role` is already typed and needs no index.
+- **A new `admin` boolean column** — *rejected*: strictly weaker than a closed
+  union, and it would duplicate a field that already exists.
+- **An auth callback in `convex.ts` that auto-assigns a role** — *rejected, and
+  it was not even attempted*: `src/convex/auth.ts` carries an explicit
+  do-not-modify notice, and D59 forbids editing it. An auto-assignment rule would
+  also be a grant path, which §4 refuses.
+
+**Why chosen.** It is the only option that is server-side, type-closed, has no
+client-reachable grant, and survives the auth library's own write behaviour — and
+it is verifiable: the predicate is a pure function, so the allowed and refused
+cases are both table-tested, and the live harness confirms that direct
+invocation by a non-admin is refused rather than merely hidden.
+
+**Consequences.**
+
+- The Control Centre is **unreachable until a human acts** (D64). That is the
+  intended trade: an internal console nobody can reach is inert, and one
+  reachable by the wrong person is a breach.
+- Two new drift gates hold the shape: `src/convex/admin.ts` must export **no**
+  mutation, and every exported query must call the guard. A future edit that adds
+  an admin write fails the gate rather than passing review.
+- The live harness reports the **authorised** path as `NOT VERIFIED` unless an
+  operator token is supplied, because minting an admin identity from inside the
+  harness would require the very grant path §4 refuses.
+
+**Revisit when.** Never for the check itself. If the role ever needs to be
+granted by the product rather than by an operator, that is a new decision with
+new evidence, and it is not this one.
+
+---
+
 ### ADR-023 — A merge is a tombstone, not a rewrite
 
 **Status:** Active. Recorded 2026-10-01, with phase 3 feature 1 (CHANGE-0013).
@@ -5215,7 +5591,7 @@ Phase status (authoritative — see MAIN_AGENT §5):
 | **1.5** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | — | CHANGE-0011. Registry making all nine lifecycle questions mandatory; adapter contract with scope allowlist enforcement; `NormalizedBatch` + `applyBatch` as the single idempotent writer; `connectionTokens`/`syncCursors`/`oauthStates`; PKCE with a hashed verifier that provably cannot be returned. 7 files / 3 tables / 0 deps / 1 abstraction, exactly at budget. Verified by 21 unit fixtures, a 41-check live conformance run, and a new credential-containment check in `spec-drift`. |
 | **2** | **VERIFIED** | Hardik (standing roadmap approval) | 2026-10-01 | environment only: Google credentials, and D32 (no HTTP routes served) | CHANGE-0012. Google Calendar adapter behind the 1.5 `Adapter` contract; `calendarEvents`; httpAction redirect + internal mutation for the token write; paged, idempotent sync; §7.2 deletion semantics in the writer; `calendar.imminent` as a hard attention kind; a dashboard block with three honest states. 5 files / 1 table / 0 deps / 0 abstractions, exactly at budget. Verified by 16 unit fixtures and a 33-check live conformance run. The two blocked criteria (live handshake, manual end-to-end) are environment, recorded as such. |
 | **3** | **IMPLEMENTED** | Hardik (standing roadmap approval); People and Capture additionally APPROVED in PRODUCT_CONTEXT | 2026-10-01 | environment only: the 07:00 cron delivery is declared and its runner exercised live, but the firing itself is not observable from here | **Feature 1 (People) VERIFIED** — CHANGE-0013. A `people` table; a person is a row rather than a task title; merge as a tombstone that rewrites nothing and is exactly reversible (ADR-023); identity keys as evidence with no automatic merge ever (ADR-024, RJD-004); `PEOPLE_FIT` keyed by person id; a real People panel replacing a fake one. 4 new files of 6 / 1 table / 0 deps / 1 abstraction. Verified by 28 unit fixtures, a 50-check live conformance run with 0 skips, and an OCC re-verification. The run also found **D34**: `SOURCE_FIT` and `PEOPLE_FIT` had never received evidence, because `recordOutcome` was handed the raw row instead of the feature object. **Feature 2 (Multi-object Capture) VERIFIED** — CHANGE-0014. One capture can produce several tasks, splitting on explicit structure only (newline, semicolon, "and then") and never on a bare conjunction, because splitting "call the dentist and book the dentist" would destroy a correct object and invent a wrong one silently. 2 new files of 4 / **0 tables** / 0 deps / 1 abstraction. Verified by 43 unit fixtures, a 51-check live conformance run with 0 skips, a byte-identical comparison against the deployed single-task path, and OCC run G. **Feature 3 (Life Admin / expiry → renewal) VERIFIED** — CHANGE-0015. A document is **metadata only** — label, expiry, lead time — and never the document itself (R-007, ADR-025). The deadline is `expiresAt − leadDays`, not the expiry, because a passport valid for ten years has to be renewed about six months early or a carrier refuses boarding (R-006). **No status column**: seven states, all derived from `(expiresAt, the linked renewal task, now)`, so no state can be wrong. The renewal is an **ordinary task** with `documentId`, the document holding no back-reference (ADR-026), which is why the feature inherited the whole task lifecycle for one optional column. One new hard attention kind in the existing `deadlines` section, silent outside the lead window and silent while a renewal is open. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 37 unit fixtures, a **93-check live conformance run with 0 skips**, and **OCC run H re-armed rather than inherited** because the completion transition moved. The run found **D40** (the `stale` rule only fired once a document had already expired, so the ordinary early-renewal case went unreported — and every unit fixture had used an expired document); self-review found **D41**, the same N+1 as D37/D39 reintroduced in three places. **Feature 4 (Commitments + Waiting On) VERIFIED** — CHANGE-0016. A promise the user made and a wait the user is in are **one object with a direction**, not two systems: `owed` / `owedTo` as a closed union at the schema validator, immutable after creation, because flipping the direction is not an edit but a different claim about somebody else's conduct. **No status column** — four states, all derived from `(expectedAt, completed, now)`. **Panel never asserts what another person did** (ADR-027): the settled inbound line reads "You marked this received on 4 March", enforced by two copy functions rather than one template, so the `owedTo` branch cannot reach the `owed` wording even by accident. **An inbound wait is not a task** — `taskRules` would report it overdue about something the user cannot do, which is worse than silence — so no task is created until the user presses *Follow up*, and following up deliberately **does not settle** the commitment, because a chase that silently resolved the wait would record a delivery nobody observed. Attention is **asymmetric on purpose**: outbound overdue at 0.85 in `people` with a "Done it" action, inbound overdue at 0.6 in `waitingOn` with "Follow up" and **no advance-warning window at all** (R-009: waiting lists are reviewed weekly, not continuously). This is the feature that finally gives `waitingOn` — declared since phase 1.0 with no producer — something that can write to it, and it did so without a new tab or slug: the column lives inside People. Panel **never trains on a kept commitment** in either direction, because for `owed` the completion is the user's own report and for `owedTo` it is a claim about a third party. 4 new files of 4 / 1 table / 0 deps / 1 abstraction. Verified by 30 unit fixtures (**395 pass, 0 fail across 14 files**), a **132-check live conformance run with 0 skips** covering all 15 criteria, and **OCC run I re-armed rather than inherited** — `assistant.ts` did not change, but a feature that adds user-state mutations is exactly what that invariant exists to survive. The run found **D42**: the attention query collected every commitment the user had ever made and filtered in JavaScript, a collect-then-filter on the hottest read in the product; fixed with a `by_owner_open` index range, and the lesson generalised — *for a derived-state query, assert an index range in the acceptance criteria, not merely a bounded collect, because a `.take()` cap hides an unbounded query from a reviewer as effectively as no cap at all*. This was the first time a criterion caught a defect rather than confirming one. **Feature 5 (Subscriptions + Account Labels) VERIFIED** — CHANGE-0017. A subscription is a number until its renewal is an action, so a subscription carries a `documentId` pointing at a real `documents` row **created in the same mutation** (ADR-029): the cost of a subscription in the feed is **zero new attention code**, and "one renewal, one item" stays structurally true rather than re-argued. An account is a label and a closed kind with **no balance column anywhere in the schema** (ADR-028) — an account with a balance is a ledger with extra steps, and §2.3 names the ledger as the thing Panel must not become. Annual cost is derived, never stored. Money stays `v.number()`; the floats were **not** migrated to minor units, because that would rewrite the input to a verified tax estimate, and the consequence is accepted and guarded instead (D44). 4 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 27 unit fixtures, a **74-check live conformance run with 0 skips**, and a proof that a subscription moves no weight while the whole feature runs. The harness found **D46** (`subscription.updated` was never written for a date-only edit, because the date lives on the document). **Feature 6 (Deterministic Agents) VERIFIED** — CHANGE-0018. Panel had intelligence and **no *when***: everything it knows is computed at query time, so a user who does not open the app is never told anything. Delivered as ADR-030 — **one Convex cron function** (`agents/daily`, `0 7 * * *`) and **one registered agent**, because five of the six §6.1 names already had producers and building them would have violated feature 3's *one renewal, one item* criterion in the name of following the specification. The scheduler answers *when* and never *what*: the tier is a **return type**, and the `automatic` variant's action union is `{flag} | {log}` — there is no variant that can write a financial row, so an agent that tried would not compile. The one agent (`finreview`) sums what rests on unconfirmed deduction categories and states the swing by calling `estimateTax` **twice** rather than applying a rate of its own, and its wording is constrained never to claim a category is wrong. **Overflow is counted, observable and audited** — all three, which needed a query (`getLastRun`) rather than a column, because a cap that silently discards work is a cap nobody can debug. 5 new files of 6 / 2 tables / 0 deps / 1 abstraction. Verified by 26 unit fixtures (**448 pass, 0 fail across 16 files**) and a **52-check live conformance run with 0 skips over 61 mutations**, whose headline check drives the per-space daily cap to its exact boundary and proves the 51st execution is refused, counted as overflow, reported `capped` rather than successful, and observable by the owner — with every financial figure byte-identical afterwards. **Cron firing itself is recorded as UNVERIFIED** rather than as a pass, because a 07:00 delivery cannot be observed inside a test run and the CLI cannot read the schedule back; likewise the thrown-failure path is a `[NOTE]`, not a pass. Remaining gaps in phase 3 are all product decisions or environment: Q-001, Q-006, Q-007 and the phase-2 handshake. |
-| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A), CHANGE-0020 (4B), CHANGE-0021 (Main Panel money), CHANGE-0022 (import screen) | 2026-10-02 | XLSX and PDF ingestion each need their own ADR-016 approval; Home still needs a domain model | **Built and verified:** 4B-1 (transactions + derived per-currency balance), **4B-2a** (CSV import backend, 0 dependencies, 57 + 9 fixtures, 64 live invariants), **4B-2b** (the import screen, 68 invariants in 4a), the Main Panel money surface, and 4A workstream C. **4B-2 is VERIFIED**, with an 8-mutation break-and-confirm pass recorded under CHANGE-0020. **Not built:** XLSX, PDF, OCR, Home's domain model. D50 stands: the Health area is a mock and is not counted as capability. |
+| **4** | **IN PROGRESS** | approved 2026-10-02: CHANGE-0019 (4A), CHANGE-0020 (4B), CHANGE-0021 (Main Panel money), CHANGE-0022 (import screen) | 2026-10-02 | XLSX and PDF ingestion each need their own ADR-016 approval; Home still needs a domain model | **Built and verified:** 4B-1 (transactions + derived per-currency balance), **4B-2a** (CSV import backend, 0 dependencies, 57 + 9 fixtures, 64 live invariants), **4B-2b** (the import screen, 68 invariants in 4a), the Main Panel money surface, and 4A workstream C. **4B-2 is VERIFIED**, with an 8-mutation break-and-confirm pass recorded under CHANGE-0020. **Not built:** XLSX, PDF, OCR, Home's domain model. D50 stands: the Health area is a mock and is not counted as capability. **CHANGE-0027 (Admin Control Centre) is outside every phase budget** — 6 files against a spent 4A budget — and is recorded as standing debt against ADR-016 rather than folded into 4A or 4B. It is implemented and verified, gated four ways, and **unreachable until the owner sets `users.role` (D64)**; the authorised path is reported `NOT VERIFIED` rather than passed. |
 
 **Phases 0B, 0C, 1.0, 1.1 and 2 are VERIFIED, and so are phase 3 features 1
 (People), 2 (Multi-object Capture), 3 (Life Admin), 4 (Commitments + Waiting

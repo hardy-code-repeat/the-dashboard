@@ -33,10 +33,22 @@ export function LogoDropdown() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-10 w-10">
+        {/* The accessible name says what the control *does*. The image's own
+            alt was "Logo", which names the picture rather than the control, so
+            a screen-reader user heard "Logo, button" and had no idea a menu was
+            behind it. `aria-label` on the button wins over the image's alt for
+            the button's own name, and the alt is marked decorative so the logo
+            is not announced twice. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-10 w-10"
+          aria-label="Account menu"
+        >
           <img
             src={logo}
-            alt="Logo"
+            alt=""
+            aria-hidden="true"
             width={32}
             height={32}
             className="rounded-lg"

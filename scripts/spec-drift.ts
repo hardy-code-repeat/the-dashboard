@@ -640,7 +640,538 @@ function publicResultReturningFunctions(code: string): string[] {
   return blocks;
 }
 
-function stripComments(source: string): string {  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+function stripComments(source: string): string {  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""); }
+
+/**
+ * ADR-032: the Admin Control Centre is read-only and independently authorised.
+ *
+ * Three properties, checked mechanically rather than asserted in a comment,
+ * because a comment is one careless edit away from being wrong and this
+ * project has a recorded history of green checks that meant nothing (D60).
+ *
+ *  1. **No write endpoint.** `admin.ts` must export no `mutation`, `action`,
+ *     `internalMutation`, `internalAction` or `httpAction`. The spec forbids a
+ *     generic admin CRUD surface, a permission manager and a "superuser can do
+ *     anything", and the cheapest way to guarantee none of those can appear is
+ *     for there to be no code shape that could express one.
+ *  2. **Every public query calls the guard.** A shared front door with four
+ *     unguarded queries would still be a hole, so each exported query must call
+ *     `requireAdmin` in its own body. This is what stops the *next* query from
+ *     being added without it.
+ *  3. **The guard is not exported.** If `requireAdmin` were public, some future
+ *     module could import it — and a module that imports the guard might use it
+ *     to gate the wrong thing, or, worse, someone could reach for a
+ *     *different* helper that does not check. Keeping it module-private means
+ *     nothing outside `admin.ts` can depend on the Control Centre's
+ *     authorisation at all.
+ */
+function checkAdminReadOnly() {
+  const dir = join(ROOT, "src", "convex");
+  const path = join(dir, "admin.ts");
+  if (!existsSync(path)) {
+    record("admin read-only", "warn", "src/convex/admin.ts not found");
+    return;
+  }
+
+  const code = stripComments(readFileSync(path, "utf8"));
+  const problems: string[] = [];
+
+  // --- 1. no write endpoint -------------------------------------------------
+  // Matching the literal name `mutation(` is not enough, and the first version
+  // of this gate proved it: `import { mutation as convexMutation }` followed by
+  // `const _revoke = convexMutation({...})` sailed straight through, because the
+  // pattern was looking for a spelling rather than for a binding. So the import
+  // statement is parsed first and the *local* names it binds are what gets
+  // searched for. A renamed import is now caught, which is the only reason to
+  // bother renaming one.
+  const BUILDER =
+    "query|mutation|action|internalQuery|internalMutation|internalAction|httpAction";
+  const boundWrites = new Set<string>();
+  const importRe = new RegExp(
+    `import\\s*\\{([^}]*)\\}\\s*from\\s*["'][^"']*_generated/server["']`,
+    "g",
+  );
+  for (const m of code.matchAll(importRe)) {
+    for (const specifier of m[1].split(",")) {
+      const parts = specifier.trim().split(/\s+as\s+/);
+      const original = parts[0]?.trim();
+      const local = (parts[1] ?? parts[0])?.trim();
+      if (!original || !local) continue;
+      if (new RegExp(`^(${BUILDER})$`).test(original) && original !== "query") {
+        boundWrites.add(local);
+      }
+    }
+  }
+
+  const found: string[] = [];
+  for (const local of boundWrites) {
+    // The type annotation must be non-crossing (`[^=\\n]+` stops at the line
+    // end — a plain `[^=]+` runs past a newline into the next statement), and
+    // the `\s*` before `=` has to be *outside* the optional group, because a
+    // group that is skipped entirely leaves nothing to consume the space. The
+    // control caught both of those, which is the only reason this verdict is
+    // worth anything.
+    const re = new RegExp(
+      `(?:export\\s+)?const\\s+\\w+(?:\\s*:[^=\\n]+)?\\s*=\\s*${local}\\s*\\(`,
+    );
+    if (re.test(code)) found.push(local);
+  }
+  if (found.length > 0) {
+    problems.push(`admin.ts exports a write endpoint: ${found.join(", ")}`);
+  }
+
+  // Second net, and the one that actually matters.
+  //
+  // Whatever the function is called, a read-only module has no business issuing
+  // a write. This catches a write reached through any route at all — an aliased
+  // import, a locally re-declared builder, a direct `ctx.db` call in a helper —
+  // because it does not care how the write is spelled, only that one happened.
+  const WRITES_ON_DB = [...code.matchAll(/ctx\.db\.(patch|insert|replace|delete)\s*\(/g)].map(
+    (m) => m[1],
+  );
+  if (WRITES_ON_DB.length > 0) {
+    problems.push(
+      `admin.ts performs a database write: ${[...new Set(WRITES_ON_DB)].join(", ")} — ` +
+        `it is a read-only module (ADR-032)`,
+    );
+  }
+
+  // --- 2. every public query is guarded ------------------------------------
+  const queries = [...code.matchAll(/export const (\w+) = query\(/g)].map((m) => m[1]);
+  if (queries.length === 0) problems.push("admin.ts exports no query at all");
+
+  const unguarded: string[] = [];
+  for (const name of queries) {
+    const start = code.indexOf(`export const ${name} = query(`);
+    const next = code.indexOf("export const ", start + 1);
+    const body = code.slice(start, next === -1 ? undefined : next);
+    if (!/requireAdmin\s*\(/.test(body)) unguarded.push(name);
+  }
+  if (unguarded.length > 0) {
+    problems.push(`public query/queries without requireAdmin: ${unguarded.join(", ")}`);
+  }
+
+  // --- 3. the guard is module-private --------------------------------------
+  if (/export (async )?function requireAdmin|export const requireAdmin/.test(code)) {
+    problems.push("requireAdmin is exported; it must stay module-private");
+  }
+
+  // --- 4. no user-identifying field is read -------------------------------
+  //
+  // Read-only is necessary but not sufficient: a read-only admin query that
+  // returns `accountHint` is still a disclosure, and one that returns a
+  // connection `label` is publishing a string the user typed. Both were
+  // reachable — the conformance harness caught them, but the harness is run on
+  // demand, so between runs the code was wrong and the permanent gate was
+  // green. The structural guarantee has to live in the gate that always runs.
+  //
+  // Matched as **property reads** (`row.accountHint`), not bare words, because
+  // the module's own comments and its `disclosure` strings legitimately *name*
+  // these fields in order to say they are not returned. A check that flagged
+  // the documentation would push someone to delete the explanation instead of
+  // fixing the code — the same failure mode the bounded-read audit hit.
+  const DISCLOSING = [
+    ["an account hint", /\.accountHint\b/],
+    ["a user-supplied connection label", /\.label\b/],
+    ["a user email", /\.email\b/],
+    ["a credential fingerprint", /\.fingerprint\b/],
+    ["a sync cursor token", /\.cursor\b/],
+  ] as const;
+  const disclosing = DISCLOSING.filter(([, re]) => re.test(code)).map(([name]) => name);
+  if (disclosing.length > 0) {
+    problems.push(`admin.ts reads ${disclosing.join(", ")} — the surface emits counts and states only`);
+  }
+
+  // --- control: the detectors must be able to fail -------------------------
+  // A gate that cannot detect a missing guard is indistinguishable from a gate
+  // that found none, and this is the gate standing between a comment and a
+  // hole. Two controls, because two detectors: one for the missing guard and one
+  // for the write endpoint, each planted and required to be flagged.
+  const PLANTED_UNGUARDED = `export const leaky = query({ args: {}, handler: async (ctx) => { return ctx.db.query("tasks").take(1); } });`;
+  const guardDetects = (() => {
+    const m = /export const (\w+) = query\(/.exec(PLANTED_UNGUARDED);
+    if (!m) return false;
+    return /requireAdmin\s*\(/.test(PLANTED_UNGUARDED.slice(m.index));
+  })();
+  if (guardDetects) problems.push("CONTROL FAILED: the guard detector is broken, its verdict is void");
+
+  const PLANTED_WRITE = `import { mutation as m } from "./_generated/server";\nconst x = m({ args: {}, handler: async () => null });\nexport const y = x;`;
+  const PLANTED_DISCLOSURE = `const c = row; return { hint: c.accountHint };`;
+  const disclosureDetects = /\.accountHint\b/.test(PLANTED_DISCLOSURE);
+  if (!disclosureDetects) {
+    problems.push("CONTROL FAILED: the disclosure detector is broken, its verdict is void");
+  }
+  const writeDetects = (() => {
+    const b = new Set<string>();
+    for (const mm of PLANTED_WRITE.matchAll(
+      /import\s*\{([^}]*)\}\s*from\s*["'][^"']*_generated\/server["']/g,
+    )) {
+      for (const s of mm[1].split(",")) {
+        const parts = s.trim().split(/\s+as\s+/);
+        const original = parts[0]?.trim();
+        const local = (parts[1] ?? parts[0])?.trim();
+        if (original && local && /^(mutation|action|internalMutation|internalAction|httpAction)$/.test(original)) {
+          b.add(local);
+        }
+      }
+    }
+    for (const local of b) {
+      if (new RegExp(`(?:export\\s+)?const\\s+\\w+(?:\\s*:[^=\\n]+)?\\s*=\\s*${local}\\s*\\(`).test(PLANTED_WRITE)) {
+        return true;
+      }
+    }
+    return false;
+  })();
+  if (!writeDetects) problems.push("CONTROL FAILED: the write detector missed an aliased mutation, its verdict is void");
+
+  if (problems.length > 0) {
+    record("admin read-only", "fail", problems.join("; "));
+    return;
+  }
+
+  record(
+    "admin read-only",
+    "pass",
+    `${queries.length} queries, no write endpoint (aliased imports included), no db write, ` +
+      `every query guarded, requireAdmin private, no user-identifying field read ` +
+      `(three detectors proven live) (ADR-032)`,
+  );
+}
+
+/**
+ * ADR-032: every index the Control Centre names must really exist.
+ *
+ * Convex's generated types do not carry index names, so a `.withIndex("…")` call
+ * cannot be made type-safe by the compiler. The project keeps an enumerated
+ * allowlist in `src/convex/admin.ts` instead, and this check is what stops that
+ * list from drifting into fiction.
+ *
+ * It exists because of a real defect, and the shape of that defect is the
+ * reason. The survey named `transactions.by_owner` and `imports.by_owner`;
+ * neither exists. Both queries threw **at runtime, inside Convex** — and from
+ * outside, a thrown error is indistinguishable from a correct authorisation
+ * refusal, so the security harness logged five green "refused" checks for two
+ * queries that were in fact broken. The gate was green, the tests were green,
+ * and the feature did not work.
+ *
+ * Checked in one direction: a named index must exist on its table. The reverse
+ * check — that every schema index appears in the allowlist — was tried and
+ * removed, because the allowlist is a **list of what this module may use**, not
+ * a mirror of the schema. Requiring completeness would make adding an index
+ * anywhere in the product a build failure here, which is a coupling with no
+ * safety benefit and a real cost: it turns an unrelated schema change into a
+ * red gate that has to be triaged.
+ */
+function checkAdminIndexAllowlist() {
+  const convexDir = join(ROOT, "src", "convex");
+  const adminPath = join(convexDir, "admin.ts");
+  const schemaPath = join(convexDir, "schema.ts");
+  if (!existsSync(adminPath) || !existsSync(schemaPath)) {
+    record("admin index allowlist", "warn", "admin.ts or schema.ts not found");
+    return;
+  }
+
+  // --- the schema's real indexes, parsed with a brace-depth walk -----------
+  // A line-range slice per table was tried first and silently merged adjacent
+  // tables, which produced a list of indexes that belonged to the *next* table.
+  // That is the same class of bug as the bounded-read audit's first parser:
+  // a static check that is confidently wrong.
+  const schema = readFileSync(schemaPath, "utf8");
+  const declared = new Map<string, Set<string>>();
+  const tableRe = /^ {4}(\w+): defineTable\(\{/gm;
+  // Offsets of every table declaration, so each block can run to the next one.
+  const tableStarts = [...schema.matchAll(tableRe)].map((m) => m.index);
+  let nextTableStart = tableStarts[1] ?? schema.length;
+  let tableIndex = 0;
+  let tm: RegExpExecArray | null;
+  while ((tm = tableRe.exec(schema)) !== null) {
+    const name = tm[1];
+    // The walk has to start at the **table body's** brace, not at the one
+    // `defineTable(` opens with. Starting at the outer brace stops the moment
+    // the body closes — before the chained `.index(...)` calls, which live
+    // *after* it — and so reports every table as having no indexes at all.
+    // The first version did exactly that and the gate rejected all 53 valid
+    // pairs, which is the only reason it was caught: a check that fails on
+    // correct input is a check nobody trusts.
+    const bodyOpen = tm.index + tm[0].length - 1;
+    let depth = 0;
+    let end = bodyOpen;
+    for (; end < schema.length; end++) {
+      if (schema[end] === "{") depth++;
+      else if (schema[end] === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    // The chained `.index(...)` calls live *after* the body's closing brace, so
+    // the block must run past it. Two earlier terminators were wrong: the body's
+    // own `})` (already consumed) and the next `\n    ` (which sits at
+    // `lastIndex` itself, producing a one-character block and zero indexes for
+    // every table). The reliable terminator is the next table's declaration, so
+    // the scan is done up front and indexed.
+    const after = nextTableStart > tm.index ? nextTableStart : schema.length;
+    const block = schema.slice(bodyOpen, after);
+    declared.set(
+      name,
+      new Set([...block.matchAll(/\.index\(\s*"([^"]+)"/g)].map((m) => m[1])),
+    );
+    nextTableStart = tableStarts[++tableIndex + 1] ?? schema.length;
+  }
+
+  // --- the allowlist as written -------------------------------------------
+  const admin = stripComments(readFileSync(adminPath, "utf8"));
+  const listStart = admin.indexOf("const TABLE_INDEXES");
+  if (listStart === -1) {
+    record("admin index allowlist", "fail", "TABLE_INDEXES not found in admin.ts");
+    return;
+  }
+  const listEnd = admin.indexOf("as const satisfies", listStart);
+  const listBody = admin.slice(listStart, listEnd === -1 ? undefined : listEnd);
+
+  const invented: string[] = [];
+  let checked = 0;
+
+  for (const m of listBody.matchAll(/(\w+):\s*\[([^\]]*)\]/g)) {
+    const table = m[1];
+    const indexes = [...m[2].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    const real = declared.get(table);
+    if (!real) {
+      invented.push(`${table} (no such table)`);
+      continue;
+    }
+    for (const index of indexes) {
+      checked++;
+      if (!real.has(index)) invented.push(`${table}.${index}`);
+    }
+  }
+
+  const problems: string[] = [];
+  if (invented.length > 0) {
+    problems.push(`named index(s) the schema does not declare: ${invented.join(", ")}`);
+  }
+  if (checked === 0) problems.push("no indexes parsed from the allowlist — the check is not running");
+
+  if (problems.length > 0) {
+    record("admin index allowlist", "fail", problems.join("; "));
+    return;
+  }
+
+  record(
+    "admin index allowlist",
+    "pass",
+    `${checked} (table, index) pairs across ${declared.size} parsed tables — every named index exists ` +
+      `(a runtime-only failure mode, now a build failure)`,
+  );
+}
+
+/**
+ * Accessibility invariants that must not regress (CHANGE-0028).
+ *
+ * These are **structural** facts about the markup, which is the only kind that
+ * can be checked without a browser and a screen reader. Each one was a real
+ * defect found by the accessibility audit, and each is the kind of mistake that
+ * comes back silently: a `<button>` inside an `<a>` still *looks* right, still
+ * *works* with a mouse, and still passes a build.
+ *
+ * Kept here rather than in a test file because this script is the one that runs
+ * before a change is claimed complete, and because the alternative — a comment
+ * asking people to remember — is the failure mode the whole project keeps
+ * measuring against.
+ */
+function checkAccessibility() {
+  const srcDir = join(ROOT, "src");
+  if (!existsSync(srcDir)) {
+    record("accessibility invariants", "fail", "src/ is missing");
+    return;
+  }
+
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // `ui/` is stock shadcn. It is upstream code with its own conventions and
+        // its own release cadence; auditing it here would produce findings the
+        // project cannot act on, and the lint baseline already tracks it.
+        if (entry.name === "ui" || entry.name === "_generated") continue;
+        walk(full);
+      } else if (entry.name.endsWith(".tsx")) {
+        files.push(full);
+      }
+    }
+  };
+  walk(srcDir);
+
+  const problems: string[] = [];
+  let nested = 0;
+  let unnamedIconButtons = 0;
+  let imagesWithoutAlt = 0;
+
+  for (const file of files) {
+    const rel = file.slice(ROOT.length + 1);
+    const code = stripComments(readFileSync(file, "utf8"));
+
+    // --- 1. no interactive content nested inside interactive content --------
+    // `<a><button/></a>` and `<button><a/></button>` both put two focusable,
+    // activatable elements inside one another. The name is announced twice,
+    // Enter can activate either, and it is invalid HTML.
+    if (
+      /<(?:a|Link)\b[^>]*>\s*(?:\{[^}]*\}\s*)*<button\b/.test(code) ||
+      /<button\b[^>]*>\s*(?:\{[^}]*\}\s*)*<(?:a|Link)\b/.test(code)
+    ) {
+      problems.push(`${rel}: interactive element nested inside another`);
+      nested++;
+    }
+
+    // --- 2. every icon-only button carries a name --------------------------
+    // `size="icon"` is the project's marker for a control whose only content is
+    // an icon. Without `aria-label` such a control has no accessible name at
+    // all, and the one real instance had `alt="Logo"` — which names the picture,
+    // not the action.
+    const iconButtons = [...code.matchAll(/<Button\b[^>]*size="icon"[^>]*>/g)].map((m) => m[0]);
+    for (const tag of iconButtons) {
+      if (!/aria-label\s*=/.test(tag)) {
+        problems.push(`${rel}: icon-only <Button size="icon"> without aria-label`);
+        unnamedIconButtons++;
+      }
+    }
+
+    // --- 3. every <img> declares alt ---------------------------------------
+    for (const m of code.matchAll(/<img\b[^>]*>/g)) {
+      if (!/\balt\s*=/.test(m[0])) {
+        problems.push(`${rel}: <img> without an alt attribute`);
+        imagesWithoutAlt++;
+      }
+    }
+  }
+
+  // --- 4. a visible focus indicator exists --------------------------------
+  // Checked in `index.css` rather than per component, because the defect was
+  // *global*: 123 elements used `.brutal` and none declared a focus style, while
+  // `--ring` equalled `--border` so even the primitives' rings were invisible
+  // against a brutal border.
+  const cssPath = join(srcDir, "index.css");
+  const css = existsSync(cssPath) ? readFileSync(cssPath, "utf8") : "";
+  // Comments are stripped first because the rule is *documented* at length, and
+  // the prose mentions `:focus-visible` several times.
+  //
+  // The check is deliberately **not** satisfied by the `forced-colors` block. The
+  // first version matched any `:focus-visible { … outline … }`, and deleting the
+  // ordinary rule still passed — the high-contrast rule was still there, so the
+  // gate reported a focus indicator that only exists in a mode most people never
+  // see. A check that can be satisfied by the wrong rule is not a check, and the
+  // mutation that exposed it is the only reason this is stated.
+  const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  // Only rules that apply in *ordinary* rendering count. Anything inside a
+  // `@media (forced-colors: active)` block is excluded by measuring the distance
+  // back to the nearest `@media` and rejecting the ones that name forced-colors.
+  const focusBlock = /:focus-visible\s*(?:,[^{]*)?\{([^}]*)\}/g;
+  let hasOrdinaryFocus = false;
+  let fm: RegExpExecArray | null;
+  while ((fm = focusBlock.exec(cssCode)) !== null) {
+    if (!/\boutline\s*:/.test(fm[1])) continue;
+    const preceding = cssCode.slice(0, fm.index);
+    const lastMedia = preceding.lastIndexOf("@media");
+    const insideMedia = lastMedia !== -1 && preceding.indexOf("{", lastMedia) < fm.index;
+    const mediaBody = insideMedia ? preceding.slice(preceding.indexOf("{", lastMedia)) : "";
+    if (/forced-colors/.test(mediaBody)) continue; // high-contrast only
+    hasOrdinaryFocus = true;
+    break;
+  }
+  if (!hasOrdinaryFocus) {
+    problems.push(
+      "index.css declares no ordinary :focus-visible outline rule — keyboard focus is invisible " +
+        "(a forced-colors-only rule does not count)",
+    );
+  }
+
+  if (files.length === 0) problems.push("no .tsx files scanned — the check is not running");
+
+  if (problems.length > 0) {
+    record(
+      "accessibility invariants",
+      "fail",
+      `${problems.length} problem(s): ${problems.slice(0, 6).join("; ")}${problems.length > 6 ? " …" : ""}`,
+    );
+    return;
+  }
+
+  record(
+    "accessibility invariants",
+    "pass",
+    `${files.length} component files: no nested interactive elements, ` +
+      `${unnamedIconButtons} unnamed icon buttons, ${imagesWithoutAlt} images without alt, ` +
+      `a global :focus-visible outline is declared`,
+  );
+}
+
+/**
+ * ADR-032: the security registry is a *view* of the changelog, not a second
+ * source of truth.
+ *
+ * `src/lib/adminFindings.ts` is a checked-in list of recorded findings so the
+ * Control Centre has something real to show. A list like that has one dominant
+ * failure mode — it drifts from the document it claims to summarise, and nobody
+ * notices because both still look plausible — so this gate cross-checks every
+ * `D`-prefixed id in it against the changelog.
+ *
+ * It checks in both directions on purpose:
+ *
+ *  - **Registry → changelog**: an entry naming a finding that was never recorded
+ *    fails the build. This is the direction that prevents fabrication, which is
+ *    the direction that matters.
+ *  - **Changelog → registry**: a recorded open finding missing from the registry
+ *    fails the build. This is the direction that prevents a finding from quietly
+ *    disappearing from the console while still being open in the spec.
+ *
+ * The second direction only applies to the `D6x` band, which is where the
+ * currently-open findings live. Applying it to every `D` id in a 5,000-line
+ * changelog would demand that fixed findings be re-registered forever.
+ */
+function checkSecurityRegistry(changelog: string) {
+  const path = join(ROOT, "src", "lib", "adminFindings.ts");
+  if (!existsSync(path)) {
+    record("security registry", "warn", "src/lib/adminFindings.ts not found");
+    return;
+  }
+
+  const code = stripComments(readFileSync(path, "utf8"));
+  const registered = [...code.matchAll(/id:\s*"(D\d+)"/g)].map((m) => m[1]);
+  const recorded = new Set([...changelog.matchAll(/^### (D\d+)/gm)].map((m) => m[1]));
+
+  const problems: string[] = [];
+
+  const invented = registered.filter((id) => !recorded.has(id));
+  if (invented.length > 0) {
+    problems.push(`registry names finding(s) absent from the changelog: ${invented.join(", ")}`);
+  }
+
+  // The D6x band is the open band. Any D6x recorded in the changelog must be in
+  // the registry, or the console is under-reporting.
+  const openBand = [...recorded].filter((id) => /^D6\d$/.test(id));
+  const missing = openBand.filter((id) => !registered.includes(id));
+  if (missing.length > 0) {
+    problems.push(`open finding(s) recorded but absent from the registry: ${missing.join(", ")}`);
+  }
+
+  // A registry with no findings would render an empty, confident-looking
+  // security section. That is the exact failure this gate exists to prevent, so
+  // an empty list is a failure rather than a legitimate state.
+  if (registered.length === 0) {
+    problems.push("registry is empty — the security section would render as confidently blank");
+  }
+
+  if (problems.length > 0) {
+    record("security registry", "fail", problems.join("; "));
+    return;
+  }
+
+  record(
+    "security registry",
+    "pass",
+    `${registered.length} findings cross-checked both ways against the changelog ` +
+      `(${openBand.length} in the open D6x band, none missing)`,
+  );
 }
 
 function checkSupersededAdrs(changelog: string) {
@@ -726,6 +1257,10 @@ function main() {
   checkSupersededAdrs(changelog);
   checkPaths(specs);
   checkCredentialContainment();
+  checkAdminReadOnly();
+  checkAdminIndexAllowlist();
+  checkSecurityRegistry(changelog);
+  checkAccessibility();
 
   report();
 

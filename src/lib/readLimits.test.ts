@@ -23,15 +23,39 @@ describe("READ_LIMITS", () => {
   it("has no cap that is zero, negative, NaN, or fractional", () => {
     for (const [name, value] of Object.entries(READ_LIMITS)) {
       assert.equal(Number.isFinite(value), true, `${name} is not a finite number`);
-      assert.ok(value > 0, `${name} must be a positive row count, got ${value}`);
-      assert.equal(Number.isInteger(value), true, `${name} must be a whole number of rows`);
+      assert.ok(value > 0, `${name} must be a positive quantity, got ${value}`);
+      assert.equal(Number.isInteger(value), true, `${name} must be a whole number`);
     }
   });
 
   it("keeps every cap inside a range a human can defend", () => {
     // A cap of 1 would make a real feature look broken. A cap in the millions
     // is not a cap, it is a comment.
+    //
+    // Not every value here is a *row* count any more. The Admin Control Centre
+    // (ADR-032) added two that are not: `ADMIN_AGENT_RUNS_PER_SPACE` is a
+    // "how recent must the evidence be" window — five runs is the whole point,
+    // because the Control Centre reports when a run last happened and reading
+    // fifty would not change that answer — and `ADMIN_STALE_SYNC_MS` is a
+    // duration. Applying a row-count floor to a duration is a category error,
+    // and the first version of this test did exactly that.
+    //
+    // So the kinds are separated explicitly rather than by loosening the bound
+    // for everything, which would have stopped checking the row caps at all.
+    const NOT_A_ROW_CAP: Record<string, string> = {
+      ADMIN_AGENT_RUNS_PER_SPACE: "a recency window, not a result set",
+      ADMIN_STALE_SYNC_MS: "a duration in milliseconds",
+    };
+
     for (const [name, value] of Object.entries(READ_LIMITS)) {
+      const kind = NOT_A_ROW_CAP[name];
+      if (kind !== undefined) {
+        assert.ok(
+          value > 0,
+          `${name} = ${value} must be positive (${kind})`,
+        );
+        continue;
+      }
       assert.ok(value >= 10, `${name} = ${value} is too small to be a usable feature`);
       assert.ok(
         value <= 10_000,
@@ -39,6 +63,26 @@ describe("READ_LIMITS", () => {
           `somebody chose on purpose`,
       );
     }
+  });
+
+  it("keeps the recency window small, because reading more runs would not change the answer", () => {
+    // The Control Centre reports *when* a space last ran. Five runs is enough to
+    // establish a recency and a failure count; a larger number would cost reads
+    // and change no answer the page renders.
+    assert.ok(
+      READ_LIMITS.ADMIN_AGENT_RUNS_PER_SPACE <= 10,
+      "the per-space agent-run window has stopped being a recency window",
+    );
+  });
+
+  it("keeps the staleness threshold in a range a person would recognise as days", () => {
+    // Expressed in ms in the registry because that is what it is compared
+    // against, but the number a human chose is "a bit over a day", and this
+    // asserts that it still is. 12h to 7d catches both "too eager to call
+    // something stale" and "so patient a broken connection reads as fine".
+    const days = READ_LIMITS.ADMIN_STALE_SYNC_MS / (24 * 60 * 60 * 1000);
+    assert.ok(days >= 0.5, `staleness is ${days}d — too eager to call a sync stale`);
+    assert.ok(days <= 7, `staleness is ${days}d — a broken connection would read as fine`);
   });
 
   it("keeps Attention smaller than the dashboard, because Attention is the short list", () => {

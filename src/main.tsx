@@ -14,6 +14,7 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const Attention = lazy(() => import("./pages/Attention.tsx"));
+const AdminControlCenter = lazy(() => import("./pages/AdminControlCenter.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -144,6 +145,26 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <RequireAuth>
                     <Attention />
+                  </RequireAuth>
+                }
+              />
+              {/*
+                The internal console. `RequireAuth` here is a convenience, not a
+                control: the authorisation is `users.role === "admin"` checked
+                in every query handler (ADR-032), and each of the five queries
+                refuses independently. The route is deliberately unlinked from
+                the user navigation — not because that hides anything, but
+                because there is no reason for a user Area to advertise it. A
+                signed-in non-admin who types the URL gets a refusal panel.
+              */}
+              <Route
+                path="/control-centre"
+                element={
+                  <RequireAuth
+                    title="Sign in to continue"
+                    description="The Control Centre is an internal console and is not linked from the product."
+                  >
+                    <AdminControlCenter />
                   </RequireAuth>
                 }
               />

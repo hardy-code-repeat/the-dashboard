@@ -200,6 +200,79 @@ export const AUDIT_SCAN_LIMIT = 500;
 export const OWNERSHIP_AUDIT_ROWS = 5000;
 
 /**
+ * Caps for the Admin Control Centre (ADR-032, CHANGE-0027).
+ *
+ * These are different in kind from every cap above, and the difference is worth
+ * stating before the numbers, because it is the whole design of that surface.
+ *
+ * Every other cap here bounds a read of **one user's own rows**, where the
+ * index equality does the narrowing and the cap bounds what one request can
+ * cost. The Control Centre cannot use an equality at all: its entire purpose is
+ * a **deployment-wide** view, and there is no `ownerUserId` to equal. So these
+ * reads take a **bounded sample of index order** and report the result as a
+ * *sample*, never as a count.
+ *
+ * That is why the UI says "sampled, index order" and why
+ * {@link ADMIN_TABLE_SAMPLE} is described as a sample rather than a limit. The
+ * honest alternative — `collect()` and count — is the D48 defect this registry
+ * exists to prevent, at deployment scale, on a surface an internal operator can
+ * call repeatedly. A biased number that says it is biased is worth more than an
+ * exact number that costs a table scan to produce.
+ */
+
+/**
+ * How many rows one table read may return in the Control Centre's data-model
+ * survey.
+ *
+ * The reader takes `sample + 1` and reports `saturated` when the extra row comes
+ * back, which is the same "cap + 1" trick the balance queries use for D62 —
+ * except that here it reports a range rather than a provisional total, because
+ * the number being described is "is this table in use and roughly how much",
+ * and a lower bound answers that without pretending to be an exact count.
+ *
+ * 50 across ~26 tables is about 1,300 documents in one request, which sits well
+ * inside Convex's read limits while still being enough rows to distinguish "one
+ * row in a test deployment" from "a table with real history".
+ */
+export const ADMIN_TABLE_SAMPLE = 50;
+
+/**
+ * How many spaces the deployment-wide aggregates enumerate.
+ *
+ * A space is found by reading the `by_createdBy` index in its natural order and
+ * stopping, so this is a **prefix of that order**, not a random sample and not
+ * every space. On a deployment with more spaces than this the figures are
+ * marked `sampled` in the payload and the UI says so; below it, the sample is
+ * the whole set and the marker is absent. That conditional honesty is the point:
+ * the number is exact when it can be and labelled when it cannot.
+ *
+ * 50 is well above the number of accounts a pre-launch product has, so in
+ * practice this is exact today and becomes a labelled sample on a day when that
+ * stops being true.
+ */
+export const ADMIN_SPACES = 50;
+
+/** Agent runs read per enumerated space, newest first. */
+export const ADMIN_AGENT_RUNS_PER_SPACE = 5;
+
+/** Integration connections read per enumerated space. */
+export const ADMIN_CONNECTIONS_PER_SPACE = 20;
+
+/** Sync cursors read per enumerated space. */
+export const ADMIN_SYNC_CURSORS_PER_SPACE = 20;
+
+/**
+ * How long a connection may go without a sync before it is reported stale.
+ *
+ * The 36 hours is not a quality target — it is the point at which "this has not
+ * synced" becomes a fact rather than an expectation, chosen because it is one
+ * missed daily run plus a working day of slack. It is declared here rather than
+ * inlined in the query so the Control Centre and the connector's own staleness
+ * window (§7.2) can be compared without one of them drifting.
+ */
+export const ADMIN_STALE_SYNC_MS = 36 * 60 * 60 * 1000;
+
+/**
  * Reads that are unbounded by construction, with the reason.
  *
  * Every entry is `table` + `index` + a non-empty justification. The audit
@@ -330,6 +403,12 @@ export const READ_LIMITS = {
   TRANSACTION_AGGREGATE,
   AUDIT_SCAN_LIMIT,
   OWNERSHIP_AUDIT_ROWS,
+  ADMIN_TABLE_SAMPLE,
+  ADMIN_SPACES,
+  ADMIN_AGENT_RUNS_PER_SPACE,
+  ADMIN_CONNECTIONS_PER_SPACE,
+  ADMIN_SYNC_CURSORS_PER_SPACE,
+  ADMIN_STALE_SYNC_MS,
 } as const;
 
 export type ReadLimitName = keyof typeof READ_LIMITS;

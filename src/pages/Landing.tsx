@@ -102,10 +102,17 @@ export default function Landing() {
             </a>
           </nav>
 
-          <Link to={isAuthenticated ? "/dashboard" : "/auth"}>
-            <button className="brutal bg-primary px-5 py-2.5 text-xs font-bold uppercase">
-              {isAuthenticated ? "Dashboard" : "Start free"}
-            </button>
+          {/* One interactive element, not a link wrapping a button. Nesting a
+              <button> inside an <a>/<Link> puts two focusable, activatable
+              elements inside one another: the accessible name is read twice, the
+              Enter key can activate either, and it is invalid HTML that screen
+              readers do not all recover from. The styling moves onto the link,
+              which is what the click target always was. */}
+          <Link
+            to={isAuthenticated ? "/dashboard" : "/auth"}
+            className="brutal inline-block bg-primary px-5 py-2.5 text-xs font-bold uppercase"
+          >
+            {isAuthenticated ? "Dashboard" : "Start free"}
           </Link>
         </div>
       </header>
@@ -156,17 +163,19 @@ export default function Landing() {
               transition={{ duration: 0.35, delay: 0.18 }}
               className="mt-9 flex flex-wrap items-center gap-4"
             >
-              <Link to={isAuthenticated ? "/dashboard" : "/auth"}>
-                <button className="brutal flex items-center gap-2 bg-primary px-7 py-4 text-sm font-bold uppercase">
-                  {isAuthenticated ? "Open dashboard" : "Build my dashboard"}
-                  <ArrowRight className="size-4" />
-                </button>
+              <Link
+                to={isAuthenticated ? "/dashboard" : "/auth"}
+                className="brutal inline-flex items-center gap-2 bg-primary px-7 py-4 text-sm font-bold uppercase"
+              >
+                {isAuthenticated ? "Open dashboard" : "Build my dashboard"}
+                <ArrowRight className="size-4" />
               </Link>
-              <a href="#how">
-                <button className="brutal flex items-center gap-2 bg-card px-7 py-4 text-sm font-bold uppercase">
-                  See how it works
-                  <MoveRight className="size-4" />
-                </button>
+              <a
+                href="#how"
+                className="brutal inline-flex items-center gap-2 bg-card px-7 py-4 text-sm font-bold uppercase"
+              >
+                See how it works
+                <MoveRight className="size-4" />
               </a>
             </motion.div>
 
@@ -388,11 +397,12 @@ export default function Landing() {
             <p className="mx-auto mt-5 max-w-md text-sm leading-relaxed text-muted-foreground">
               Your first task is thirty seconds away. No setup, no tour, no card.
             </p>
-            <Link to={isAuthenticated ? "/dashboard" : "/auth"}>
-              <button className="brutal mt-8 inline-flex items-center gap-2 bg-primary px-8 py-4 text-sm font-bold uppercase">
-                {isAuthenticated ? "Go to dashboard" : "Get started — it's free"}
-                <ArrowRight className="size-4" />
-              </button>
+            <Link
+              to={isAuthenticated ? "/dashboard" : "/auth"}
+              className="brutal mt-8 inline-flex items-center gap-2 bg-primary px-8 py-4 text-sm font-bold uppercase"
+            >
+              {isAuthenticated ? "Go to dashboard" : "Get started — it's free"}
+              <ArrowRight className="size-4" />
             </Link>
           </motion.div>
         </div>
