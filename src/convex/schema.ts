@@ -149,6 +149,10 @@ export const ACTIVITY_KINDS = [
   "task.deleted",
   "note.created",
   "expense.added",
+  // Phase 4 feature 4B (ADR-031). Mirrored by transactionDirectionValidator's
+  // siblings below; the activity row is what makes a manual financial entry
+  // auditable rather than silent.
+  "transaction.created",
   "capture.committed",
   "person.created",
   "person.updated",
@@ -203,6 +207,7 @@ export const activityKindValidator = v.union(
   v.literal("task.deleted"),
   v.literal("note.created"),
   v.literal("expense.added"),
+  v.literal("transaction.created"),
   v.literal("capture.committed"),
   v.literal("person.created"),
   v.literal("person.updated"),
@@ -366,6 +371,57 @@ export const confidenceValidator = v.union(
   v.literal("low"),
   v.literal("confirmed"),
 );
+
+/**
+ * Currencies Panel can hold a transaction in (ADR-031).
+ *
+ * A closed list on purpose. A currency is a *minor-unit exponent* as much as a
+ * symbol, and an unknown code would have no exponent — so accepting a string
+ * here would mean guessing how many decimal places the amount has.
+ */
+export const currencyValidator = v.union(
+  v.literal("USD"),
+  v.literal("GBP"),
+  v.literal("EUR"),
+  v.literal("INR"),
+  v.literal("CAD"),
+  v.literal("AUD"),
+  v.literal("JPY"),
+);
+export type TransactionCurrency = Infer<typeof currencyValidator>;
+
+/**
+ * Which way the money went. Explicit rather than inferred from a sign, so a
+ * sign error cannot hide inside a convention (ADR-031).
+ */
+export const transactionDirectionValidator = v.union(v.literal("in"), v.literal("out"));
+export type TransactionDirection = Infer<typeof transactionDirectionValidator>;
+
+/**
+ * Where the row came from. There is no provider source: Panel never writes a
+ * transaction it did not either receive from the user or extract from a file the
+ * user gave it (ADR-013, ADR-031).
+ */
+export const transactionSourceValidator = v.union(v.literal("manual"), v.literal("import"));
+export type TransactionSource = Infer<typeof transactionSourceValidator>;
+
+/** Lifecycle of one imported file. One row per file, never per transaction. */
+export const importStatusValidator = v.union(
+  v.literal("uploaded"),
+  v.literal("extracted"),
+  v.literal("confirmed"),
+  v.literal("applied"),
+  v.literal("failed"),
+  v.literal("discarded"),
+);
+export type ImportStatus = Infer<typeof importStatusValidator>;
+
+/**
+ * What kind of file was identified. Detected from the file's own bytes, never
+ * from a name or a client-declared content type.
+ */
+export const importKindValidator = v.union(v.literal("csv"), v.literal("xlsx"), v.literal("pdf"));
+export type ImportKind = Infer<typeof importKindValidator>;
 
 /**
  * Per-user feature switches.
@@ -1443,6 +1499,129 @@ const schema = defineSchema(
      * an agent with nothing to do, and the difference matters when someone is
      * asking why their review did not appear.
      */
+    /**
+     * A fact about money: something that happened to the user on a date
+     * (ADR-031).
+     *
+     * **A transaction is not a ledger row, and the difference is in three
+     * fields.** `amountMinor` is an *integer* count of minor units, never a
+     * float. There is no balance column here or anywhere — a balance is summed
+     * from these rows at query time, because a stored balance is the number
+     * that drifts from the bank with nothing to check it. And there is no
+     * journal, no counter-account and no reconciliation state: Panel records
+     * what the user told it and stops.
+     *
+     * `expenses.amount` remains a guarded float and is deliberately *not*
+     * migrated — it is protected, and the two representations meet at exactly
+     * one pure function in `src/lib/money.ts`. `bucket`, `deductible` and
+     * `confidence` reuse the expense vocabulary rather than introducing a
+     * parallel one, because two bucket vocabularies is how a report stops
+     * adding up on paper.
+     *
+     * Every index is **scope-first**: the prefix is the owner or the space, so
+     * no query can reach another user's transactions and no read is a
+     * collect-then-filter. That is the D48 invariant, applied at design time
+     * rather than found in review.
+     */
+    transactions: defineTable({
+      ...ownedBy,
+
+      /** Optional: a transaction may exist before the user groups it. */
+      accountId: v.optional(v.id("accounts")),
+
+      /** Epoch ms. The only time axis a transaction has. */
+      postedAt: v.number(),
+
+      /**
+       * Integer minor units — pence, cents. Never a float: `v.number()`
+       * accepts one, so the integer is enforced by `createTransaction` and
+       * asserted in the harness rather than by the type system.
+       */
+      amountMinor: v.number(),
+
+      currency: currencyValidator,
+      direction: transactionDirectionValidator,
+
+      /** What the statement or the user called it. 1–120, trimmed. */
+      label: v.string(),
+
+      merchant: v.optional(v.string()),
+
+      bucket: v.optional(expenseBucketValidator),
+      deductible: v.optional(v.boolean()),
+      confidence: v.optional(confidenceValidator),
+
+      source: transactionSourceValidator,
+
+      /** The provider's or the file's own row id. The import idempotency key. */
+      externalId: v.optional(v.string()),
+
+      /** Which import produced this row. Absent for a manual entry. */
+      importId: v.optional(v.id("imports")),
+    })
+      .index("by_owner_postedAt", ["ownerUserId", "postedAt"])
+      .index("by_space_postedAt", ["spaceId", "postedAt"])
+      .index("by_account_postedAt", ["accountId", "postedAt"])
+      .index("by_owner_externalId", ["ownerUserId", "externalId"])
+      .index("by_owner_import", ["ownerUserId", "importId"]),
+
+    /**
+     * One durable record per imported file (ADR-031).
+     *
+     * The table exists now and the upload pipeline that fills it is deliberately
+     * **not** built yet: the pipeline needs file storage and two parsing
+     * dependencies, which is an ADR-016 stop condition and therefore its own
+     * change. What exists here is the record every one of those writes would
+     * need — a file the user can see, a status they can read, and the
+     * uncertainty the extraction reported — so the import path is designed
+     * against a real schema rather than retrofitted onto one.
+     *
+     * `uncertainty` is a first-class field rather than a log line: an
+     * extraction that is unsure must be able to say so in the same place the
+     * user confirms it, and a field that is written only on failure is a field
+     * nobody reads.
+     */
+    imports: defineTable({
+      ...ownedBy,
+
+      filename: v.string(),
+      byteSize: v.number(),
+      contentType: v.string(),
+
+      /** Content hash. Two uploads of the same file are the same import. */
+      sha256: v.string(),
+
+      status: importStatusValidator,
+
+      /** Detected from the file's bytes. Absent until an extraction ran. */
+      kind: v.optional(importKindValidator),
+
+      /** Convex file storage id. Never returned across a user or space. */
+      storageId: v.optional(v.string()),
+
+      /** Aggregate detection only — totals and a period, never rows. */
+      detected: v.optional(
+        v.object({
+          periodStart: v.optional(v.number()),
+          periodEnd: v.optional(v.number()),
+          totals: v.array(v.object({ currency: currencyValidator, amountMinor: v.number() })),
+          rowCount: v.number(),
+        }),
+      ),
+
+      /** What the extractor was not sure about, in words the user can read. */
+      uncertainty: v.optional(v.array(v.string())),
+
+      /** Why an extraction failed, when it did. Never a stack trace. */
+      reason: v.optional(v.string()),
+
+      createdAt: v.number(),
+      appliedAt: v.optional(v.number()),
+    })
+      .index("by_owner_createdAt", ["ownerUserId", "createdAt"])
+      .index("by_space_status", ["spaceId", "status"])
+      .index("by_owner_sha256", ["ownerUserId", "sha256"]),
+
     agentRuns: defineTable({
       /** Which space the run was for. The tenant boundary (ADR-009). */
       spaceId: v.id("spaces"),

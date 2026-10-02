@@ -124,7 +124,7 @@ async function requirePerson(
 
 function viewOf(
   row: CommitmentRow,
-  personName: string,
+  personName: string | null,
   followUp: FollowUpRef | null,
   now: number,
 ) {
@@ -197,12 +197,19 @@ export const listCommitments = query({
     const now = Date.now();
     const views = [];
     for (const row of rows) {
+      // ADR-027 makes a commitment an expectation between the user and *one
+      // person*, and `personId` is required — so this is not about supporting
+      // a counterparty with no row. It is about a row whose counterparty can no
+      // longer be **resolved**: a merged person whose chain does not land, or a
+      // person removed out from under an old promise. This query used to drop
+      // those rows entirely, so the one commitment the user could not act on was
+      // also the one they could not see. An unresolvable name is a fact the
+      // surface states, not a reason to hide the row.
       const person = resolvePersonName(people, row.personId);
-      if (!person) continue;
       views.push(
         viewOf(
           row,
-          person.name,
+          person?.name ?? null,
           followUpByCommitment.get(String(row._id)) ?? null,
           now,
         ),

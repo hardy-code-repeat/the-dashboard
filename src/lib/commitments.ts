@@ -142,10 +142,17 @@ export function hasExpectedAt(
  */
 export function describeCommitment(
   row: CommitmentRow,
-  personName: string,
+  personName: string | null,
   followUp: FollowUpRef | null | undefined,
   now: number,
 ): CommitmentView {
+  // A commitment does not have to be about a person: waiting on a landlord, a
+  // council or an insurer has no counterparty in Panel. These two fragments are
+  // the only place that knows it, because every sentence below is built from
+  // them — so an unnamed counterparty reads as "this", never as an empty gap in
+  // the middle of a claim about a third party.
+  const owed = personName === null ? "You said you would" : `You told ${personName} you would`;
+  const waiting = personName === null ? "Waiting on this" : `Waiting on ${personName}`;
   const inbound = row.direction === "owedTo";
   const followingUp = !!followUp && !followUp.completed;
   const daysAway = hasExpectedAt(row)
@@ -166,7 +173,7 @@ export function describeCommitment(
       // would be a claim about a third party the system has no evidence for.
       detail: inbound
         ? `You marked this received${row.completedAt ? ` on ${formatDay(row.completedAt)}` : ""}`
-        : `You told ${personName} you would, and it is done`,
+        : `${owed}, and it is done`,
       followingUp,
     };
   }
@@ -192,10 +199,10 @@ export function describeCommitment(
       // a positive lateness says "it is tomorrow late". At the exact instant of
       // the date it is not late at all yet, so it reads "due today".
       detail: inbound
-        ? `Waiting on ${personName} since ${formatDay(row.expectedAt!)}`
+        ? `${waiting} since ${formatDay(row.expectedAt!)}`
         : late === 0
-          ? `You told ${personName} you would, and today was the day`
-          : `You told ${personName} you would, and it is ${late} ${late === 1 ? "day" : "days"} overdue`,
+          ? `${owed}, and today was the day`
+          : `${owed}, and it is ${late} ${late === 1 ? "day" : "days"} overdue`,
       followingUp,
     };
   }
@@ -222,7 +229,7 @@ export function describeCommitment(
       attention: false,
       section: null,
       title: row.title,
-      detail: `You told ${personName} you would — ${describeDays(daysAway)}`,
+      detail: `${owed} — ${describeDays(daysAway)}`,
       followingUp,
     };
   }
@@ -237,11 +244,11 @@ export function describeCommitment(
     title: row.title,
     detail: inbound
       ? daysAway === null
-        ? `Waiting on ${personName}`
-        : `Waiting on ${personName} · expected ${formatDay(row.expectedAt!)}`
+        ? waiting
+        : `${waiting} · expected ${formatDay(row.expectedAt!)}`
       : daysAway === null
-        ? `You told ${personName} you would`
-        : `You told ${personName} you would · by ${formatDay(row.expectedAt!)}`,
+        ? owed
+        : `${owed} · by ${formatDay(row.expectedAt!)}`,
     followingUp,
   };
 }

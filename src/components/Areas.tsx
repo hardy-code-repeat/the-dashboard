@@ -513,7 +513,8 @@ type CommitmentRowView = {
   title: string;
   direction: "owed" | "owedTo";
   personId: Id<"people">;
-  personName: string;
+  /** Absent is a fact, not a bug: a wait on a landlord has no person row. */
+  personName: string | null;
   expectedAt: number | null;
   completed: boolean;
   state: "open" | "due" | "overdue" | "kept";
@@ -551,7 +552,16 @@ function toDateInput(at: number | null): string {
  * decorative control: "Received" records the user's assertion and is worded as
  * one, and "Follow up" is the only way a chase task is ever created.
  */
-function Commitments({ people }: { people: { id: Id<"people">; name: string }[] }) {
+/**
+ * Commitments and Waiting On.
+ *
+ * Exported because it is mounted twice: once inside Relationships, where "what
+ * does Raj owe me" is the question people open that area to ask, and once in
+ * General, where a cross-domain view has no business hiding an object just
+ * because the user has not visited a particular tab. One component, one query,
+ * two mounts — never a second commitment model.
+ */
+export function Commitments({ people }: { people: { id: Id<"people">; name: string }[] }) {
   const data = useQuery(api.commitments.listCommitments);
   const create = useMutation(api.commitments.createCommitment);
   const update = useMutation(api.commitments.updateCommitment);
@@ -818,7 +828,7 @@ function CommitmentColumn({
             >
               <p className="text-sm font-bold">{row.title}</p>
               <p className="mt-0.5 text-[10px] uppercase text-muted-foreground">
-                {row.personName} · {row.state}
+                {row.personName ?? "Nobody named"} · {row.state}
               </p>
               <p className="mt-1 text-[11px] leading-snug">{row.detail}</p>
               {row.followingUp && (
@@ -1049,7 +1059,7 @@ export function PeopleArea() {
         )}
       </form>
 
-      {!loading && people.length > 0 && <Commitments people={people} />}
+      {!loading && <Commitments people={people} />}
 
       {list && list.mergedCount > 0 && (
         <p className="border-2 border-dashed border-border p-2.5 text-[10px] uppercase text-muted-foreground">

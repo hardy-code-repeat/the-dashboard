@@ -24,7 +24,7 @@ import { AttentionFeed } from "@/components/AttentionFeed";
 import { CalendarStrip } from "@/components/CalendarStrip";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { AreaPicker, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
+import { AreaPicker, Commitments, HealthArea, IntegrationsArea, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
 import { FinanceArea } from "@/components/FinanceArea";
 import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
@@ -60,6 +60,9 @@ export default function Dashboard() {
   const data = useQuery(api.assistant.getDashboard);
   const model = useQuery(api.assistant.getModel);
   const areas = useQuery(api.life.listAreas);
+  // One read, shared by the commitments form in both mounts. It is the same
+  // query Relationships already makes, not a second source of truth.
+  const people = useQuery(api.people.listPeople)?.people;
   const [view, setView] = useState<View>("board");
 
   const capture = useMutation(api.assistant.capture);
@@ -757,7 +760,17 @@ export default function Dashboard() {
             </section>
           </aside>
         </div>
+
         )}
+
+        {/* ---------- COMMITMENTS + WAITING ON ----------
+            General is the cross-domain view, and an object does not stop
+            existing because the user has not opened a particular tab. Same
+            component, same query, same model as the Relationships mount — a
+            second list would only be a second place for the two to disagree. */}
+        {activeArea === "general" ? (
+          <Commitments people={people ?? []} />
+        ) : null}
 
         <footer className="mt-12 border-t-2 border-border pt-6">
           <div className="flex flex-wrap items-center justify-between gap-3">

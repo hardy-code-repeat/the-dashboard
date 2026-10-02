@@ -173,6 +173,18 @@ anecdote exists it lives in §3.1 (E7, E8), labelled as such.
   about money, not to re-account for it. Also must not copy confident financial
   advice — see §4.4.
 
+> **§2.3 amended 2026-10-02 (ADR-031, Q-008).** The prohibition above stands in
+> full for **double-entry accounting, journals, debit/credit, reconciliation and
+> any claim to be the system of record for a bank**. Panel now also holds
+> **first-class transactions** — facts the user typed or a deterministic import
+> produced — because *knowing* about money means knowing what actually happened,
+> and a statement the user retypes by hand is not knowledge. The line is drawn
+> at the three rules that make a transaction a fact rather than a ledger row:
+> money is an **integer** in minor units; a **balance is derived at query time
+> and never stored**; and there is **no accounting**. A stored balance is the
+> thing that drifts from the bank with nothing to check it, so Panel still does
+> not have one.
+
 ### 2.4 Family / household management — FamFam, HomeBudget, shared spreadsheets
 
 - **What they do:** Shared chores, calendars, budgets, sometimes documents.
