@@ -239,6 +239,94 @@ a schema. An unknown kind is a **type error**, not a runtime surprise.
 **There is deliberately no `attentionImpressions` table** — absence of feedback is
 never trained on (ADR-004).
 
+### 3.6 Custom Pages — specified, not built
+
+**Status: `NOT STARTED`.** Requires owner approval (ADR-033): one new table, one
+new page surface, outside every declared phase budget.
+
+#### What exists today, precisely
+
+Stated before the design because the design is mostly a consequence of it.
+
+1. **`AreaDef.kind` already declares `"custom"`** (`src/lib/areas.ts:45`). **No
+   area in `AREAS` uses it.** It has zero producers and zero consumers — a
+   vocabulary member that promises a feature the code does not have (D66).
+2. **A user cannot create a custom area at all.** `areaSlugValidator` is a closed
+   six-value union, `enableArea` calls `requireAreaSlug`, and
+   `schema-vocab.test.ts` asserts the union and `AREAS` are identical. Creating a
+   user-named area would mean widening that union to `v.string()` — removing the
+   one guard that stops area slugs from drifting between the catalogue, the
+   schema and the validators.
+3. **`TasksArea`'s copy tells the user the opposite.** It says *"Home and a custom
+   area both land here"*. Home does. A custom area cannot exist. The UI is
+   describing an unreachable surface (D66).
+
+#### The decision
+
+**A Custom Page is a saved view over typed data Panel already stores. It is never
+a saved schema.**
+
+Every product that ships "custom pages" as a headline feature — Notion, Airtable,
+Coda — means *the user defines the fields*. That is a generic object table with
+user-defined columns, which is ADR-007 verbatim, and it would also drag in
+ADR-008's prohibition on promoting arbitrary attributes to indexed columns and
+ADR-011's prohibition on a plugin registry. Panel does not become a workspace.
+
+So a page composes **existing** data through a **closed, versioned block
+vocabulary**. There is no way to invent a field, so there is nothing to migrate,
+nothing to validate at runtime, and no per-user schema to keep consistent.
+
+| Block | Renders | Parameters (all closed) |
+|---|---|---|
+| `headline` | one number from a named pure function | `source` ∈ closed set, `currency` |
+| `taskList` | filtered tasks | `area` ∈ `AreaSlug`, `state` ∈ open/done/all, `limit` ≤ cap |
+| `people` | people with their open work | `limit` ≤ cap |
+| `money` | balances / subscriptions / recent spend | `view` ∈ closed set, `currency` |
+| `commitments` | owed / owedTo | `direction` ∈ owed/owedTo |
+| `documents` | life-admin documents with derived state | `state` ∈ the seven derived states |
+| `expenses` | recent expenses | `limit` ≤ cap |
+| `note` | the user's own text | `body`, capped at `PAGE_NOTE_CHARS` |
+
+Three properties follow, and they are the reason this is safe:
+
+- **No new attention kind.** A page is a *view*, and attention is computed from
+  rules over typed data (ADR-003/ADR-006). A page cannot nag, cannot rank, and
+  cannot train.
+- **No new entity kind**, so ADR-023's tombstone discipline, ADR-024's identity
+  rules and ADR-029's one-producer-of-"expiring" all continue to hold untouched.
+- **Every read a page performs is a read an existing screen already performs**,
+  so a page adds no new query surface and therefore no new bounded-read budget
+  beyond its own `limit` parameters, which come from `readLimits.ts` like
+  everything else.
+
+#### Pages are not areas
+
+The vocabulary problem in (2) disappears if a page is **orthogonal** to an area
+rather than a new kind of one. A page carries `area ∈ AreaSlug` — the existing
+closed union, unchanged — and its own `title` and `order`. `areaSlugValidator`
+stays a six-value union; `schema-vocab.test.ts` keeps passing; nothing new can be
+smuggled in through a slug.
+
+#### The persistence fork — owner decision, not an engineering detail
+
+Both shapes satisfy the block vocabulary. They differ in where the cost lands,
+and the hot path is page *rendering*, not page *editing*.
+
+| | **A — blocks embedded in the page row** | **B — one row per block** |
+|---|---|---|
+| Read a page | **1 query** | 1 + N queries |
+| Write a page | rewrites the array (Convex has no partial array update) | touches changed rows only |
+| Ordering | array order is the order | needs an explicit `order` column |
+| Cap | `PAGE_MAX_BLOCKS = 12` makes write amplification trivial | no cap needed for correctness |
+| Cost shape | bounded, small writes; **one** read on the hot path | bounded writes; **unbounded** reads on the hot path |
+
+**Recommendation: A.** A page is a dashboard, not a document, so the block count
+is small and capped; a drag-and-drop reorder rewriting twelve small objects is
+not a problem worth trading a per-render query fan-out for. The recommendation is
+recorded as a recommendation, and the decision is the owner's — it is a schema
+choice, and this project has never let the agent pick one silently (ADR-007,
+ADR-016).
+
 ---
 
 ## 4. Security model

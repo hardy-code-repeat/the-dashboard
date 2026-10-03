@@ -1006,6 +1006,7 @@ function checkAccessibility() {
   let nested = 0;
   let unnamedIconButtons = 0;
   let imagesWithoutAlt = 0;
+  let outlineKillers = 0;
 
   for (const file of files) {
     const rel = file.slice(ROOT.length + 1);
@@ -1043,6 +1044,28 @@ function checkAccessibility() {
         imagesWithoutAlt++;
       }
     }
+
+    // --- 3b. nothing removes the focus outline ----------------------------
+    // This one was found by *attacking* the fix rather than reading it. The
+    // global `:focus-visible` outline landed, and three selects in product code
+    // still carried `focus-visible:outline-none` — a Tailwind utility, which
+    // lives in the utilities layer and therefore beats a `@layer components`
+    // rule no matter how the selectors are written. So those three controls, and
+    // only those three, had **no** focus indicator after the audit that was
+    // supposed to give every control one.
+    //
+    // The distinction that matters: `focus-visible:ring-0` is fine and used
+    // widely, because it removes the invisible box-shadow ring and leaves the
+    // outline standing. `outline-none` removes the outline itself, which by this
+    // point is the only indicator there is.
+    const killers = [...code.matchAll(/[\w:-]*outline-none\b/g)].map((m) => m[0]);
+    if (killers.length > 0) {
+      problems.push(
+        `${rel}: ${killers.join(", ")} removes the focus outline — ` +
+          `use focus-visible:ring-0 instead, which leaves the indicator standing`,
+      );
+      outlineKillers += killers.length;
+    }
   }
 
   // --- 4. a visible focus indicator exists --------------------------------
@@ -1065,6 +1088,13 @@ function checkAccessibility() {
   // Only rules that apply in *ordinary* rendering count. Anything inside a
   // `@media (forced-colors: active)` block is excluded by measuring the distance
   // back to the nearest `@media` and rejecting the ones that name forced-colors.
+  //
+  // The window starts at the `@media` keyword, **not** at its opening brace. Two
+  // earlier versions sliced from `indexOf("{")`, which drops the condition
+  // itself — so `forced-colors` was cut off before it could be tested, the only
+  // remaining rule was counted as ordinary, and deleting the real focus rule
+  // passed the gate twice. A window that excludes the thing it is searching for
+  // is a window that finds nothing.
   const focusBlock = /:focus-visible\s*(?:,[^{]*)?\{([^}]*)\}/g;
   let hasOrdinaryFocus = false;
   let fm: RegExpExecArray | null;
@@ -1072,9 +1102,12 @@ function checkAccessibility() {
     if (!/\boutline\s*:/.test(fm[1])) continue;
     const preceding = cssCode.slice(0, fm.index);
     const lastMedia = preceding.lastIndexOf("@media");
-    const insideMedia = lastMedia !== -1 && preceding.indexOf("{", lastMedia) < fm.index;
-    const mediaBody = insideMedia ? preceding.slice(preceding.indexOf("{", lastMedia)) : "";
-    if (/forced-colors/.test(mediaBody)) continue; // high-contrast only
+    const brace = preceding.indexOf("{", lastMedia);
+    const insideMedia = lastMedia !== -1 && brace !== -1 && brace < fm.index;
+    // Start at the keyword so the condition (`(forced-colors: active)`) is
+    // inside the window being tested.
+    const mediaWindow = insideMedia ? preceding.slice(lastMedia) : "";
+    if (/forced-colors/.test(mediaWindow)) continue; // high-contrast mode only
     hasOrdinaryFocus = true;
     break;
   }
@@ -1099,9 +1132,9 @@ function checkAccessibility() {
   record(
     "accessibility invariants",
     "pass",
-    `${files.length} component files: no nested interactive elements, ` +
+    `${files.length} component files: ${nested} nested interactive elements, ` +
       `${unnamedIconButtons} unnamed icon buttons, ${imagesWithoutAlt} images without alt, ` +
-      `a global :focus-visible outline is declared`,
+      `${outlineKillers} outline removers, a global :focus-visible outline is declared`,
   );
 }
 
@@ -1171,6 +1204,174 @@ function checkSecurityRegistry(changelog: string) {
     "pass",
     `${registered.length} findings cross-checked both ways against the changelog ` +
       `(${openBand.length} in the open D6x band, none missing)`,
+  );
+}
+
+/**
+ * Irreversible actions are confirmed.
+ *
+ * `removeTask`, `clearCompleted`, `deleteSubscription`, `removeExpense`,
+ * `removeNote` and `deleteDocument` are **real deletes**. There is no soft
+ * delete, no undo column, no tombstone — ADR-023 gave merges a tombstone and
+ * nothing else got one. So a single click on a 24px trash icon destroyed data
+ * with no path back, and "Clear completed" removed up to `DASHBOARD_TASKS` rows
+ * from a control styled like a caption.
+ *
+ * The invariant is therefore: **no destructive mutation is invoked directly
+ * from an `onClick` handler.** It has to be reached through `ConfirmAction`,
+ * which requires a second, deliberate click.
+ *
+ * ## Why the handler indirection is resolved
+ *
+ * Half the call sites read `onClick={() => void handleDelete(task._id)}` rather
+ * than naming the mutation, so a grep for `removeTask` inside an `onClick` would
+ * pass on exactly the code it exists to catch. So local wrappers are followed
+ * two levels deep: a `const`/`function` whose body names a destructive mutation
+ * is itself treated as destructive.
+ */
+const DESTRUCTIVE_MUTATIONS = [
+  "cancelCommitment",
+  "cancelRenewal",
+  "cancelSubscription",
+  "clearCompleted",
+  "deleteAccount",
+  "deleteCommitment",
+  "deleteDocument",
+  "deleteSubscription",
+  "disconnectProvider",
+  "disconnectTool",
+  "removeExpense",
+  "removeNote",
+  "removeTask",
+] as const;
+
+function checkDestructiveActions() {
+  const srcDir = join(ROOT, "src");
+  if (!existsSync(srcDir)) {
+    record("destructive actions", "fail", "src/ is missing");
+    return;
+  }
+
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "ui" || entry.name === "_generated") continue;
+        walk(full);
+      } else if (entry.name.endsWith(".tsx")) files.push(full);
+    }
+  };
+  walk(srcDir);
+
+  /** The body of every `prop={ … }` expression, found by counting braces. */
+  const propBodies = (code: string, prop: string): string[] => {
+    const out: string[] = [];
+    const re = new RegExp(`\\b${prop}=\\{`, "g");
+    while (re.exec(code) !== null) {
+      const start = re.lastIndex;
+      let i = start;
+      let depth = 1;
+      while (i < code.length && depth > 0) {
+        if (code[i] === "{") depth++;
+        else if (code[i] === "}") depth--;
+        i++;
+      }
+      out.push(code.slice(start, i - 1));
+      re.lastIndex = i;
+    }
+    return out;
+  };
+
+  const problems: string[] = [];
+  let confirmed = 0;
+
+  for (const file of files) {
+    const rel = file.slice(ROOT.length + 1);
+    const code = stripComments(readFileSync(file, "utf8"));
+
+    // Resolve local wrappers so `onClick={() => handleDelete(x)}` is caught.
+    //
+    // The window is bounded by a terminator rather than a character budget. An
+    // earlier version measured a fixed 600 characters forward, which — when the
+    // next declaration was indented deeper than the handler — ran past the end
+    // of the handler and into the JSX below it, picked up a destructive call
+    // that lived in an `onConfirm` twenty lines down, and reported five false
+    // positives on the first run. A window that can overshoot is a window that
+    // invents findings.
+    //
+    // Two further corrections, both found by the same run:
+    //
+    //  - The terminator is the first closing brace at the start of a line, at
+    //    **any** indentation. A helper declared inside a component closes at
+    //    column 0, so requiring exactly two spaces ran past it into the next
+    //    function, wrongly named `endOfDay` destructive, and then propagated
+    //    that poisoning transitively to two unrelated handlers. Truncating a
+    //    body early can only *miss* a finding, never invent one — the safe
+    //    direction for a heuristic.
+    //  - A name only counts when it is **called** (`name(`). A bare word match
+    //    also fires on a parameter or a property, which is how a helper got
+    //    classified from an unrelated identifier nearby.
+    const destructive = new Set<string>(DESTRUCTIVE_MUTATIONS);
+    for (let pass = 0; pass < 2; pass++) {
+      // The parameter list tolerates one level of nested parentheses, because
+      // the real signatures contain them: `id: (typeof tasks)[number]["_id"]`.
+      // A flat `[^)]*` stops at `(typeof tasks)` and the declaration stops
+      // matching, so the wrapper goes unresolved and the gate passes on exactly
+      // the code it exists to catch — found by planting that call as a mutant.
+      const PARAMS = "\\((?:[^()]|\\([^()]*\\))*\\)";
+      const decls = [
+        ...code.matchAll(
+          new RegExp(`const\\s+(\\w+)\\s*=\\s*(?:async\\s*)?${PARAMS}[^{;]*?=>\\s*\\{([\\s\\S]*?)\\n\\s*\\}`, "g"),
+        ),
+        ...code.matchAll(
+          new RegExp(`(?:async\\s+)?function\\s+(\\w+)\\s*${PARAMS}[^{]*\\{([\\s\\S]*?)\\n\\s*\\}`, "g"),
+        ),
+      ];
+      for (const decl of decls) {
+        const name = decl[1];
+        const body = decl[2];
+        if (destructive.has(name)) continue;
+        for (const d of destructive) {
+          if (new RegExp(`\\b${d}\\s*\\(`).test(body)) {
+            destructive.add(name);
+            break;
+          }
+        }
+      }
+    }
+
+    for (const body of propBodies(code, "onClick")) {
+      for (const name of destructive) {
+        if (new RegExp(`\\b${name}\\s*\\(`).test(body)) {
+          problems.push(
+            `${rel}: onClick calls ${name} directly — route it through ConfirmAction`,
+          );
+        }
+      }
+    }
+
+    confirmed += [...code.matchAll(/<ConfirmAction\b/g)].length;
+  }
+
+  if (files.length === 0) problems.push("no .tsx files scanned — the check is not running");
+
+  if (problems.length > 0) {
+    record(
+      "destructive actions",
+      "fail",
+      `${problems.length} problem(s): ${problems.slice(0, 6).join("; ")}${
+        problems.length > 6 ? " …" : ""
+      }`,
+    );
+    return;
+  }
+
+  record(
+    "destructive actions",
+    "pass",
+    `${confirmed} irreversible action(s) reached only through ConfirmAction; ` +
+      `no destructive mutation is wired straight to an onClick`,
   );
 }
 
@@ -1261,6 +1462,8 @@ function main() {
   checkAdminIndexAllowlist();
   checkSecurityRegistry(changelog);
   checkAccessibility();
+
+  checkDestructiveActions();
 
   report();
 

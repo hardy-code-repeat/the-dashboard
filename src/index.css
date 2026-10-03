@@ -194,6 +194,8 @@
      component classes that legitimately set their own outline, and every
      `outline-none` in `src/components/ui/` would need rewriting to restore
      component-level control. */
+  
+
   :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
     outline: 3px solid currentColor;
     outline-offset: 2px;

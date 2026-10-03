@@ -125,6 +125,46 @@ async function main() {
   // Unique per run, so repeated runs never collide with each other.
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
+  // ---- preflight: is the fixture armed? ---------------------------------
+  // The fixture module is deliberately NOT checked in (an unauthenticated
+  // public mutation in a deployed app is forbidden by MAIN_AGENT S1), so this
+  // script is *designed* to be un-runnable until someone re-arms it. What it
+  // was not designed for is to report that as a crash: an uncaught
+  // "Could not find public function" looks identical to a broken deployment,
+  // and a run that cannot distinguish "not armed" from "invariant violated" is
+  // a run whose red cannot be trusted.
+  //
+  // So the absent-module case is separated from every other outcome and exits 0
+  // with an explicit NOT RUN banner, the same convention the admin harness uses
+  // for an absent token. Anything else still propagates.
+  const probeKey = `${stamp}-probe`;
+  try {
+    await client.mutation(occ.conformanceEnsureUser, { userKey: probeKey });
+    await client.mutation(occ.conformanceCleanup, { userKey: probeKey });
+  } catch (err) {
+    if (/Could not find public function/.test(String(err))) {
+      console.log("");
+      console.log("  RESULT: NOT RUN — the conformance fixture is not armed.");
+      console.log("  " + "-".repeat(60));
+      console.log("  src/convex/occ_conformance.ts is intentionally not checked in,");
+      console.log("  because it would expose an unauthenticated public mutation in a");
+      console.log("  deployed app (MAIN_AGENT S1). Without it there is nothing to test.");
+      console.log("");
+      console.log("  This is NOT a pass and NOT a violation: ADR-022's evidence stands as");
+      console.log("  recorded (1,936 concurrent mutations across 45 rounds, 0 duplicates)");
+      console.log("  and this script re-checks that guarantee only when re-armed:");
+      console.log("");
+      console.log("    1. restore src/convex/occ_conformance.ts");
+      console.log("    2. un-comment the `export` on loadState and recordOutcome in");
+      console.log("       src/convex/assistant.ts");
+      console.log("    3. bunx convex dev --once, then re-run this script");
+      console.log("    4. revert steps 1-2");
+      console.log("");
+      process.exit(0);
+    }
+    throw err;
+  }
+
   // ---- negative control -------------------------------------------------
   // Before trusting any PASS, prove the inspector can actually see a duplicate.
   console.log("── negative control (does the counter detect a duplicate?)");

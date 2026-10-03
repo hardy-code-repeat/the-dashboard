@@ -165,6 +165,26 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
     state: "open-accepted",
   },
   {
+    id: "D65",
+    title: "One conformance harness cannot currently run",
+    detail:
+      "scripts/conformance-occ.ts needs a fixture module that is deliberately not checked in, because an unauthenticated public mutation in a deployed app is forbidden. It used to exit 2 with an opaque server error on every run, which is indistinguishable from a broken deployment.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "The harness now separates the absent-module case and exits 0 with RESULT: NOT RUN. The OCC invariant itself is unchanged and still verified as ADR-022 records it.",
+  },
+  {
+    id: "D66",
+    title: "A vocabulary member with no producer, and copy describing it",
+    detail:
+      "AreaDef.kind declares \"custom\" and no area uses it. A custom area cannot be created either — areaSlugValidator is a closed six-value union — yet TasksArea's copy told users a custom area lands there. Copy removed; the dead member is deferred to the Custom Pages decision (ADR-033).",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "src/lib/schema-vocab.test.ts still guards the closed union, so the dead member cannot be reached, only believed in.",
+  },
+  {
     id: "no-telemetry",
     title: "No analytics and no request metrics exist",
     detail:

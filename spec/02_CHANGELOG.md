@@ -2397,6 +2397,414 @@ observed in a browser.
 
 ---
 
+## CHANGE-0028
+
+**Product-wide accessibility audit — three real defects, and a new gate that was
+itself broken twice before it could fail**
+
+Severity: MINOR
+Status: **IMPLEMENTED AND VERIFIED.**
+
+**Trigger.** The Admin Control Centre finished with a full green gate and had
+never been rendered in a browser. Green checks measure what they measure; nobody
+had looked at the product with a keyboard.
+
+### What the audit looked at
+
+Not a contrast checker run over a palette. Four questions, each answered against
+the source rather than assumed from a passing test:
+
+1. Can every interactive control be reached and operated from the keyboard?
+2. Is the keyboard focus position **visible** when it is?
+3. Does every control have an accessible name?
+4. Is interactive content ever nested inside interactive content?
+
+### Three defects
+
+**A11Y-1 — four buttons inside links.** `src/pages/Landing.tsx` wrapped a
+`<button>` in an `<a>`/`<Link>` four times. That is invalid HTML, it puts two
+focusable elements inside one another, the name is announced twice, and Enter
+activates an element whose role the user was not told about. The styling moved
+onto the link itself, so it is still one control that looks the same.
+
+**A11Y-2 — keyboard focus was invisible everywhere.** This is the one that
+matters. `--ring` was declared **identical to `--border`** (`oklch(0.16 0 0)`),
+and the button variant set `outline-none`. Against a 2px black brutal border a
+40%-opacity black ring at 0px offset is not a weak indicator; it is **nothing**.
+Measured: **123 elements carry `.brutal`, and 0 of them declared a focus style.**
+The product's entire visual language actively hid the keyboard cursor.
+
+The fix is one global rule in `src/index.css`, inside the existing
+`@layer components`:
+
+```
+:where(a, button, input, select, textarea, summary,
+       [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 2px;
+}
+```
+
+Three decisions inside that. **`currentColor`**, not a token — it works on every
+surface the palette produces, including primary buttons where the ink inverts,
+without a per-component rule. **An offset**, not just a width — `outline-offset:
+2px` puts the ring in the gap between elements, which is what makes it visible
+on a dense grid where adjacent borders are 4px apart. And **`:where()`**, which
+holds specificity at zero; otherwise this rule would outrank component classes
+that legitimately set their own outline, and every `outline-none` in
+`src/components/ui/` would have to be rewritten to restore component-level
+control. A separate `@media (forced-colors: active)` variant restores the
+outline underneath Radix's box-shadow rings, which a high-contrast mode may drop
+entirely.
+
+**A11Y-3 — an icon-only trigger named after the picture.** The account menu in
+`src/components/LogoDropdown.tsx` carried `alt="Logo"`, which names the image,
+not the action; the control had no accessible name at all. It now has
+`aria-label="Account menu"`, and the image is decorative (`alt="" aria-hidden`).
+
+**Measured and found fine**, recorded so it is not re-litigated: ink on background
+**17.21**, ink on card **19.11**, muted foreground on card **10.66**, ink on
+primary **12.96** — all far above WCAG AA (4.5:1, and 3:1 for large text).
+
+### The gate, and the two ways it lied
+
+`checkAccessibility()` in `scripts/spec-drift.ts` walks 19 `.tsx` files (excluding
+stock `ui/` and `_generated/`) for nested interactive elements, icon-only buttons
+without `aria-label`, `<img>` without `alt`, and a global `:focus-visible` outline
+in `index.css`. A gate that cannot fail is decoration, so it was mutation-tested:
+
+| Mutation | Expected | Result |
+|---|---|---|
+| Reintroduce `<a><button/></a>` | FAIL | **failed correctly** |
+| Delete the ordinary `:focus-visible` rule | FAIL | **PASSED — gate broken** |
+| …second attempt to fix the gate | FAIL | **PASSED — still broken** |
+| Replace `outline:` with `outline-width: 0px` | FAIL | failed correctly |
+| Restore everything | PASS | passed |
+
+The cause is worth stating precisely, because it is a mistake available to any
+static check. The gate rejected a focus rule sitting inside
+`@media (forced-colors: active)` by taking the text from the nearest `@media` to
+the rule and testing that window for `forced-colors`. The window was sliced from
+`indexOf("{")` — **the opening brace, which is *after* the condition**. So
+`(forced-colors: active)` was cut off before it could be read, the window never
+contained the word, and the only remaining rule counted as ordinary. A window
+that excludes the thing it is searching for is a window that finds nothing, and
+it failed silently in the direction that looks like a pass.
+
+Fixed by starting the window at the `@media` keyword. The rule also now requires
+the body to declare `outline:` specifically, so a rule that declares only
+`outline-width: 0px` — present, and invisible — fails.
+
+This is D60 in a new costume: *a check that reports green without testing
+anything is worse than no check, because it is consumed as evidence.* It was
+found only because the mutation was run, twice.
+
+### What is deliberately not gated
+
+`src/components/ui/` is excluded. It is stock shadcn — upstream code with its own
+conventions and release cadence, already accounted for in the lint baseline.
+Auditing it here would produce findings the project cannot act on, which is how
+a gate teaches people to ignore it.
+
+### Costs
+
+**2 files** (`src/index.css`, `scripts/spec-drift.ts`) and 2 product files
+(`src/pages/Landing.tsx`, `src/components/LogoDropdown.tsx`). **0 tables, 0
+dependencies, 0 new abstractions.** Inside every phase budget, unlike CHANGE-0027.
+
+### Verification
+
+`bun test` **634 pass / 0 fail / 24 files** (unchanged — this was a markup and
+CSS change, so adding a test would have meant testing the regex that tests the
+CSS). `tsc -b --noEmit` clean. Lint **3 errors / 19 warnings** — the exact stock
+baseline; the audit briefly added a 4th (`nested` was incremented and never read)
+and it was fixed in the gate, not suppressed. `spec-drift` **22 passed /
+1 warning / 0 failures** (1 new gate). All **19** conformance harnesses exit 0.
+
+**Not verified:** no assistive technology was run, no screen reader, no browser
+render of any page. Contrast ratios are computed from the declared tokens, not
+sampled from a rendered pixel.
+
+---
+
+### D65 — a conformance harness that could not report anything
+
+Found by running the gate rather than by reading it: `scripts/conformance-occ.ts`
+**exits 2 with `Could not find public function for
+'occ_conformance:conformanceEnsureUser'`**, against every deployment, always.
+
+This is not a regression. `src/convex/occ_conformance.ts` is *deliberately* not
+checked in — an unauthenticated public mutation in a deployed app is forbidden
+(MAIN_AGENT S1) — so the script is designed to be un-runnable until someone
+re-arms it, and its own header documents the four-step re-arm procedure.
+
+What it was not designed for is reporting that as a crash. An uncaught
+"Could not find public function" is **indistinguishable from a broken
+deployment**, so a harness that cannot tell "not armed" from "invariant violated"
+produces a red that carries no information — and, worse, a green in any report
+that counted exit codes without reading them. Earlier verification recorded
+"all 19 harnesses exit 0" for this script; that was **wrong**, and it was wrong
+in the flattering direction.
+
+The harness now probes the fixture first, separates the absent-module case from
+every other outcome, and exits 0 with an explicit `RESULT: NOT RUN — the
+conformance fixture is not armed` banner and the re-arm steps. Anything else
+still propagates. **The OCC invariant itself is unchanged and still VERIFIED as
+recorded in ADR-022** (1,936 concurrent mutations across 45 rounds, 0
+duplicates); what is now honest is that *this script did not re-check it today*.
+
+**Revisit when.** `recordOutcome` changes or a feature adds user-state mutations
+— which is exactly the condition ADR-022 states, and which this harness cannot
+currently observe on its own.
+
+---
+
+## CHANGE-0029
+
+**UX audit: eleven irreversible actions were one click from gone, and three
+controls were still hiding the focus ring the last entry added**
+
+Severity: MINOR
+Status: **IMPLEMENTED AND VERIFIED.**
+
+**Trigger.** CHANGE-0028 fixed keyboard focus and then stopped. Two questions
+were left: *does the fix actually apply everywhere*, and *what does a user lose
+when they are wrong*. Both were answered by attacking, not by reading.
+
+### Defect 1 — the focus fix was defeated in three places, silently
+
+The global `:focus-visible` outline landed in `@layer components`. Three `<select>`
+elements still carried Tailwind's `focus-visible:outline-none`, and a **utility
+layer rule beats a components-layer rule regardless of specificity** — so those
+three controls, and only those three, had **no focus indicator at all** after the
+audit whose entire output was "every focusable control now has a visible
+indicator".
+
+This is the failure mode a passing check cannot see: the check asserted a rule
+existed in the stylesheet, not that the rule won. The fix is to remove the three
+utilities (`focus-visible:ring-0` is fine and stays — it removes the invisible
+box-shadow ring and leaves the outline standing), plus a gate: **no `outline-none`
+anywhere in product code.**
+
+### Defect 2 — loading was rendered as a confident empty state
+
+`TasksArea` read `useQuery(api.life.getAreaTasks, { area }) ?? []`. `undefined`
+means *not loaded yet*, and throwing it away meant every cold load of every
+task-backed area — general, home, and any custom area — flashed **"Nothing in
+{label}. Add the first one above"** before the data arrived.
+
+That is the D60 pattern at the UI layer: **a state that reports a fact it has not
+observed.** The rest of `Areas.tsx` already distinguished the two (`balances ===
+undefined` renders "Summing your accounts…"), so this was an inconsistency inside
+a single file rather than a design gap. Now: `loadedTasks === undefined` renders a
+spinner; only a loaded, empty result says "Nothing in {label}".
+
+### Defect 3 — eleven irreversible actions had no confirm and no undo
+
+There is no soft delete, no undo column, no trash. ADR-023 gave **merges** a
+tombstone and nothing else got one, so every one of these was a real delete
+reached by a single click:
+
+| Where | What one click removed |
+|---|---|
+| Dashboard | a task |
+| Dashboard | a note |
+| Dashboard | **up to `DASHBOARD_TASKS` completed tasks**, from a control styled like a caption |
+| Areas (×2) | a task — in the area list and in a person's list |
+| Finance | an expense, an account, a subscription |
+| Finance | cancelling a subscription renewal |
+| Life admin | a renewal task, and a tracked document |
+
+Merge and unmerge are deliberately **not** in this list: ADR-023 makes both
+reversible, and a confirmation on a button you can undo is noise.
+
+**`src/components/ConfirmAction.tsx`** is one small component: the first click
+swaps the trigger for a confirm/keep pair, the confirm button takes focus, Escape
+cancels, and clicking away deliberately does **not** (a stray click outside is not
+a decision). A rejected mutation leaves the pair in place so the user can retry
+rather than re-arming the whole interaction.
+
+`window.confirm` was rejected rather than reached for: it blocks the event loop,
+cannot be styled, and is suppressed in some embedded webviews.
+
+### The gate, and the three ways it was wrong first
+
+`checkDestructiveActions()` asserts the invariant **no destructive mutation is
+invoked directly from an `onClick` handler**. Eleven sites now pass through
+`ConfirmAction`. Like every gate here, it was mutation-tested — and it failed
+three times before it was trustworthy:
+
+| Attempt | What it did | How it was caught |
+|---|---|---|
+| 1 | resolved wrappers with a fixed 600-character forward window | **5 false positives** — the window overshot a handler and picked up an `onConfirm` twenty lines below |
+| 2 | bounded the window at `\n  }` (exactly two spaces) | `endOfDay`, a date helper closing at column 0, was classified destructive and **poisoned two unrelated handlers transitively** |
+| 3 | matched bare words instead of calls | a parameter or property with a colliding name classified a benign handler as destructive |
+| 4 | flat `[^)]*` parameter matcher | `handleDelete(id: (typeof tasks)[number]["_id"])` stopped at `(typeof tasks)`, the wrapper never resolved, and **the planted mutant passed the gate** |
+| Final | terminator is the first closing brace at any indentation; matches require call syntax; parameters tolerate one level of nesting | caught both mutants |
+
+The fifth row is the one worth remembering: the gate passed on exactly the code it
+was written to catch, because a regex detail — not a judgement — decided whether
+it would look. **Truncating a window early can only miss a finding; overshooting
+invents one.** Every heuristic here was bent in that direction deliberately.
+
+### What the gate found on its first honest run
+
+`handleCancel` in `LifeAdminArea`. It reads as "cancel the form I am editing",
+sits next to a date input, and is labelled "Cancel renewal" — and it calls
+`cancelRenewal`, which deletes the renewal task. I had read it correctly as
+non-destructive and left it alone; the gate disagreed with my reading and was
+right. That is the whole argument for having the check.
+
+### Costs
+
+**1 new file** (`ConfirmAction.tsx`), 0 tables, **0 dependencies**, 1 new
+abstraction, 5 files edited. Inside every phase budget.
+
+### Verification
+
+`bun test` **634 pass / 0 fail / 24 files** — unchanged, and the honest number:
+`ConfirmAction` has **no unit test**, because the project has no DOM test harness
+and adding one would be a new dependency (not approved). Its behaviour is covered
+by the typechecker, by the destructive-action gate, and by hand. `tsc -b
+--noEmit` clean. Lint **3 errors / 19 warnings** — the exact stock baseline; two
+intermediate versions of the new gate added a 4th error each and both were fixed
+in the gate rather than suppressed. `spec-drift` **23 passed / 1 warning / 0
+failures** (1 new gate; the accessibility gate gained the `outline-none` rule).
+`audit-bounded-reads` unchanged at **148 bounded, 0 unbounded**.
+
+**Not verified:** no page containing a `ConfirmAction` has been clicked in a
+browser, and the confirm pair has never been seen rendered. No screen reader was
+run.
+
+---
+
+## CHANGE-0030
+
+**Custom Pages: research and architecture, no code**
+
+Severity: PRODUCT
+Status: **RESEARCHED AND DECIDED (ADR-033). IMPLEMENTATION `NOT STARTED` —
+awaiting owner approval.**
+
+**Trigger.** The next item in the build chain. "Custom pages" appeared nowhere in
+the five spec files, so the first job was to find out whether it was a gap or a
+restatement of something that already existed.
+
+### What the research actually found
+
+Not a missing feature — a **dead vocabulary member and copy describing it**.
+
+1. **`AreaDef.kind` already declares `"custom"`** (`src/lib/areas.ts:45`) and
+   **no area uses it**. Zero producers, zero consumers; `areaIcon` falls through
+   its `default` branch.
+2. **A user cannot create a custom area at all.** `areaSlugValidator` is a closed
+   six-value union; `enableArea` calls `requireAreaSlug`; and
+   `schema-vocab.test.ts` asserts the union and `AREAS` are identical, so the two
+   cannot drift. Widening it to `v.string()` to admit user-named areas would
+   delete that guard.
+3. **`TasksArea`'s copy said *"Home and a custom area both land here."*** Home
+   does. A custom area cannot exist. Recorded as D66; the sentence was removed,
+   because copy describing a surface the product cannot reach is the same failure
+   as D50's habit card.
+
+Recorded as D66 rather than fixed outright: deleting `"custom"` is one line with
+no runtime effect, and whether it has a home to return to depends on the answer
+to the question this entry asks.
+
+### The external check, and its result
+
+The service catalog was searched for an editing substrate (rich text / markdown /
+page builder) for a `React 19 + Convex + Tailwind` app. **No such service is in
+the catalog**, and the honest conclusion is that **Custom Pages needs none**: the
+narrow design below composes data Panel already stores and needs a `switch`, not
+an editor. So the constraint *no new dependencies without approval* is satisfied
+by the architecture rather than negotiated around it.
+
+Market research confirmed the distinction the decision turns on: every product
+that ships "custom pages" as a headline means *the user defines the fields*.
+That is a generic object table — ADR-007 verbatim.
+
+### The decision (ADR-033)
+
+**A custom page is a saved view, never a saved schema.**
+
+A page is a named, ordered composition of existing typed data through a **closed,
+versioned block vocabulary**: headline, task list, people, money, commitments,
+documents, expenses, note. No field can be invented, so there is no per-user
+schema to migrate. A page is **orthogonal to an area** — it carries
+`area ∈ AreaSlug`, the existing closed union — so `areaSlugValidator` is never
+widened and the vocabulary guard keeps holding.
+
+Consequences that matter more than the feature: a page cannot add an attention
+kind, so ADR-006's guarantee survives on a surface the user fully controls; a page
+adds no query surface, so it needs no exemption from CHANGE-0026; and it owns no
+data, so ADR-023, ADR-024 and ADR-029 are untouched.
+
+Full block table, cost comparison and scope: `04_SYSTEM_FUNDAMENTALS.md` §3.6.
+Research record: `03_PRODUCT_CONTEXT.md` R-010.
+
+### The decision that is the owner's, not the agent's
+
+**How blocks are persisted.** Embedded in the page row, or one row per block.
+
+| | Embedded | One row per block |
+|---|---|---|
+| Read a page | **1 query** | 1 + N |
+| Write a page | rewrites the array | changed rows only |
+| Cap | `PAGE_MAX_BLOCKS = 12` | not needed for correctness |
+
+**Recommendation: embedded** — page rendering is the hot path, and a capped block
+count makes write amplification irrelevant. This is a schema decision, and this
+project does not let the agent pick one silently (ADR-007, ADR-016), so it is put
+to the owner rather than recorded as settled.
+
+### Costs
+
+**0 new files, 0 tables, 0 dependencies, 0 code.** This entry is research and
+specification only, plus one string of user-facing copy that was describing a
+surface that does not exist. Spec files touched: `02`, `03`, `04`, `05`.
+
+### Verification
+
+`bun scripts/spec-drift.ts` — the control-centre counts agree (33 ADRs, 30
+changes) and the security registry cross-check includes D66. `bunx tsc -b
+--noEmit` clean. No runtime change to verify, because there is no runtime change.
+
+---
+
+### D66 — a vocabulary member with no producer, and copy describing it
+
+`AreaDef.kind` (`src/lib/areas.ts:45`) declares seven kinds:
+
+```ts
+kind: "tasks" | "finance" | "people" | "health" | "home" | "life" | "custom";
+```
+
+**`"custom"` is never used.** No area in `AREAS` sets it, no component switches
+on it, and `areaIcon` falls through its `default` branch for it. It is a
+closed-union member that promises a surface the product cannot reach.
+
+It is also unreachable by construction. `areaSlugValidator` is a closed
+six-value union, `enableArea` calls `requireAreaSlug`, and
+`src/lib/schema-vocab.test.ts` asserts the union and `AREAS` are identical — so
+there is no path by which a user creates a custom area, and widening the union to
+`v.string()` would delete the guard that keeps the catalogue, the schema and the
+validators from drifting.
+
+**The user-visible half.** `TasksArea`'s empty-state copy said *"Home and a custom
+area both land here"*. Home does. A custom area cannot exist. The sentence was
+removed rather than softened, because copy that describes a feature the product
+does not have is the same failure as D50's habit card: a confident surface
+standing in for a missing one.
+
+**Not resolved here.** `"custom"` is still in the union. Removing it is a
+one-line change with no runtime effect, and it is deliberately **deferred to the
+Custom Pages decision (ADR-033)** — if pages ship as an orthogonal axis rather
+than as a seventh area kind, the member has no home to return to, and deleting
+it in the same change that introduces pages would hide which of the two happened.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
@@ -5325,6 +5733,56 @@ bounded mutation, which would mean an agent doing something Panel has not
 approved. Revisit an individual absent agent only when its event has **no**
 producer, not when it has a weak one: the bar is one producer per event, not one
 agent per name in a list.
+
+### ADR-033 — A custom page is a saved view, never a saved schema
+
+**Status:** Active. Recorded 2026-10-03, with R-010 and SYSTEM_FUNDAMENTALS
+§3.6. Extends ADR-007, ADR-008, ADR-011, ADR-003, ADR-016, ADR-024.
+
+**Decision.** A Custom Page is a named, ordered composition of **existing typed
+data**, described by a **closed, versioned block vocabulary** (headline, task
+list, people, money, commitments, documents, expenses, note). A page introduces
+**no new entity kind, no user-defined fields, and no new attention kind.** A page
+is orthogonal to an area: it carries `area ∈ AreaSlug`, the existing closed union,
+so `areaSlugValidator` is never widened and `schema-vocab.test.ts` keeps passing.
+
+**Why the narrow definition is the honest one.** "Custom page" as a headline
+feature means *the user defines the fields* — Notion, Airtable and Coda all mean
+that. It is a generic object table with user-defined columns: ADR-007 verbatim.
+Adopting it would also collide with ADR-008 (no promoting arbitrary attributes to
+indexed columns) and ADR-011 (no plugin registry, no trigger builder).
+
+**The narrow definition's advantages are structural, not stylistic:**
+
+1. **No per-user schema.** Nothing can be invented, so nothing can be migrated,
+   and there is no schema-consistency problem to solve at query time. A page is a
+   row, not a table.
+2. **No new attention kind.** A page is a view; attention is computed by hard
+   rules over typed data (ADR-003, ADR-006). A page cannot nag, cannot rank and
+   cannot train — which is what keeps ADR-006's guarantee (a tax deadline cannot
+   be personalised away) intact on a surface the user fully controls.
+3. **No new query surface.** Every block reads what an existing screen already
+   reads, so a page adds no unbounded read and needs no exemption from
+   CHANGE-0026. Its `limit` parameters come from `readLimits.ts` like every other
+   cap.
+4. **Every existing invariant keeps holding unchanged**, because a page owns no
+   data: ADR-023's tombstone, ADR-024's identity keys, ADR-029's single producer
+   of "this is expiring".
+
+**What it deliberately is not.** Not a document editor. Not a form builder. Not
+an import target. Not shareable, not collaborative, and not nested. Those are
+each a workspace feature, and the research (R-010, §2.8) places Panel's position
+away from that category deliberately.
+
+**Persistence shape is the owner's decision.** Blocks embedded in the page row
+(one read per render, small capped writes) versus one row per block (N reads per
+render, cheaper writes). The recommendation is **embedded**, because page
+rendering is the hot path and `PAGE_MAX_BLOCKS = 12` makes write amplification
+irrelevant. Both shapes and both cost profiles are set out in SYSTEM_FUNDAMENTALS
+§3.6. Recorded as a recommendation, not as a decision.
+
+**Budget.** One table, one surface, one renderer switch — outside every declared
+phase budget, so **implementation is `NOT STARTED` pending approval** (ADR-016).
 
 ---
 

@@ -21,6 +21,7 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { AreaAdd } from "@/components/AreaAdd";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/ConfirmAction";
 import { CsvImportPanel } from "@/components/CsvImportPanel";
 import { ImportHistory } from "@/components/ImportHistory";
 import { Input } from "@/components/ui/input";
@@ -931,13 +932,12 @@ export function FinanceArea() {
                             aria-label={`Renewal date for ${s.label}`}
                             className="h-8 w-36 border-2 border-border bg-background px-1 text-[10px] focus-visible:ring-0"
                           />
-                          <Button
-                            variant="outline"
-                            className="brutal h-8 px-2 text-[10px] uppercase"
-                            onClick={() => void cancelSubscription({ id: asSubscriptionId(s.id) })}
-                          >
-                            Cancel
-                          </Button>
+                          <ConfirmAction
+                            label="Cancel"
+                            confirmLabel="Cancel it"
+                            className="brutal inline-flex h-8 items-center px-2 text-[10px] uppercase"
+                            onConfirm={() => cancelSubscription({ id: asSubscriptionId(s.id) })}
+                          />
                         </>
                       ) : (
                         <Button
@@ -948,14 +948,22 @@ export function FinanceArea() {
                           Restore
                         </Button>
                       )}
-                      <Button
-                        variant="ghost"
-                        className="brutal h-8 px-2"
-                        aria-label={`Delete ${s.label}`}
-                        onClick={() => void deleteSubscription({ id: asSubscriptionId(s.id) })}
+                      <ConfirmAction
+                        label={`Delete ${s.label}`}
+                        confirmLabel="Delete"
+                        onConfirm={() => deleteSubscription({ id: asSubscriptionId(s.id) })}
                       >
-                        <Trash2 className="size-3.5" />
-                      </Button>
+                        {({ onClick, "aria-label": ariaLabel }) => (
+                          <Button
+                            variant="ghost"
+                            className="brutal h-8 px-2"
+                            aria-label={ariaLabel}
+                            onClick={onClick}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        )}
+                      </ConfirmAction>
                     </div>
                   </li>
                 ))}
@@ -1032,14 +1040,22 @@ export function FinanceArea() {
                             {a.kind}
                           </span>
                         </span>
-                        <Button
-                          variant="ghost"
-                          className="brutal h-7 px-2"
-                          aria-label={`Remove ${a.label}`}
-                          onClick={() => void handleDeleteAccount(a.id)}
+                        <ConfirmAction
+                          label={`Remove ${a.label}`}
+                          confirmLabel="Remove"
+                          onConfirm={() => handleDeleteAccount(a.id)}
                         >
-                          <Trash2 className="size-3.5" />
-                        </Button>
+                          {({ onClick, "aria-label": ariaLabel }) => (
+                            <Button
+                              variant="ghost"
+                              className="brutal h-7 px-2"
+                              aria-label={ariaLabel}
+                              onClick={onClick}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          )}
+                        </ConfirmAction>
                       </li>
                     ))}
                   </ul>
@@ -1130,14 +1146,22 @@ export function FinanceArea() {
                     {country.currencySymbol}
                     {e.amount.toFixed(2)}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => void removeExpense({ id: e._id })}
-                    aria-label={`Delete ${e.label}`}
-                    className="brutal-press shrink-0 border-2 border-border p-1 hover:bg-primary"
+                  <ConfirmAction
+                    label={`Delete ${e.label}`}
+                    confirmLabel="Delete"
+                    onConfirm={() => removeExpense({ id: e._id })}
                   >
-                    <Trash2 className="size-3" />
-                  </button>
+                    {({ onClick, "aria-label": ariaLabel }) => (
+                      <button
+                        type="button"
+                        onClick={onClick}
+                        aria-label={ariaLabel}
+                        className="brutal-press shrink-0 border-2 border-border p-1 hover:bg-primary"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
+                    )}
+                  </ConfirmAction>
                 </motion.li>
               ))}
             </ul>

@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import { AttentionFeed } from "@/components/AttentionFeed";
 import { CalendarStrip } from "@/components/CalendarStrip";
+import { ConfirmAction } from "@/components/ConfirmAction";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AreaPicker, Commitments, HealthArea, IntegrationsArea, MoneyAtAGlance, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
@@ -594,13 +595,12 @@ export default function Dashboard() {
               </div>
 
               {doneCount > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearCompleted}
+                <ConfirmAction
+                  label="Clear completed"
+                  confirmLabel={`Delete ${doneCount} completed`}
+                  onConfirm={handleClearCompleted}
                   className="text-[11px] font-bold uppercase text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                >
-                  Clear completed
-                </button>
+                />
               )}
             </div>
 
@@ -692,14 +692,22 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(task._id)}
-                      aria-label={`Delete ${task.title}`}
-                      className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-primary"
+                    <ConfirmAction
+                      label={`Delete ${task.title}`}
+                      confirmLabel="Delete"
+                      onConfirm={() => handleDelete(task._id)}
                     >
-                      <Trash2 className="size-4" />
-                    </button>
+                      {({ onClick, "aria-label": ariaLabel }) => (
+                        <button
+                          type="button"
+                          onClick={onClick}
+                          aria-label={ariaLabel}
+                          className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-primary"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      )}
+                    </ConfirmAction>
                   </motion.li>
                 ))}
               </ul>
@@ -768,14 +776,22 @@ export default function Dashboard() {
                       <p className="flex-1 text-xs leading-relaxed break-words whitespace-pre-wrap">
                         {note.body}
                       </p>
-                      <button
-                        type="button"
-                        onClick={() => void removeNote({ id: note._id })}
-                        aria-label="Delete note"
-                        className="brutal-press shrink-0 hover:text-destructive"
+                      <ConfirmAction
+                        label="Delete note"
+                        confirmLabel="Delete"
+                        onConfirm={() => removeNote({ id: note._id })}
                       >
-                        <X className="size-4" />
-                      </button>
+                        {({ onClick, "aria-label": ariaLabel }) => (
+                          <button
+                            type="button"
+                            onClick={onClick}
+                            aria-label={ariaLabel}
+                            className="brutal-press shrink-0 hover:text-destructive"
+                          >
+                            <X className="size-4" />
+                          </button>
+                        )}
+                      </ConfirmAction>
                     </li>
                   ))}
                 </ul>

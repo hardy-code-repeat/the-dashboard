@@ -470,6 +470,7 @@ Status ladder:
 | Sharing UI | `RESEARCHED` | P2 | Schema in 0B; UI deferred. Requires users. |
 | Life Timeline | `RESEARCHED` | P2 | Emerges from `activity`. Not built as a product. |
 | Context modes | `IDEA` | P2 | Seam exists; no requirement yet. |
+| Custom Pages | `RESEARCHED` | P2 | A saved **view** over typed data, never a saved schema. ADR-033, R-010, SYSTEM_FUNDAMENTALS §3.6. Needs approval: 1 table + 1 surface, outside every phase budget. |
 
 ### 5.3 Explicitly out of scope
 
@@ -867,3 +868,39 @@ where it is architectural, an ADR.
   follow-up — chasing someone is not receiving from them, and conflating the
   two would be a lie about someone else's behaviour.
 - **Status:** **Decision**, scoped in SYSTEM_FUNDAMENTALS §11.2.
+
+### R-010 — What should "custom pages" mean for Panel?
+
+- **Question:** Panel has a life-area catalogue, a task area, and a
+  placeholder vocabulary value `"custom"` that nothing produces. Should a user be
+  able to build their own page — and if so, does it hold their own data?
+- **Evidence, from the repository rather than from the market:**
+  1. `AreaDef.kind` declares `"custom"` (`src/lib/areas.ts:45`) and **no area
+     uses it**.
+  2. `areaSlugValidator` is a closed six-value union, `enableArea` calls
+     `requireAreaSlug`, and `schema-vocab.test.ts` asserts the union and
+     `AREAS` are identical. A user-named area is **not reachable today**, and
+     widening the union to `v.string()` would delete the guard that keeps the
+     catalogue, the schema and the validators from drifting.
+  3. `TasksArea` already tells users *"Home and a custom area both land here"* —
+     copy for a surface that cannot exist (D66).
+  4. §2.8 classifies Notion/Obsidian as adjacent products, and ADR-001–ADR-007
+     are the reasons Panel is not one.
+- **Finding:** **A custom page is a saved view, never a saved schema.** Every
+  product that means "custom page" by headline means *the user defines the
+  fields* — a generic object table, which is ADR-007 verbatim. Panel's version
+  composes data it already stores through a closed, versioned block vocabulary:
+  headline, task list, people, money, commitments, documents, expenses, note.
+  No field can be invented, so there is no per-user schema to migrate or keep
+  consistent, and a page cannot introduce a new attention kind (ADR-003,
+  ADR-006) because it is a view and not a rule.
+- **Affected area:** Areas (new orthogonal axis), Dashboard (new surface),
+  schema (one table).
+- **Implication:** A page carries `area ∈ AreaSlug` — the existing closed union,
+  unchanged — so the vocabulary problem disappears without widening anything.
+  The persistence shape (blocks embedded in the page row, versus one row per
+  block) is an owner decision; the recommendation and the reasoning are in
+  SYSTEM_FUNDAMENTALS §3.6.
+- **Status:** **Decision recorded (ADR-033), implementation `NOT STARTED`** —
+  one new table and one new surface is outside every declared phase budget and
+  requires approval (ADR-016).

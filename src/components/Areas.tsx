@@ -29,6 +29,7 @@ import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/ConfirmAction";
 import { Input } from "@/components/ui/input";
 import { formatMinor, isCurrencyCode } from "@/lib/money";
 import { describeDue, parseTaskInput } from "@/lib/nlp";
@@ -52,7 +53,14 @@ export function areaIcon(kind: string) {
 // ---------------------------------------------------------------------------
 
 export function TasksArea({ area, label }: { area: string; label: string }) {
-  const tasks = useQuery(api.life.getAreaTasks, { area }) ?? [];
+  // `undefined` means "not loaded yet", and this component used to throw that
+  // away with `?? []` — so every cold load of every task-backed area flashed a
+  // confident "Nothing in {label}. Add the first one above" before the data
+  // arrived. An empty state that means "still loading" is the UI-layer
+  // equivalent of D60: it reports a fact it has not observed. The rest of this
+  // file already distinguishes the two; this was the one place that did not.
+  const loadedTasks = useQuery(api.life.getAreaTasks, { area });
+  const tasks = loadedTasks ?? [];
   const people = useQuery(api.people.listPeople)?.people;
   const addTask = useMutation(api.assistant.addTask);
   const setCompleted = useMutation(api.assistant.setTaskCompleted);
@@ -87,11 +95,16 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
   return (
     <div className="flex flex-col gap-5">
       {/* An area with no domain model says so, in the place the user looks
-          first. Home and a custom area both land here, and until either has an
-          approved domain model the honest heading is the one that describes what
-          is on screen: tasks. Anything else would be a title promising a
-          workspace the area does not have — the same dishonesty as D50's
-          habit card, in a different costume. */}
+          first. Home lands here, and until it has an approved domain model the
+          honest heading is the one that describes what is on screen: tasks.
+          Anything else would be a title promising a workspace the area does not
+          have — the same dishonesty as D50's habit card, in a different
+          costume.
+
+          This copy used to add "and a custom area". A custom area cannot be
+          created: `areaSlugValidator` is a closed six-value union with no
+          "custom" member and `enableArea` rejects anything outside it (D66).
+          The sentence described a surface the product could not reach. */}
       <div>
         <h1 className="font-display text-lg uppercase">Tasks in {label}</h1>
         <p className="mt-1 max-w-2xl text-[11px] leading-relaxed uppercase text-muted-foreground">
@@ -130,7 +143,7 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
               id={`person-for-${area}`}
               value={personId}
               onChange={(e) => setPersonId(e.target.value as Id<"people">)}
-              className="h-9 flex-1 border-2 border-border bg-background px-2 text-[10px] font-bold uppercase focus-visible:ring-0 focus-visible:outline-none"
+              className="h-9 flex-1 border-2 border-border bg-background px-2 text-[10px] font-bold uppercase focus-visible:ring-0"
             >
               <option value="">Nobody in particular</option>
               {people?.map((p) => (
@@ -150,7 +163,12 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
         )}
       </form>
 
-      {tasks.length === 0 ? (
+      {loadedTasks === undefined ? (
+        <div className="brutal-flat bg-card px-6 py-12 text-center text-xs uppercase text-muted-foreground">
+          <Loader2 className="mx-auto mb-3 size-5 animate-spin" />
+          Reading {label.toLowerCase()}…
+        </div>
+      ) : tasks.length === 0 ? (
         <div className="brutal-flat bg-card px-6 py-12 text-center">
           <Circle className="mx-auto mb-3 size-7 text-muted-foreground" />
           <p className="font-display text-base uppercase">Nothing in {label}</p>
@@ -193,14 +211,22 @@ export function TasksArea({ area, label }: { area: string; label: string }) {
                   </p>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => void removeTask({ id: t._id })}
-                aria-label={`Delete ${t.title}`}
-                className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-primary"
+              <ConfirmAction
+                label={`Delete ${t.title}`}
+                confirmLabel="Delete"
+                onConfirm={() => removeTask({ id: t._id })}
               >
-                <Trash2 className="size-4" />
-              </button>
+                {({ onClick, "aria-label": ariaLabel }) => (
+                  <button
+                    type="button"
+                    onClick={onClick}
+                    aria-label={ariaLabel}
+                    className="brutal-press shrink-0 border-2 border-border p-1.5 hover:bg-primary"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                )}
+              </ConfirmAction>
             </motion.li>
           ))}
         </ul>
@@ -238,7 +264,7 @@ type PersonSummary = {
 ] as const;
 
 const selectClass =
-  "h-11 border-2 border-border bg-background px-3 text-xs font-bold uppercase focus-visible:ring-0 focus-visible:outline-none";
+  "h-11 border-2 border-border bg-background px-3 text-xs font-bold uppercase focus-visible:ring-0";
 
 /**
  * One person, their open work, and the two irreversible-looking buttons that
@@ -402,14 +428,22 @@ function PersonCard({
                           <Check className="size-3.5" />
                         </button>
                         <span className="min-w-0 flex-1 text-sm">{t.title}</span>
-                        <button
-                          type="button"
-                          onClick={() => void removeTask({ id: t.id })}
-                          aria-label={`Delete ${t.title}`}
-                          className="brutal-press shrink-0 border-2 border-border p-1 hover:bg-primary"
+                        <ConfirmAction
+                          label={`Delete ${t.title}`}
+                          confirmLabel="Delete"
+                          onConfirm={() => removeTask({ id: t.id })}
                         >
-                          <Trash2 className="size-3.5" />
-                        </button>
+                          {({ onClick, "aria-label": ariaLabel }) => (
+                            <button
+                              type="button"
+                              onClick={onClick}
+                              aria-label={ariaLabel}
+                              className="brutal-press shrink-0 border-2 border-border p-1 hover:bg-primary"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          )}
+                        </ConfirmAction>
                       </li>
                     ))}
                   </ul>

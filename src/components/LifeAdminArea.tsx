@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import { ConfirmAction } from "@/components/ConfirmAction";
 import { Input } from "@/components/ui/input";
 import { formatDay } from "@/lib/documents";
 import { cn } from "@/lib/utils";
@@ -273,7 +274,7 @@ export function LifeAdminArea() {
               id="doc-person"
               value={personId}
               onChange={(e) => setPersonId(e.target.value as Id<"people"> | "")}
-              className="h-11 w-full border-2 border-border bg-background px-2 text-[11px] font-bold uppercase focus-visible:outline-none"
+              className="h-11 w-full border-2 border-border bg-background px-2 text-[11px] font-bold uppercase focus-visible:ring-0"
             >
               <option value="">Mine</option>
               {people?.map((p) => (
@@ -472,23 +473,33 @@ export function LifeAdminArea() {
                       </Button>
                     )}
                     {showCancel && (
-                      <Button
-                        type="button"
-                        variant="ghost"
+                      <ConfirmAction
+                        label="Cancel renewal"
+                        confirmLabel="Cancel it"
                         disabled={busy}
-                        onClick={() => void handleCancel(doc.id)}
-                        className="h-9 px-2 text-[10px] font-bold uppercase"
+                        onConfirm={() => handleCancel(doc.id)}
+                        className="inline-flex h-9 items-center gap-1.5 px-2 text-[10px] font-bold uppercase"
                       >
-                        <X className="size-3.5" />
-                        Cancel renewal
-                      </Button>
+                        {({ onClick, "aria-label": ariaLabel }) => (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={onClick}
+                            aria-label={ariaLabel}
+                            className="h-9 px-2 text-[10px] font-bold uppercase"
+                          >
+                            <X className="size-3.5" />
+                            Cancel renewal
+                          </Button>
+                        )}
+                      </ConfirmAction>
                     )}
-                    <button
-                      type="button"
-                      aria-label={`Stop tracking ${doc.label}`}
-                      disabled={busy}
-                      onClick={() =>
-                        void run("delete", async () => {
+                    <ConfirmAction
+                      label={`Stop tracking ${doc.label}`}
+                      confirmLabel="Stop tracking"
+                      onConfirm={() =>
+                        run("delete", async () => {
                           const result = await deleteDocument({ id: doc.id });
                           // Report the side effect rather than letting the task
                           // vanish with the link that held it.
@@ -501,10 +512,19 @@ export function LifeAdminArea() {
                           );
                         })
                       }
-                      className="brutal-press border-2 border-border p-1.5 hover:bg-primary"
                     >
-                      <Trash2 className="size-4" />
-                    </button>
+                      {({ onClick, "aria-label": ariaLabel }) => (
+                        <button
+                          type="button"
+                          aria-label={ariaLabel}
+                          disabled={busy}
+                          onClick={onClick}
+                          className="brutal-press border-2 border-border p-1.5 hover:bg-primary"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      )}
+                    </ConfirmAction>
                   </div>
                 </div>
               </motion.li>
