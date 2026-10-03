@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
@@ -33,6 +34,7 @@ import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
 import { planCapture } from "@/lib/capture";
 import { describeDue } from "@/lib/nlp";
+import { READ_LIMITS } from "@/lib/readLimits";
 import { FEATURE_NAMES } from "@/lib/scorer";
 import { cn } from "@/lib/utils";
 
@@ -57,6 +59,14 @@ const PRIORITY = {
 
 /** Below this many labelled outcomes the model is mostly prior, not learned. */
 const LEARNING_THRESHOLD = 12;
+
+/**
+ * Notes are capped server-side too, but the query does not hand back a receipt
+ * the way `getDashboard` does. Until it does, the cap is stated here as a
+ * client-side constant rather than left to be discovered by a user who happens
+ * to write their 51st note. D67.
+ */
+const MAX_DASHBOARD_NOTES = 50;
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
@@ -267,7 +277,9 @@ export default function Dashboard() {
       </header>
 
       <main className="mx-auto max-w-6xl px-5 py-8">
-        {view === "attention" ? (
+        {view === "board" && data === undefined ? (
+          <BoardLoading />
+        ) : view === "attention" ? (
           <AttentionFeed />
         ) : (
         <>
@@ -398,7 +410,8 @@ export default function Dashboard() {
                       {model.samples} labelled {model.samples === 1 ? "outcome" : "outcomes"}
                     </span>
                     . Every task you finish pulls these weights toward the shape of work
-                    you actually complete. Nothing is sent anywhere.
+                    you actually complete. It is trained on your completions and
+                    nowhere else — no third party receives it.
                   </p>
                 </div>
 
@@ -422,7 +435,13 @@ export default function Dashboard() {
         {/* ---------- STATS ---------- */}
         <section className="mb-8">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <StatTile label="Open" value={openCount} sub="still to do" tone="bg-primary" />
+            <StatTile
+              label="Open"
+              value={openCount}
+              sub="still to do"
+              tone="bg-primary"
+              capped={stats?.openTruncated}
+            />
             <StatTile
               label="Done today"
               value={stats?.completedToday ?? 0}
@@ -433,15 +452,30 @@ export default function Dashboard() {
             <StatTile
               label="Overdue"
               value={stats?.overdue ?? 0}
-              sub={(stats?.overdue ?? 0) > 0 ? "catch up" : "all clear"}
+              sub={
+                stats?.openTruncated
+                  ? "catch up — at least this many"
+                  : (stats?.overdue ?? 0) > 0
+                    ? "catch up"
+                    : "all clear"
+              }
               tone="bg-secondary text-secondary-foreground"
               delay={0.1}
+              /* Overdue is derived from the open slice, so the same receipt
+                 covers it: there is no separate read to truncate. */
+              capped={stats?.openTruncated}
             />
             <StatTile
               label="Rate"
               value={stats?.completionRate ?? 0}
               suffix="%"
-              sub={learning ? "model still warming up" : "model trained on your history"}
+              sub={
+                stats?.openTruncated || stats?.completedTruncated
+                  ? "over the rows shown, not everything"
+                  : learning
+                    ? "model still warming up"
+                    : "model trained on your history"
+              }
               tone="bg-card"
               delay={0.15}
               progress={stats?.completionRate ?? 0}
@@ -605,6 +639,13 @@ export default function Dashboard() {
             </div>
 
             {/* task list */}
+            {stats?.openTruncated || stats?.completedTruncated ? (
+              <p className="mb-3 border-2 border-dashed border-border bg-card px-3 py-2 text-[11px] uppercase text-muted-foreground">
+                Showing your most recent {READ_LIMITS.DASHBOARD_TASKS} open and{" "}
+                {READ_LIMITS.DASHBOARD_TASKS} finished. More exist than are
+                shown here, so the ranking below only sees these.
+              </p>
+            ) : null}
             {visibleTasks.length === 0 ? (
               <div className="brutal-flat flex flex-col items-center gap-3 bg-card px-6 py-14 text-center">
                 <Circle className="size-8 text-muted-foreground" />
@@ -766,6 +807,14 @@ export default function Dashboard() {
                 </Button>
               </form>
 
+              {/* `=== MAX` and not `> 0`: a full page of notes is the only case where this
+                  is true, and saying it on every load would be noise. */}
+              {data !== null && data !== undefined && data.notes.length === MAX_DASHBOARD_NOTES ? (
+                <p className="mb-3 border-2 border-dashed border-border px-3 py-2 text-[10px] uppercase text-muted-foreground">
+                  Showing your {MAX_DASHBOARD_NOTES} most recent notes. Older
+                  ones are still stored, just not listed here.
+                </p>
+              ) : null}
               {data?.notes.length ? (
                 <ul className="flex flex-col gap-3">
                   {data.notes.map((note) => (
@@ -831,12 +880,12 @@ export default function Dashboard() {
             <p className="text-[11px] uppercase text-muted-foreground">
               Panel — one page for your day
             </p>
-            <a
-              href="/"
+            <Link
+              to="/"
               className="flex items-center gap-1 text-[11px] font-bold uppercase underline-offset-4 hover:underline"
             >
               Back to home <ArrowUpRight className="size-3" />
-            </a>
+            </Link>
           </div>
         </footer>
         </>
@@ -854,6 +903,7 @@ function StatTile({
   tone,
   delay = 0,
   progress,
+  capped = false,
 }: {
   label: string;
   value: number;
@@ -862,6 +912,12 @@ function StatTile({
   tone: string;
   delay?: number;
   progress?: number;
+  /**
+   * The number is a floor, not a total. Set when the backend truncated the read
+   * it counted over, so the tile can say so rather than presenting a capped
+   * count as if it were the whole picture (D67).
+   */
+  capped?: boolean;
 }) {
   return (
     <motion.div
@@ -872,20 +928,53 @@ function StatTile({
     >
       <p className="text-[11px] font-bold uppercase tracking-wide">{label}</p>
       <p className="font-display mt-2 text-4xl leading-none">
+        {capped && <span aria-hidden className="text-2xl">+</span>}
         {value}
         {suffix && <span className="text-2xl">{suffix}</span>}
       </p>
-      {progress !== undefined ? (
+      {capped && (
+        <p className="mt-1 text-[10px] font-bold uppercase">at least</p>
+      )}
+      {progress !== undefined && (
         <div className="mt-3 h-3 w-full border-2 border-border bg-background">
           <div
             className="h-full bg-foreground transition-all duration-500"
             style={{ width: `${progress}%` }}
           />
         </div>
-      ) : (
-        <p className="mt-2 text-[11px] uppercase">{sub}</p>
       )}
+      {/* The caption used to be replaced by the progress bar, which meant the
+          Rate tile's "model still warming up" was written and never rendered.
+          Copy that is passed in and then discarded is the same defect as a
+          receipt that is computed and thrown away (D67). */}
+      <p className="mt-2 text-[11px] uppercase">{sub}</p>
     </motion.div>
+  );
+}
+
+/**
+ * The board's first paint.
+ *
+ * D70. The Main Panel used to render its whole confident empty state — "Nothing
+ * here", "No notes yet", four zeroed tiles — during the first load, because
+ * `data?.tasks ?? []` is indistinguishable from a genuinely empty board. CHANGE-
+ * 0029 fixed exactly this in `TasksArea`; the panel that *is* the product kept
+ * doing it. A loading state is the whole fix: there is no way to tell the two
+ * apart without one.
+ */
+function BoardLoading() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="brutal-flat flex flex-col items-center gap-3 bg-card px-6 py-20 text-center"
+    >
+      <Loader2 className="size-7 animate-spin text-muted-foreground" aria-hidden />
+      <p className="font-display text-lg uppercase">Loading your board</p>
+      <p className="max-w-xs text-xs uppercase text-muted-foreground">
+        Reading your tasks, notes and week. Nothing here is decided yet.
+      </p>
+    </div>
   );
 }
 

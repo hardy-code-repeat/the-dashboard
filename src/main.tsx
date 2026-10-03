@@ -65,14 +65,28 @@ class RootErrorBoundary extends React.Component<
       return (
         <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-6">
           <div className="max-w-lg text-center">
-            <p className="text-sm font-semibold">Preview runtime error</p>
+            {/* D71. This used to say "Preview runtime error" and show a raw
+                stack trace to the user. Both were wrong: the panel a person
+                lands on after a crash is not a preview, and the trace is for
+                whoever is debugging, behind a disclosure rather than in their
+                face. The boundary still never renders a blank page. */}
+            <p className="text-sm font-semibold">Something went wrong</p>
             <p className="mt-2 text-xs text-muted-foreground break-words">
-              {this.state.message}
+              Panel hit an error and stopped rather than showing you something
+              half-right. Reloading usually clears it.
             </p>
             {this.state.stack && (
-              <pre className="mt-3 text-left text-[10px] leading-4 text-muted-foreground/80 max-h-40 overflow-auto rounded border border-border/60 p-2">
-                {this.state.stack}
-              </pre>
+              <details className="mt-4 text-left">
+                <summary className="cursor-pointer text-[11px] font-bold uppercase text-muted-foreground underline underline-offset-4">
+                  Technical detail
+                </summary>
+                <p className="mt-2 text-[11px] text-muted-foreground break-words">
+                  {this.state.message}
+                </p>
+                <pre className="mt-2 text-left text-[10px] leading-4 text-muted-foreground/80 max-h-40 overflow-auto rounded border border-border/60 p-2">
+                  {this.state.stack}
+                </pre>
+              </details>
             )}
           </div>
         </div>

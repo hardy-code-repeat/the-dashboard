@@ -157,14 +157,6 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
     evidence: "conformance-export.ts, 26 live checks",
   },
   {
-    id: "health-mock",
-    title: "The Health area is a mock and is not counted as capability",
-    detail:
-      "It renders plausible figures that are neither persisted nor derived. D50 records it as standing debt so it is never mistaken for a working feature.",
-    owner: "agent",
-    state: "open-accepted",
-  },
-  {
     id: "D65",
     title: "One conformance harness cannot currently run",
     detail:
@@ -183,6 +175,96 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
     state: "open-accepted",
     evidence:
       "src/lib/schema-vocab.test.ts still guards the closed union, so the dead member cannot be reached, only believed in.",
+  },
+  {
+    id: "D67",
+    title: "The dashboard's truncation receipt was computed and thrown away",
+    detail:
+      "getDashboard has always taken cap+1 rows and reported truncated/openTruncated/completedTruncated so that hitting the cap would be observable. Its own doc comment claimed the client showed a cap note. No component read any of them, so above 200 open tasks the four headline tiles reported counts taken from a slice and said nothing.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "The receipt is now rendered (+ at least on the Open and Overdue tiles, a dashed cap note above the list, a note-cap line). spec-drift gates every receipt a product-called query returns, and conformance-dashboard.ts drives the live board to the exact boundary — mutation-tested: hardcoding openTruncated to false makes it fail. What 200 should be, and whether to page past it, remains D61.",
+  },
+  {
+    id: "D68",
+    title: "The landing page claimed the product runs on-device",
+    detail:
+      "The hero badge read \"Runs on-device. No AI API.\" and the model card read \"Nothing is sent anywhere.\" Parsing, scoring and ranking all run server-side in Convex; the records live on a hosted deployment. The no-LLM half was true and the locality half was not.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "The badge now reads \"Deterministic. No AI API.\", and both surfaces state plainly that the records live on Panel's server and no model provider receives a task.",
+  },
+  {
+    id: "D69",
+    title: "The landing page carried invented customer testimonials",
+    detail:
+      "A \"What people say\" section presented three quotes with names and job titles for a product that has never shipped. The people, the quotes and the roles were fabricated, which is the same failure the spec is written against: a confident surface standing in for a missing one.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "Replaced with \"What isn't built yet\" — three checkable statements, each one a recorded finding (D50 health, the absent Home domain model, integrations awaiting user keys). No testimonial is asserted anywhere in the product.",
+  },
+  {
+    id: "D70",
+    title: "The Main Panel rendered a confident empty state before its data arrived",
+    detail:
+      "getDashboard was read as data?.tasks ?? [], so the first paint of the product's primary surface showed \"Nothing here\", \"No notes yet\" and four zeroed tiles during every cold load. CHANGE-0029 fixed exactly this in TasksArea and missed the panel that is the product.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "The board now renders a status region while the query is undefined. The defect cannot come back silently through a new query because undefined and empty are now different branches at the top of the page.",
+  },
+  {
+    id: "D71",
+    title: "The crash screen told users \"Preview runtime error\" and dumped a stack trace",
+    detail:
+      "The root error boundary — the last thing a person sees when the app breaks — was framed as preview tooling and showed an unframed stack trace. The preview framing is false for anyone using the product, and the trace is for whoever is debugging, not for the user.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "It now says what happened, suggests a reload, and puts the message and stack behind a \"Technical detail\" disclosure. The boundary still never renders a blank page.",
+  },
+  {
+    id: "D72",
+    title: "An in-app link forced a full page reload",
+    detail:
+      "The dashboard footer's \"Back to home\" was an <a href=\"/\"> rather than a router link, throwing away the router, the Convex client, the auth state and the scroll position to re-fetch a page the browser already had. It looks exactly like a link, which is why it survived review.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "Converted to react-router's Link, and spec-drift now fails on any anchor whose href is an in-app path. Eight anchor hrefs remain and none of them is one.",
+  },
+  {
+    id: "D61",
+    title: "What the dashboard cap should be is an open product decision",
+    detail:
+      "The board is capped at 200 open and 200 completed. Whether that is the right number, and whether the board should page past it rather than stop, has never been decided — so D67 could only make the truncation visible, not remove it.",
+    owner: "owner",
+    state: "open-human",
+    evidence:
+      "conformance-dashboard.ts pins the behaviour of the cap as it exists, at its exact boundary, and explicitly does not settle it.",
+  },
+  {
+    id: "D73",
+    title: "Custom Pages persistence shape is undecided and blocks implementation",
+    detail:
+      "ADR-033 decides that a Custom Page is a saved view through a closed block vocabulary, but whether blocks are embedded in the page row or stored one row per block is a schema decision. It changes the read count of the hot path, so it is the owner's to make.",
+    owner: "owner",
+    state: "open-human",
+    evidence:
+      "Recorded as Q-010 with the recommendation (embedded, capped at 12 blocks) and the comparison table in spec/02_CHANGELOG.md. No table, file, dependency or migration exists for it yet.",
+  },
+  {
+    id: "D74",
+    title: "Panel holds no health measurements, and whether it should is undecided",
+    detail:
+      "The Health area is now real recurring obligations (CHANGE-0032 closed D50's mock). The measurement half — weight, blood pressure, sleep scores, medication schedules — is deliberately absent. Those are a different kind of object with no attention budget, and no wearable or health-data service exists in the service catalog to sync them from.",
+    owner: "owner",
+    state: "open-human",
+    evidence:
+      "Recorded as Q-011. The area states its own boundary in the interface, and the Health blurb no longer promises sleep or training tracking.",
   },
   {
     id: "no-telemetry",

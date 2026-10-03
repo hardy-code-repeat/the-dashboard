@@ -58,6 +58,21 @@ const STEPS = [
   { n: "03", t: "Work the top of the list", d: "It learns what you actually finish and keeps that first." },
 ] as const;
 
+const LIMITS = [
+  {
+    t: "Health has no measurements",
+    d: "Health holds check-ups, prescriptions and routines as real recurring tasks. Panel does not track weight, sleep scores, blood pressure or medication schedules yet.",
+  },
+  {
+    t: "Home is a list",
+    d: "Home holds tasks and nothing else. It has no domain model yet — repairs, appliances and the rest are not modelled.",
+  },
+  {
+    t: "Integrations need your keys",
+    d: "Calendar and other tools are wired but idle until you connect them with your own provider credentials. Nothing works unattended.",
+  },
+] as const;
+
 function MarqueeRow({ items }: { items: string[] }) {
   // Duplicated once so the -50% translate loops seamlessly.
   const row = [...items, ...items];
@@ -128,7 +143,7 @@ export default function Landing() {
               className="brutal-flat mb-8 inline-flex items-center gap-2 bg-accent px-3 py-2 text-accent-foreground"
             >
               <span className="size-2 bg-current" />
-              <span className="text-[11px] font-bold uppercase">Runs on-device. No AI API.</span>
+              <span className="text-[11px] font-bold uppercase">Deterministic. No AI API.</span>
             </motion.div>
 
             <motion.h1
@@ -186,6 +201,16 @@ export default function Landing() {
               className="mt-7 text-[11px] uppercase text-muted-foreground"
             >
               Free · No credit card · Nothing you type leaves your account
+            </motion.p>
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.35, delay: 0.3 }}
+              className="mt-2 max-w-lg text-[11px] uppercase text-muted-foreground/80"
+            >
+              Your records live on Panel&rsquo;s server, reachable only by you.
+              Parsing and ranking are ordinary code you could read — no model
+              provider ever sees a task.
             </motion.p>
           </div>
 
@@ -259,7 +284,13 @@ export default function Landing() {
       </section>
 
       {/* ---------- MARQUEE ---------- */}
-      <MarqueeRow items={["No subscriptions", "No teams", "No setup", "Just your list"]} />
+      {/* "No subscriptions" used to sit here, in a product that now has a
+          Subscriptions area of its own — true of the pricing model, badly
+          ambiguous next to a feature of the same name. "Just your list" was
+          true when Panel was one list; it is now seven areas plus money,
+          people, commitments and documents, so it was a smaller product than
+          the one being sold (D75). */}
+      <MarqueeRow items={["No paid tier", "No teams", "No setup", "Your whole day, one page"]} />
 
       {/* ---------- FEATURES ---------- */}
       <section id="features" className="border-b-2 border-border bg-card">
@@ -276,8 +307,8 @@ export default function Landing() {
               </h2>
             </div>
             <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-              No dashboards inside dashboards. Six things, all visible at once,
-              none of them buried behind a menu.
+              No dashboards inside dashboards. Every area is a tab you can see,
+              not a menu you have to find.
             </p>
           </div>
 
@@ -335,44 +366,41 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ---------- SOCIAL PROOF ---------- */}
+      {/* ---------- WHAT ISN'T BUILT YET ----------
+          This section used to be "What people say": three testimonials with
+          names and job titles, for a product that has never shipped. They were
+          invented, which is the exact failure this project's spec is written
+          against — a confident surface standing in for a missing one, the same
+          shape as D50's habit card and D66's empty-state copy.
+
+          Nothing replaces them. The honest version of social proof for a
+          product at this stage is an accurate account of its edges, and it is
+          the only kind that can be checked. Every line below is a finding
+          recorded in the changelog, not a placeholder. */}
       <section className="border-b-2 border-border bg-foreground text-background">
         <div className="mx-auto max-w-6xl px-5 py-16 lg:py-20">
-          <h2 className="font-display mb-10 text-3xl leading-none tracking-tight uppercase sm:text-4xl">
-            What people say
-          </h2>
+          <div className="mb-10 flex flex-wrap items-end justify-between gap-6">
+            <h2 className="font-display text-3xl leading-none tracking-tight uppercase sm:text-4xl">
+              What isn&rsquo;t built yet
+            </h2>
+            <p className="max-w-sm text-sm leading-relaxed opacity-70">
+              Panel is not shipped. Here is the honest edge of it, so nothing
+              here surprises you later.
+            </p>
+          </div>
 
           <div className="grid gap-5 md:grid-cols-3">
-            {[
-              {
-                q: "I had 40 tabs open every morning. Now I open one page and start working. That's the whole review.",
-                n: "Rae M.",
-                r: "Founder, 6-person shop",
-              },
-              {
-                q: "The overdue flag is the part I didn't know I needed. Things that slip actually surface now instead of rotting.",
-                n: "Devin K.",
-                r: "Freelance engineer",
-              },
-              {
-                q: "It does six things and shows me all six at once. I've deleted three other tools since I started using it.",
-                n: "Ana P.",
-                r: "Studio owner",
-              },
-            ].map((quote, i) => (
+            {LIMITS.map((item, i) => (
               <motion.figure
-                key={quote.n}
+                key={item.t}
                 initial={{ opacity: 0, y: 16 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true, margin: "-60px" }}
                 transition={{ duration: 0.3, delay: i * 0.08 }}
-                className="flex flex-col gap-4 border-2 border-background p-5"
+                className="flex flex-col gap-3 border-2 border-background p-5"
               >
-                <p className="text-sm leading-relaxed">“{quote.q}”</p>
-                <figcaption className="mt-auto border-t-2 border-background pt-3">
-                  <p className="text-xs font-bold uppercase">{quote.n}</p>
-                  <p className="text-[11px] uppercase opacity-60">{quote.r}</p>
-                </figcaption>
+                <figcaption className="text-xs font-bold uppercase">{item.t}</figcaption>
+                <p className="text-[13px] leading-relaxed opacity-80">{item.d}</p>
               </motion.figure>
             ))}
           </div>

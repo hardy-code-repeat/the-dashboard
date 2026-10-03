@@ -1336,70 +1336,59 @@ export function PeopleArea() {
 }
 
 // ---------------------------------------------------------------------------
-// Health — habit board
+// Health
 // ---------------------------------------------------------------------------
 
-const HABITS = [
-  { id: "steps", label: "Steps", target: 8000, unit: "steps" },
-  { id: "water", label: "Water", target: 8, unit: "glasses" },
-  { id: "sleep", label: "Sleep", target: 8, unit: "hours" },
-  { id: "movement", label: "Movement", target: 30, unit: "min" },
-];
-
+/**
+ * Health is a **list of recurring obligations**, not a stream of measurements,
+ * and that is a decision rather than a shortage (CHANGE-0032, D74).
+ *
+ * What used to be here was a habit board: four counters for steps, water,
+ * sleep and movement, incremented by buttons and discarded on unmount. It
+ * looked like the most capable area in the product and held nothing — D50, open
+ * since phase 4, and the second-largest confident surface standing in for a
+ * missing one after D66.
+ *
+ * It is gone, and nothing replaced it, because everything a personal health
+ * area in Panel legitimately holds was already real and already reachable:
+ * `tasks` carry `area` and `recurrence`, `enableArea` seeds three starter
+ * routines when Health is switched on, and `life.getAreaTasks` reads them from
+ * a bounded index range. Those three tasks had been sitting in the database
+ * this entire time, unreachable, behind a counter that could not be saved.
+ *
+ * So the area now renders the real list. No new table, no new dependency, no
+ * new attention kind, and no new domain object: a blood test that is due every
+ * six months is a recurring task, and a prescription review is a dated task
+ * with a person attached. The measurement half — weight, blood pressure, sleep
+ * scores, medication schedules — is deliberately **not** built here. It is a
+ * different kind of object with a different lifecycle, it has no attention
+ * budget, and whether Panel should hold health measurements at all is the
+ * owner's decision (Q-011). Adding it here would have been inventing a domain
+ * because a competitor has a table for it.
+ */
 export function HealthArea() {
-  const [values, setValues] = useState<Record<string, number>>({});
-
   return (
     <div className="flex flex-col gap-6">
-      <div className="brutal-flat bg-card p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <HeartPulse className="size-4" />
-          <h2 className="font-display text-sm uppercase tracking-wide">Today</h2>
+      <div className="brutal-flat flex items-start gap-3 border-dashed bg-muted p-4">
+        <HeartPulse className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <div className="text-[11px] uppercase leading-relaxed">
+          <p className="font-bold">What lives here</p>
+          <p className="mt-1 text-muted-foreground">
+            Health is a list of things that come round again — check-ups,
+            prescriptions, the routine you meant to keep. Each one is an
+            ordinary task, so it repeats on schedule and resurfaces when it
+            falls due, exactly like everything else in Panel.
+          </p>
+          <p className="mt-2 text-muted-foreground">
+            It is deliberately <span className="font-bold text-foreground">not</span>{" "}
+            a log of measurements. Panel does not yet track weight, sleep
+            scores, blood pressure or medication schedules, and it will not
+            pretend to until those are actually stored.
+          </p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          {HABITS.map((h) => {
-            const value = values[h.id] ?? 0;
-            const pct = Math.min(100, Math.round((value / h.target) * 100));
-            return (
-              <div key={h.id} className="border-2 border-border bg-background p-3">
-                <div className="mb-2 flex items-baseline justify-between">
-                  <span className="text-[11px] font-bold uppercase">{h.label}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {value}/{h.target} {h.unit}
-                  </span>
-                </div>
-                <div className="mb-3 h-3 w-full border-2 border-border bg-card">
-                  <div
-                    className="h-full bg-accent transition-all duration-300"
-                    style={{ width: `${pct}%` }}
-                  />
-                </div>
-                <div className="flex gap-1.5">
-                  {[-1, +1, +5].map((step) => (
-                    <button
-                      key={step}
-                      type="button"
-                      onClick={() =>
-                        setValues((prev) => ({
-                          ...prev,
-                          [h.id]: Math.max(0, (prev[h.id] ?? 0) + step),
-                        }))
-                      }
-                      aria-label={`${step > 0 ? "Add" : "Remove"} ${Math.abs(step)} ${h.unit}`}
-                      className="brutal-flat flex-1 bg-card py-1.5 text-[11px] font-bold hover:bg-muted"
-                    >
-                      {step > 0 ? `+${step}` : step}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <p className="mt-4 border-t-2 border-border pt-3 text-[10px] uppercase text-muted-foreground">
-          Counters reset each morning. Nothing is synced or stored off this device.
-        </p>
       </div>
+
+      <TasksArea area="health" label="Health" />
     </div>
   );
 }

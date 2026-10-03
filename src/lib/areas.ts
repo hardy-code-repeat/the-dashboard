@@ -83,7 +83,12 @@ export const AREAS: AreaDef[] = [
   {
     slug: "health",
     label: "Health",
-    blurb: "Sleep, training, appointments and checkups.",
+    // Was "Sleep, training, appointments and checkups." — which promised two
+    // measurement surfaces (sleep, training) that Panel does not have and has
+    // now stopped pretending to have (CHANGE-0032, D74). A blurb is shown on
+    // the tab the user is about to open, so it is a capability claim, not a
+    // tagline.
+    blurb: "Check-ups, prescriptions and the routines that keep you going.",
     kind: "health",
     accent: "accent",
     starterTasks: [

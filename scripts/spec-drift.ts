@@ -643,6 +643,195 @@ function publicResultReturningFunctions(code: string): string[] {
 function stripComments(source: string): string {  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, ""); }
 
 /**
+ * D67: a receipt the backend computes must reach the user.
+ *
+ * Convex caps every read (CHANGE-0026), and the house rule has always been
+ * `take(n + 1)` so that hitting the cap is an *observable fact* rather than a
+ * quiet lie about how complete a list is. On the dashboard that rule was
+ * honoured in the query and then thrown away in the client: `getDashboard`
+ * returns `truncated`, `stats.openTruncated` and `stats.completedTruncated`,
+ * its doc comment asserts that "the client shows this as a 'showing your 200
+ * most recent' note", and no component had ever read any of them. Above the
+ * cap the four headline tiles reported counts computed over a slice and said
+ * nothing, which is exactly the failure the extra row exists to prevent.
+ *
+ * Scoping matters, and getting it wrong is how a check like this becomes
+ * noise. The rule is **not** "every `*Truncated` in the codebase must appear
+ * in the UI": `spaces.auditOwnership` returns `activityTruncated`, has no
+ * product caller at all (only the phase-0B harness and the bounded-read
+ * audit), and therefore has no surface to disclose anything on. A gate that
+ * flagged it would be demanding a UI for a query no UI calls.
+ *
+ * The rule is: **a receipt returned by a query the product actually calls must
+ * be read by the product.** The first version of this check got that wrong and
+ * failed on its first honest run, which is the useful outcome — it proved the
+ * check fires, and it sent me to read `spaces.ts` rather than to silence it.
+ */
+function checkTruncationReceipts() {
+  const convexDir = join(ROOT, "src", "convex");
+  if (!existsSync(convexDir)) {
+    record("truncation receipts", "fail", "src/convex/ is missing");
+    return;
+  }
+
+  // Every product TSX file, concatenated: what the user can actually see.
+  let ui = "";
+  const uiFiles: string[] = [];
+  const walkUi = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "ui" || entry.name === "_generated") continue;
+        walkUi(full);
+      } else if (entry.name.endsWith(".tsx")) {
+        uiFiles.push(full);
+        ui += readFileSync(full, "utf8");
+      }
+    }
+  };
+  walkUi(join(ROOT, "src"));
+
+  if (uiFiles.length === 0) {
+    record("truncation receipts", "fail", "no product TSX found — the check would prove nothing");
+    return;
+  }
+
+  // `module:function` pairs the product calls, e.g. `assistant:getDashboard`.
+  const called = new Set<string>();
+  for (const m of ui.matchAll(/\bapi\.([a-zA-Z0-9]+)\.([a-zA-Z0-9]+)/g)) {
+    called.add(`${m[1]}:${m[2]}`);
+  }
+
+  /** Every `export const <fn> = query({...})` body in a Convex module. */
+  const queryBodies = (code: string): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const m of code.matchAll(/export const ([a-zA-Z0-9]+) = query\(\{/g)) {
+      let i = m.index + m[0].length;
+      let depth = 1;
+      while (i < code.length && depth > 0) {
+        if (code[i] === "{") depth++;
+        else if (code[i] === "}") depth--;
+        i++;
+      }
+      out.set(m[1], code.slice(m.index, i));
+    }
+    return out;
+  };
+
+  const productReceipts = new Set<string>();
+  const harnessOnly: string[] = [];
+
+  const walkConvex = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (entry.name === "_generated") continue;
+        walkConvex(join(dir, entry.name));
+      } else if (entry.name.endsWith(".ts")) {
+        const module = entry.name.replace(/\.ts$/, "");
+        const code = stripComments(readFileSync(join(dir, entry.name), "utf8"));
+        for (const [fn, body] of queryBodies(code)) {
+          const flags = [...body.matchAll(/\b([a-z][a-zA-Z0-9]*Truncated)\b/g)].map(
+            (f) => f[1],
+          );
+          if (flags.length === 0) continue;
+          if (!called.has(`${module}:${fn}`)) {
+            harnessOnly.push(`${fn}.${[...new Set(flags)].join("/")} (no product caller)`);
+            continue;
+          }
+          for (const flag of new Set(flags)) productReceipts.add(flag);
+        }
+      }
+    }
+  };
+  walkConvex(convexDir);
+
+  if (productReceipts.size === 0) {
+    record(
+      "truncation receipts",
+      "fail",
+      "no query the product calls returns a *Truncated receipt — the check would prove nothing",
+    );
+    return;
+  }
+
+  const orphans = [...productReceipts].filter((name) => !ui.includes(name)).sort();
+  if (orphans.length > 0) {
+    record(
+      "truncation receipts",
+      "fail",
+      `${orphans.length} of ${productReceipts.size} receipt(s) computed and never shown to the user: ${orphans.join(", ")}`,
+    );
+    return;
+  }
+
+  const shown = [...productReceipts].sort().join(", ");
+  const tail =
+    harnessOnly.length > 0 ? `; ${harnessOnly.length} harness-only, none surfaced by design` : "";
+  record(
+    "truncation receipts",
+    "pass",
+    `${productReceipts.size} receipt(s) from queries the product calls, all surfaced: ${shown}${tail}`,
+  );
+}
+
+/**
+ * D72: in-app navigation must not reload the app.
+ *
+ * One `<a href="/">` sat in the dashboard footer, so "Back to home" threw away
+ * the router, the Convex client, the auth state and every scroll position to
+ * re-fetch a page the browser already had. It looks exactly like a link and
+ * behaves like a page reload, which is why it survived review: the defect is
+ * invisible in a screenshot.
+ *
+ * External, mailto and hash destinations are allowed — only same-origin path
+ * hrefs are the problem, and those are the ones react-router exists for.
+ */
+function checkInternalNavigation() {
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "ui" || entry.name === "_generated") continue;
+        walk(full);
+      } else if (entry.name.endsWith(".tsx")) files.push(full);
+    }
+  };
+  walk(join(ROOT, "src"));
+
+  const problems: string[] = [];
+  let checked = 0;
+  for (const file of files) {
+    const rel = file.slice(ROOT.length + 1);
+    const code = stripComments(readFileSync(file, "utf8"));
+    for (const m of code.matchAll(/<a\b[^>]*?\bhref=\{?["'{]([^"'}\s]+)/g)) {
+      checked++;
+      const href = m[1];
+      if (!href.startsWith("/") || href.startsWith("//")) continue;
+      problems.push(`${rel} → href="${href}"`);
+    }
+  }
+
+  if (checked === 0) {
+    record("internal navigation", "fail", "no anchor hrefs found at all — the check would prove nothing");
+    return;
+  }
+  if (problems.length > 0) {
+    record(
+      "internal navigation",
+      "fail",
+      `${problems.length} in-app link(s) force a full page reload instead of routing: ${problems.join(", ")}`,
+    );
+    return;
+  }
+  record(
+    "internal navigation",
+    "pass",
+    `${checked} anchor href(s), none an in-app path; routing goes through react-router`,
+  );
+}
+
+/**
  * ADR-032: the Admin Control Centre is read-only and independently authorised.
  *
  * Three properties, checked mechanically rather than asserted in a comment,
@@ -1464,6 +1653,8 @@ function main() {
   checkAccessibility();
 
   checkDestructiveActions();
+  checkTruncationReceipts();
+  checkInternalNavigation();
 
   report();
 

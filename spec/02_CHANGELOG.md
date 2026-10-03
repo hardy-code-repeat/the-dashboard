@@ -2041,7 +2041,9 @@ backend found the backend is not the problem.
    Overview, no Finance-scoped attention, no Finance tasks, no Finance
    documents, no Finance commitments. Objects Panel already knows about are
    unreachable *from Finance*.
-5. **Health is a mock** (D50) — recorded, not fixed, by owner decision.
+5. **Health is a mock** (D50) — recorded here, not fixed. **Since resolved by
+   CHANGE-0032**, which found the recurring-obligation half was already real and
+   reachable and removed the mock rather than building on it.
 
 **What changes.** Five workstreams, all on the existing tab system.
 
@@ -2802,6 +2804,368 @@ one-line change with no runtime effect, and it is deliberately **deferred to the
 Custom Pages decision (ADR-033)** — if pages ship as an orthogonal axis rather
 than as a seventh area kind, the member has no home to return to, and deleting
 it in the same change that introduces pages would hide which of the two happened.
+
+---
+
+## CHANGE-0031
+
+**The product reality check: six places where the interface claimed more than
+the backend could back**
+
+Severity: PRODUCT
+Status: **IMPLEMENTED AND VERIFIED.**
+
+**Trigger.** The build chain moved past UX polish into an explicit audit of
+whether the product's own words match what it does. The standing rule for this
+project is that nothing may be presented as working unless it is — a lesson
+already paid for twice, by D50's habit card and by D66's empty-state copy. Both
+of those were one surface each. This pass asked the question of the whole
+product rather than of one file, and found six more.
+
+**Method.** No scan was trusted. Every finding below was reached by reading a
+surface and asking which backend fact would have to be true for the sentence to
+be true, then going and checking whether it was. Each fix is a change to what
+the interface *says or shows*, never a change to what the backend *does* to make
+a claim come true — manufacturing capability to improve a status is the failure
+this audit exists to catch.
+
+### D67 — a receipt computed at the cap boundary and thrown away at the client
+
+`getDashboard` has always taken `cap + 1` rows specifically so that hitting the
+cap is an **observable fact** rather than a quiet lie about how complete the
+board is. It returns `truncated`, `stats.openTruncated` and
+`stats.completedTruncated` to say so. Its own doc comment goes further:
+
+> *"The client shows this as a 'showing your 200 most recent' note."*
+
+**No component had ever read any of them.** Above 200 open tasks the four
+headline tiles reported `open`, `overdue` and a `completionRate` computed over a
+truncated slice, with nothing said about it — precisely the failure the extra
+row exists to prevent, reached by ignoring the extra row. The notes list had the
+same shape with no receipt at all: capped at 50 server-side, disclosed nowhere.
+
+Fixed by rendering what the backend already returns: a `+` and an "at least"
+caption on the Open and Overdue tiles when the count is a floor, a dashed note
+above the list naming the cap, and a line under Notes when the page is full.
+Overdue takes the open receipt because it is derived from the same slice — there
+is no second read to truncate.
+
+**What this does not settle.** Whether 200 should be the cap, and whether the
+board should page past it rather than stop, is **D61** and remains the owner's.
+D67 makes the truncation *visible*; it does not remove it.
+
+### D68 — "Runs on-device", said in the hero, was false
+
+The landing hero badge read **"Runs on-device. No AI API."** The second half is
+the project's real invariant and is true. The first half is not: parsing,
+feature extraction, scoring and ranking all run server-side in Convex, and the
+records live on a hosted deployment. The dashboard's model card compounded it
+with *"Nothing is sent anywhere."*
+
+Replaced with **"Deterministic. No AI API."**, plus a line under the hero that
+says where the records actually are. This is worth separating from a typo: the
+false claim was in the most prominent position on the marketing page, and it
+would have misled exactly the audience most likely to care about the difference
+between a local tool and a hosted one.
+
+### D69 — invented customers, quoted by name, with job titles
+
+The landing page carried a *"What people say"* section: three testimonials with
+first names, surnames and occupations — a founder, a freelance engineer, a
+studio owner. **None of them exist.** The product has never shipped; phase 3 is
+`IMPLEMENTED`, and nothing in the repository has ever had a user. This is the
+same shape as D50 and D66 — a confident surface standing in for a missing one —
+scaled up from one card to a whole section, and it is the most serious thing in
+this entry.
+
+Nothing replaced them. The section is now **"What isn't built yet"**, and each of
+its three lines is a *recorded finding* rather than a placeholder: Health is a
+session-only counter and stores nothing (D50); Home is a task list with no
+domain model; integrations are wired but idle until you connect them with your
+own keys. It is checkable, which is the property the invented quotes lacked.
+
+### D70 — the Main Panel rendered a confident empty board before its data arrived
+
+`getDashboard` was read as `data?.tasks ?? []`, so the first paint of the
+product's primary surface showed *"Nothing here"*, *"No notes yet"* and four
+zeroed tiles on every cold load. **CHANGE-0029 fixed exactly this in
+`TasksArea`** — and missed the panel that *is* the product. The board now
+renders a status region while the query is undefined.
+
+### D71 — the crash screen said "Preview runtime error" and dumped a stack trace
+
+`RootErrorBoundary` is the last thing a person sees when the app breaks. It was
+framed as preview tooling and rendered an unframed stack trace. Both were wrong
+for anyone using the product rather than inspecting a build. It now says what
+happened, suggests a reload, and puts the message and stack behind a
+**"Technical detail"** disclosure. The boundary still never renders a blank page,
+which is what it exists for.
+
+### D72 — a link that reloaded the whole application
+
+The dashboard footer's "Back to home" was `<a href="/">` rather than a router
+link: it discarded the router, the Convex client, the auth state and the scroll
+position to re-fetch a page the browser already had. It looks exactly like a
+link, which is why it survived review — the defect is invisible in a screenshot
+and only shows up as a flash. Converted to react-router's `Link`.
+
+### Verification, and what it does not prove
+
+Three of the six are UI claims with no HTTP surface, so `tsc` plus source
+inspection is the strongest available evidence and is labelled as such: they are
+**IMPLEMENTED and source-verified, not browser-verified**.
+
+D67 was different, because the receipt is a backend fact and could be checked
+over the wire. `scripts/conformance-dashboard.ts` signs in anonymously and
+drives a real board to the exact boundary:
+
+- **R1** the receipt is `false` on a small board — a receipt that is always true
+  would make R2 vacuous;
+- **R2** it flips to `true` **exactly** at cap+1, not before, not after;
+- **R3** the payload is actually bounded, so the receipt is a bound and not an
+  admission;
+- **R4** `stats.open` counts what was returned, so the client knows it is a
+  floor;
+- **R5** the completed side carries an independent receipt.
+
+Live run: **10 checks, 0 failures** against `little-pelican-326`. At 199 open
+tasks the receipt is `false`; at 201 it is `true` with exactly 200 rows on the
+wire.
+
+**The harness failed on its first honest run**, and it was the harness that was
+wrong: it sent 199 newline-separated lines in one capture and 12 came back,
+because `MAX_SEGMENTS` caps a single capture at 12 objects. That cap is
+deliberate and the UI already reports it as overflow. Fixed in the harness.
+
+### Gates added, and one of them was wrong first
+
+- **`checkTruncationReceipts`** — every `*Truncated` receipt returned by a query
+  the *product calls* must be read by the product.
+- **`checkInternalNavigation`** — no anchor `href` may be an in-app path.
+
+The first version of the receipt gate said "every `*Truncated` in the codebase
+must appear in the UI" and **failed on its first run**, flagging
+`spaces.auditOwnership`. Reading it showed the gate was wrong, not the code:
+that query has no product caller at all — only the phase-0B harness and the
+bounded-read audit — so there is no surface to disclose anything on. The gate was
+narrowed to receipts reachable from a product-called query, and the harness-only
+case is now reported rather than hidden.
+
+**It was then mutation-tested, and the mutation defeated it.** Replacing
+`stats?.openTruncated` with `stats?.openTruncated && false` left the identifier
+in the source and the gate stayed green — a check that can pass for the wrong
+reason, which is not evidence. Rather than escalate to a JSX parser, the
+load-bearing half was moved to the live harness, and **the harness was mutated
+server-side**: hardcoding `openTruncated = false` in `assistant.ts` and deploying
+makes **R2 fail**. Reverted, redeployed, re-verified green. The static gate is
+now honestly documented as a completeness net, and the claim that the receipt is
+*real* rests on the mutation test, not on the regex.
+
+### Costs
+
+4 files changed, **1 file added** (`scripts/conformance-dashboard.ts`), 0 tables,
+0 dependencies, 0 abstractions, 0 new permissions, 0 new queries. No backend
+behaviour changed — the only backend edit in the whole entry was the mutation and
+its revert.
+
+### Traceability
+
+D67, D68, D69, D70, D71, D72 are all registered in `src/lib/adminFindings.ts`
+and therefore in the Control Centre's security section. **D61** and **D73** are
+registered as `open-human`, and D73 is Q-010.
+
+---
+
+### D73 — the Custom Pages persistence shape is a decision, and it is not the agent's
+
+CHANGE-0030 and ADR-033 settled *what* a Custom Page is. They did not settle how
+the ordered block array is stored, and that is a schema choice: it changes the
+read count of the hot path, the migration story of every saved page, and whether
+a page can half-exist.
+
+**Left deliberately undecided and put to the owner as Q-010**, with the
+recommendation (embedded, capped at `PAGE_MAX_BLOCKS = 12`) and the comparison
+table. Recorded here so it appears in the security registry and the Control
+Centre rather than existing only as prose in §3.6, where nobody reading the
+console would find it.
+
+Nothing is built against either answer. There is no table, no file, no
+migration and no dependency for Custom Pages, so the decision can still be made
+in either direction at zero cost — which is the whole reason to stop here rather
+than start and retrofit.
+
+---
+
+## CHANGE-0032
+
+**The Health domain: a definition, a correction, and a decision that is not the
+agent's**
+
+Severity: PRODUCT
+Status: **THE MOCK IS REPLACED AND VERIFIED. THE DOMAIN ITSELF IS SPECIFIED
+ONLY, awaiting owner approval (Q-011).**
+
+**Trigger.** The first domain-expansion increment, and the one area the product
+already shows but does not have. Phase 4 explicitly deferred Health and Home
+*"unless their actual domain models are properly defined"*. Health was chosen
+over a new domain because it is a visible tab with a standing debt (D50) and no
+model behind it: a gap the product already advertises is worth more than a gap
+it does not yet admit to.
+
+### Research
+
+**The market says the wrong thing, on purpose.** Every health product researched
+leads with metrics: 50+ Apple Health metrics, steps and heart rate and blood
+pressure, all of it charted. The failure mode in that category is well
+documented — health-app burnout, tracking without acting, numbers accumulating
+that nobody ever reads.
+
+That is exactly the opposite of what Panel is. Panel is an **attention** product:
+eight budgeted, decaying sections (ADR-006), a ranking model, and a hard rule
+that an object earns a place by being *actionable*. A table of measurements has
+no action, no lifecycle, no decay and no cap — it is the single most
+Panel-uncharacteristic object the product could add. MAIN_AGENT also forbids
+adding a table merely because competitors have one.
+
+**The service catalog was searched for wearable/health data** (steps, sleep,
+heart rate; OAuth, read-only, no medical records). **The only result was Convex
+itself**, which Panel already uses. There is no wearable or health-data service
+to sync from, so synced measurements would mean building an OAuth integration per
+provider with credentials nobody has — and a new dependency, which needs
+approval. The honest result is that a synced-measurements Health is not
+reachable from here at all.
+
+### What the code already had (verified, not assumed)
+
+The decisive finding is that **the recurring-obligation half of Health was
+already real, already seeded, and already reachable — and completely hidden.**
+
+- `tasks` carries `area` and `recurrence`; `spawnNextOccurrence` respawns on a
+  real completion transition, verified by the phase-0A harness (CHANGE-0005).
+- `enableArea` seeds **three starter routines** for Health — "book dentist
+  checkup every 6 months", "walk 30 minutes every day", "drink water daily".
+- `life.getAreaTasks` reads them from a bounded `by_owner_area` index range with
+  `requireAreaSlug` on the input.
+
+**Those three tasks have been in the database the whole time, unreachable,
+behind a counter that could not be saved.** A blood test due every six months is
+a recurring task. A prescription review is a dated task with a person attached.
+`documents` was considered and rejected for this role: it has **no `area` field**,
+so a medical check-up filed there would appear beside a passport in Life Admin,
+which is a different question asked of the same row.
+
+### The correction
+
+The habit board — four counters for steps, water, sleep and movement, incremented
+by buttons, discarded on unmount — is **removed**. Nothing replaced it. `HealthArea`
+now states what the area holds and what it does not, and renders the real task
+list through the existing `TasksArea`.
+
+**This closes D50.** Per the registry's own rule a fixed finding is deleted
+rather than marked, so `health-mock` is gone from `adminFindings.ts`; the
+changelog keeps the history and the gate stops absence from becoming
+invisibility.
+
+Two pieces of copy had to change with it, because the change made them false:
+the Health area blurb said *"Sleep, training, appointments and checkups"*, and the
+landing page's limits section said *"Health is a counter"*. Both promised or
+described exactly what was removed. Copy that outlives the thing it describes is
+D66's failure one level up.
+
+### The decision that is the owner's
+
+**Should Panel hold health measurements at all?** (Q-011 / D74)
+
+Weight, blood pressure, sleep scores and medication schedules are **not**
+expressible in any primitive Panel has. They are a new object kind with a new
+lifecycle, and three questions have to be answered before it can be designed:
+
+1. **Does Panel hold health data at all?** A task app that stores blood-pressure
+   readings has taken on a different category of responsibility — retention,
+   deletion, and what happens if the user's account is compromised. This is a
+   product and privacy decision, not a schema one.
+2. **If yes, what attention budget does it consume?** A measurement has no
+   natural deadline. ADR-006 gives every kind a section, a budget, a half-life
+   and a decay rule. Without one, a measurement table becomes exactly the
+   accumulating-nobody-reads failure the research identified.
+3. **Entered or synced?** Entered is buildable now. Synced needs a provider
+   integration per wearable, and the catalog has none.
+
+**Recommendation: entered, deliberately narrow, and only if the owner wants it.**
+Manual entry of a handful of figures a user already cares about is consistent
+with everything else in Panel. Synced metrics is a different product with a
+different dependency posture and should not be reached for to fill a gap.
+
+**Nothing is built against any of the three answers.** There is no measurement
+table, no file, no dependency and no query.
+
+### D74 — Panel holds no health measurements, and whether it should is undecided
+
+Health is now a real list of recurring obligations, so **D50 is closed**: the mock
+is gone and the area shows real, seeded, repeating tasks. What replaces it as the
+open question is the measurement half.
+
+Weight, blood pressure, sleep scores and medication schedules are a different
+object kind from anything Panel stores. A task has a deadline and a completion; a
+measurement has neither. Three questions block it and none of them is the
+agent's: whether Panel should hold health data at all, what attention budget a
+measurement would consume under ADR-006, and whether entry is manual or synced
+when the catalog has no wearable service to sync from.
+
+Recorded as **Q-011** with a recommendation of narrow manual entry if the owner
+wants it at all. No table, file, dependency or query exists against any of the
+three answers.
+
+Also corrected here, because the change made both false: the Health area blurb
+promised *"Sleep, training, appointments and checkups"*, and the landing page said
+*"Health is a counter"*. A blurb is shown on the tab the user is about to open, so
+it is a capability claim rather than a tagline — which makes D66's rule (copy
+describing a surface the product cannot reach) apply one level up.
+
+---
+
+### D75 — landing copy describing a smaller product than the one being sold
+
+Found during the §5 pass and fixed after it, rather than left because the pass
+had already run. **"Just your list"** was true when Panel was one list; by now
+it is seven areas plus money, people, commitments, documents, import and export.
+**"No subscriptions"** was true of the pricing model and badly ambiguous in a
+product with a *Subscriptions* area of its own. **"Six things, all visible at
+once"** counted six features on a card grid while the Main Panel had grown past
+that — it described the marketing layout rather than the product.
+
+All three are the same defect as D66 and D68: copy that has quietly stopped
+describing the thing it sits next to. Corrected to **"No paid tier"**, **"Your
+whole day, one page"**, and **"Every area is a tab you can see, not a menu you
+have to find"** — which is now both accurate and the more specific claim.
+
+"No teams" was checked rather than assumed: there is no invite, member or
+sharing surface anywhere in the UI, so it stays.
+
+Recorded here rather than in a separate entry because it is part of the same
+claim-honesty sweep as CHANGE-0031 and would be misleading filed on its own.
+
+---
+
+### Costs
+
+2 files changed, 0 files added, **0 tables, 0 dependencies, 0 abstractions, 0 new
+attention kinds, 0 new permissions, 0 new queries**. The mock's counters were
+deleted, not migrated — they held nothing.
+
+### Verification
+
+`bunx convex dev --once` ready · `bunx tsc -b --noEmit` clean · `bun test` 634
+pass / 0 fail · `bun run lint` 3 errors / 19 warnings (exact stock baseline) ·
+`bun scripts/spec-drift.ts` 25 pass / 1 warn / 0 fail · `bun
+scripts/audit-bounded-reads.ts` 0 unbounded, 148 bounded · **21 conformance
+harnesses exit 0**.
+
+The Health surface itself has **not been rendered in a browser**, and the claim
+that it now shows three seeded routines is a source-level claim plus the
+unchanged `life.getAreaTasks` path that the phase-4A harness exercises (75
+invariants, including area-scoped capture and area-scoped reads). It is recorded
+as IMPLEMENTED and source-verified, not browser-verified.
 
 ---
 
@@ -4316,6 +4680,61 @@ to the feature layout, not a redesign.
   second model, and the `people.length > 0` gate is removed so a wait with no
   person row is visible. Built in CHANGE-0019.
 - **Interim behaviour:** unchanged until CHANGE-0019 is implemented.
+
+---
+
+### Q-010 — How are a Custom Page's blocks persisted? — **OPEN, owner decision**
+
+- **Asked by:** the Custom Pages architecture work, CHANGE-0030 / ADR-033.
+- **The problem.** ADR-033 decides what a Custom Page *is* — a named, ordered
+  composition of existing typed data through a closed, versioned block
+  vocabulary (`headline | taskList | people | money | commitments | documents |
+  expenses | note`), orthogonal to an area, inventing no fields. It does not
+  decide how the ordered block array is stored, and that is a schema choice.
+- **Why it is not the agent's.** It changes the read count of the hot path and
+  the migration story of every saved page. ADR-007 and ADR-016 both put schema
+  shape on the user's side of the line, and inventing an abstraction purely to
+  avoid asking is explicitly forbidden.
+- **Options.**
+
+  | | Embedded in the page row | One row per block |
+  |---|---|---|
+  | Read a page | **1 query** | 1 + N |
+  | Write a page | rewrites the array | changed rows only |
+  | Cap | `PAGE_MAX_BLOCKS = 12` | not needed for correctness |
+  | Migration | one document | N documents per page |
+
+- **Recommendation: embedded.** Page rendering is the hot path; a capped block
+  count makes write amplification irrelevant; and one document per page means a
+  page cannot half-exist, which is the same atomicity argument ADR-029 used for
+  a subscription and its renewal.
+- **What is blocked on this:** implementation of Custom Pages only. ADR-033, the
+  block vocabulary and §3.6 are settled and do not depend on the answer.
+- **What is NOT blocked on this:** every other part of the build chain.
+
+---
+
+### Q-011 — Should Panel hold health measurements at all? — **OPEN, owner decision**
+
+- **Asked by:** the Health domain expansion, CHANGE-0032 / D74.
+- **The problem.** The recurring-obligation half of Health needed no new
+  domain model at all — it is `tasks` with `area` and `recurrence`, and it is
+  now built. The **measurement** half (weight, blood pressure, sleep scores,
+  medication schedules) is a genuinely new object kind, and three questions
+  block it.
+- **Why it is not the agent's.** Q1 is a privacy and product-boundary decision
+  about what category of personal data Panel accepts responsibility for. Q2 is an
+  attention-economy decision under ADR-006. Q3 is a dependency decision.
+- **What is already settled and does not depend on this.** Health as a list of
+  recurring obligations is built and verified (CHANGE-0032). Home remains deferred
+  on its own model. Custom Pages is blocked on Q-010, not on this.
+- **What this blocks:** nothing currently in the build chain.
+- **Evidence for the recommendation.** The service catalog contains no wearable
+  or health-data service (searched, recorded in CHANGE-0032), so synced metrics
+  is not reachable without new dependencies and per-provider credentials. Market
+  research on this exact category identifies tracking-without-acting as the
+  dominant failure mode, which is the failure a measurement table with no
+  attention budget would reproduce inside Panel.
 
 ---
 
