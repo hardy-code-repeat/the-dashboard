@@ -61,14 +61,6 @@ const PRIORITY = {
 /** Below this many labelled outcomes the model is mostly prior, not learned. */
 const LEARNING_THRESHOLD = 12;
 
-/**
- * Notes are capped server-side too, but the query does not hand back a receipt
- * the way `getDashboard` does. Until it does, the cap is stated here as a
- * client-side constant rather than left to be discovered by a user who happens
- * to write their 51st note. D67.
- */
-const MAX_DASHBOARD_NOTES = 50;
-
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const data = useQuery(api.assistant.getDashboard);
@@ -831,12 +823,24 @@ export default function Dashboard() {
                 </Button>
               </form>
 
-              {/* `=== MAX` and not `> 0`: a full page of notes is the only case where this
-                  is true, and saying it on every load would be noise. */}
-              {data !== null && data !== undefined && data.notes.length === MAX_DASHBOARD_NOTES ? (
+              {/* `data.notesTruncated`, and nothing else.
+
+                  This used to read `data.notes.length === MAX_DASHBOARD_NOTES`,
+                  which was wrong in both directions and wrong for a structural
+                  reason: the server read `take(50)`, so the length could never
+                  exceed 50. That condition therefore meant "the user has exactly
+                  50 notes" — so Panel claimed older notes existed when they did
+                  not, and had no way to report it when they did. The client is
+                  not in a position to know whether the list is complete, and
+                  guessing is what made it lie.
+
+                  The server now reads `take(MAX + 1)` and returns whether the
+                  extra row came back (D67, the same rule the task reads use).
+                  This component's whole job is to show what it is told. */}
+              {data !== null && data !== undefined && data.notesTruncated === true ? (
                 <p className="mb-3 border-2 border-dashed border-border px-3 py-2 text-[10px] uppercase text-muted-foreground">
-                  Showing your {MAX_DASHBOARD_NOTES} most recent notes. Older
-                  ones are still stored, just not listed here.
+                  Showing your 50 most recent notes. Older ones are still
+                  stored, just not listed here.
                 </p>
               ) : null}
               {data?.notes.length ? (

@@ -1317,6 +1317,156 @@ function checkBoardDueDisclosure() {
   );
 }
 
+/**
+ * The dashboard's Notes section must not lie about whether it is truncated.
+ *
+ * ## The defect this pins
+ *
+ * The notes read was the one bounded read in the product that never received the
+ * D67 treatment. It used `take(50)`, so the returned length could never exceed
+ * 50, and the client inferred truncation from `data.notes.length === 50`. That
+ * condition therefore meant **"the user has exactly 50 notes"**: Panel claimed
+ * older notes existed when none did, and had no way to report it when notes
+ * really had been dropped. A receipt that is right by luck in one direction and
+ * structurally blind in the other is worse than none, because it reads as one.
+ *
+ * ## Why `checkTruncationReceipts` is not enough on its own
+ *
+ * It did extend itself here without being asked — `notesTruncated` is now the
+ * third receipt it tracks, and reverting the UI to a length predicate would make
+ * it fail as an orphan. That is real coverage. What it cannot do is catch the
+ * subtler regression: code that **keeps** `notesTruncated` on screen while also
+ * gating the disclosure on a client-side length comparison. The string would
+ * still be present and the receipt gate would stay green over a wrong section.
+ *
+ * ## What is asserted
+ *
+ * - the backend reads `MAX + 1` and slices to `MAX` — the lookahead that makes
+ *   the boundary observable at all;
+ * - the cap is still 50, on the server and on no other surface;
+ * - the UI reads the backend flag;
+ * - the UI contains **no** client-side length predicate over notes.
+ *
+ * Comments are stripped before the last two, because this increment's own
+ * explanatory comment quotes the forbidden expression verbatim — a gate that
+ * matched its own documentation would be a gate that can never pass and a
+ * gate that can be satisfied by writing a comment.
+ */
+function checkNotesTruncation() {
+  const backendFile = join(ROOT, "src", "convex", "assistant.ts");
+  const uiFile = join(ROOT, "src", "pages", "Dashboard.tsx");
+  for (const file of [backendFile, uiFile]) {
+    if (!existsSync(file)) {
+      record("notes truncation", "fail", `${file} is missing`);
+      return;
+    }
+  }
+  const backend = stripComments(readFileSync(backendFile, "utf8"));
+  const ui = stripComments(readFileSync(uiFile, "utf8"));
+
+  // The cap is unchanged. Not a line number — the declaration itself.
+  const capMatch = backend.match(/const MAX_DASHBOARD_NOTES = (\d+);/);
+  if (!capMatch) {
+    record("notes truncation", "fail", "MAX_DASHBOARD_NOTES is not declared in assistant.ts");
+    return;
+  }
+  const cap = Number(capMatch[1]);
+  if (cap !== 50) {
+    record(
+      "notes truncation",
+      "fail",
+      `the notes cap is ${cap}, not 50 — this increment fixes honesty, it does not renegotiate the cap`,
+    );
+    return;
+  }
+
+  // The lookahead. This is the mechanism: without the extra row the boundary is
+  // unobservable and no amount of correct UI code can recover it.
+  if (!new RegExp(`\\.take\\(MAX_DASHBOARD_NOTES \\+ 1\\)`).test(backend)) {
+    record(
+      "notes truncation",
+      "fail",
+      "the notes read is not .take(MAX_DASHBOARD_NOTES + 1) — without the extra row, exactly-at-cap and over-cap are indistinguishable",
+    );
+    return;
+  }
+
+  // The probe must be removed before it reaches the client.
+  if (!/notes\.slice\(0, MAX_DASHBOARD_NOTES\)/.test(backend)) {
+    record(
+      "notes truncation",
+      "fail",
+      "the probed notes row is not sliced off — the UI would receive up to 51 notes",
+    );
+    return;
+  }
+  if (!/notes: visibleNotes/.test(backend)) {
+    record(
+      "notes truncation",
+      "fail",
+      "getDashboard does not return the sliced notes — the probed row would ship to the client",
+    );
+    return;
+  }
+
+  // The flag is computed and returned.
+  if (!/const notesTruncated = notes\.length > MAX_DASHBOARD_NOTES;/.test(backend)) {
+    record(
+      "notes truncation",
+      "fail",
+      "notesTruncated is not computed as a strict greater-than against the cap — >= would report truncation at exactly the cap",
+    );
+    return;
+  }
+  if (!/^\s*notesTruncated,$/m.test(backend)) {
+    record(
+      "notes truncation",
+      "fail",
+      "getDashboard does not return notesTruncated to the client",
+    );
+    return;
+  }
+
+  // The UI reads it.
+  if (!/data\.notesTruncated === true/.test(ui)) {
+    record(
+      "notes truncation",
+      "fail",
+      "Dashboard.tsx does not gate the notes disclosure on data.notesTruncated === true",
+    );
+    return;
+  }
+
+  // And infers nothing of the sort. Any comparison of the notes **length**
+  // against a cap is the defect returning.
+  const lengthPredicate = ui.match(/notes\.length\s*(===|==|>=|>)\s*[\w.]+/g);
+  if (lengthPredicate) {
+    record(
+      "notes truncation",
+      "fail",
+      `Dashboard.tsx infers truncation from the client-side length again: ${lengthPredicate.join(", ")} — the client cannot know whether the list is complete`,
+    );
+    return;
+  }
+
+  // The cap literal does not drift back into the client. It used to live in two
+  // files, and the client's copy is what drove the disclosure.
+  if (/MAX_DASHBOARD_NOTES\s*=\s*\d+/.test(ui)) {
+    record(
+      "notes truncation",
+      "fail",
+      "Dashboard.tsx re-declares MAX_DASHBOARD_NOTES — the cap must live in exactly one place",
+    );
+    return;
+  }
+
+  record(
+    "notes truncation",
+    "pass",
+    `the cap is ${cap}, the read probes ${cap} + 1 and slices to ${cap}, and the UI reads data.notesTruncated with no client-side length predicate`,
+  );
+}
+
 function checkAccessibility() {
   const srcDir = join(ROOT, "src");
   if (!existsSync(srcDir)) {
@@ -1821,6 +1971,7 @@ function main() {
   checkTruncationReceipts();
   checkInternalNavigation();
   checkBoardDueDisclosure();
+  checkNotesTruncation();
 
   report();
 

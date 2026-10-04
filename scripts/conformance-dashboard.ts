@@ -53,6 +53,9 @@
 
 import { ConvexHttpClient } from "convex/browser";
 import { makeFunctionReference } from "convex/server";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { READ_LIMITS } from "../src/lib/readLimits";
 import { MAX_SEGMENTS } from "../src/lib/capture";
@@ -80,7 +83,34 @@ const f = {
       overflow: number;
     }
   >("assistant:capture"),
+  addNote: makeFunctionReference<{ body: string }, null>("assistant:addNote"),
 };
+
+/**
+ * The notes cap, read out of the source rather than typed here.
+ *
+ * A harness that hard-codes the cap it is testing proves nothing about the cap
+ * — it proves the number matches the number. So it is parsed, and the harness
+ * fails if the parse ever comes up empty.
+ */
+function sourceNotesCap(): number | null {
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "src", "convex", "assistant.ts"),
+    "utf8",
+  );
+  const m = src.match(/const MAX_DASHBOARD_NOTES = (\d+);/);
+  return m ? Number(m[1]) : null;
+}
+
+const NOTES_CAP = sourceNotesCap() ?? -1;
+
+/** Writes `count` notes, one call each — `addNote` takes a single body. */
+async function writeNotes(client: ConvexHttpClient, count: number, tag: string): Promise<number> {
+  for (let i = 0; i < count; i += 1) {
+    await client.mutation(f.addNote as never, { body: `notes probe ${tag} ${i}` } as never);
+  }
+  return count;
+}
 
 const CAP = READ_LIMITS.DASHBOARD_TASKS;
 
@@ -232,6 +262,83 @@ async function main() {
     "R5 — the completed receipt is independent of the open one",
     over?.stats.completedTruncated === false,
     `completedTruncated=${String(over?.stats.completedTruncated)} on a board with no completed work`,
+  );
+
+  // -------------------------------------------------------------------------
+  // N1 — the notes receipt.
+  //
+  // This section exists because the notes read was the one bounded read in the
+  // product that never got the D67 treatment: it used `take(50)`, and the client
+  // inferred truncation from `notes.length === 50`. That could not be right in
+  // either direction — the length could never exceed 50, so the condition meant
+  // "exactly 50", reporting truncation when nothing was dropped and staying
+  // silent when notes really had been dropped.
+  //
+  // So the boundary is proved against the deployment with real notes, on a
+  // **fresh** identity per case so each case starts from zero. Reusing one
+  // identity would make "exactly 50" unreachable the moment the first case
+  // wrote anything, which is a harness bug that looks like a product bug.
+  section("N1 — the notes receipt flips exactly at the cap, and never lies");
+  check(
+    "N1.0 the notes cap this harness tests is the product's notes cap",
+    NOTES_CAP > 0,
+    `parsed ${NOTES_CAP} from src/convex/assistant.ts`,
+  );
+
+  type NotesView = {
+    notes: { _id: string }[];
+    notesTruncated?: boolean;
+  } | null;
+
+  /** Fresh identity → write N notes → read the board. Never shared. */
+  const notesCase = async (label: string, count: number) => {
+    const client = await freshClient(url);
+    await writeNotes(client, count, label);
+    const view = (await client.query(f.getDashboard as never, {} as never)) as NotesView;
+    return { view, rows: view?.notes?.length ?? -1, flag: view?.notesTruncated };
+  };
+
+  // 0 and 49 — below the cap.
+  for (const count of [0, 49]) {
+    const c = await notesCase(`under-${count}`, count);
+    check(
+      `N1.1 with ${count} notes the UI is given ${count} and the receipt is FALSE`,
+      c.rows === count && c.flag === false,
+      `rows=${c.rows} notesTruncated=${String(c.flag)}`,
+    );
+  }
+
+  // Exactly the cap — the case the old predicate got backwards.
+  const notesExactly = await notesCase("exactly", NOTES_CAP);
+  check(
+    `N1.2 with EXACTLY ${NOTES_CAP} notes the receipt is FALSE — nothing was dropped`,
+    notesExactly.flag === false,
+    `notesTruncated=${String(notesExactly.flag)} — a ` + "`length === CAP`" + ` predicate would report true here`,
+  );
+  check(
+    `N1.3 with EXACTLY ${NOTES_CAP} notes the UI is still given ${NOTES_CAP}`,
+    notesExactly.rows === NOTES_CAP,
+    `rows=${notesExactly.rows}`,
+  );
+
+  // One over, and far over — the case the old predicate could not detect.
+  const notesOver = await notesCase("over", NOTES_CAP + 1);
+  check(
+    `N1.4 with ${NOTES_CAP + 1} notes the receipt is TRUE`,
+    notesOver.flag === true,
+    `notesTruncated=${String(notesOver.flag)} — a ` + "`take(N)` read cannot see the extra row, so this is only reachable with the +1 probe",
+  );
+  check(
+    `N1.5 with ${NOTES_CAP + 1} notes the UI is still given exactly ${NOTES_CAP}`,
+    notesOver.rows === NOTES_CAP,
+    `rows=${notesOver.rows} — the probed row must be sliced off, not shipped`,
+  );
+
+  const notesFar = await notesCase("far", 100);
+  check(
+    `N1.6 with 100 notes the receipt is TRUE and the UI is still bounded at ${NOTES_CAP}`,
+    notesFar.flag === true && notesFar.rows === NOTES_CAP,
+    `rows=${notesFar.rows} notesTruncated=${String(notesFar.flag)}`,
   );
 
   // -------------------------------------------------------------------------

@@ -3894,6 +3894,122 @@ reason this entry is PATCH and not a UX claim.
 
 ---
 
+## CHANGE-0038
+
+**The Notes section was lying in both directions: it claimed older notes existed when they did not, and stayed silent when they did. Bounded lookahead, the same receipt the task reads already use.**
+
+Severity: PATCH
+Status: **IMPLEMENTED AND VERIFIED (live boundary harness + structural gate,
+three mutations). NOT BROWSER-VERIFIED.**
+
+**Trigger.** Found by the competitor-research pass, which surfaced it while
+checking Panel's own honesty rather than a competitor's feature set. Not a
+feature request: a conformance repair to a rule this product already wrote down.
+
+### Why the defect existed
+
+D67 established the house rule — *"the house rule has always been `take(n + 1)`
+so that hitting the cap is an observable fact rather than a quiet lie"* — and
+the two task reads were converted to it. **The notes read was missed.**
+
+It read `.take(MAX_DASHBOARD_NOTES)`. Because there was no extra row, the
+returned length could never exceed 50, so the client's predicate
+`data.notes.length === MAX_DASHBOARD_NOTES` could only ever mean **"the user has
+exactly 50 notes"**. The consequences were wrong in both directions:
+
+- at **exactly 50** notes Panel said *"Showing your 50 most recent notes. Older
+  ones are still stored, just not listed here"* — when there were no older ones,
+  teaching the user to distrust a true statement;
+- at **51 or more** notes it said nothing at all, while a note they had written
+  became unreachable — `data.notes` is rendered in exactly one place.
+
+It read as a receipt because it looked like one. That is D68's shape one level
+down from where D67 fixed it.
+
+### What changed
+
+**`src/convex/assistant.ts`** — the notes read is now
+`.take(MAX_DASHBOARD_NOTES + 1)`; `notesTruncated` is
+`notes.length > MAX_DASHBOARD_NOTES` (strictly greater, so exactly-at-cap is not
+reported); the returned `notes` is `notes.slice(0, MAX_DASHBOARD_NOTES)` so the
+probed row is never shipped. The cap is **unchanged at 50**.
+
+**`src/pages/Dashboard.tsx`** — the disclosure is gated on
+`data.notesTruncated === true`. The `length === CAP` predicate is gone, and with
+it the duplicated `const MAX_DASHBOARD_NOTES = 50` the client had been carrying —
+a second literal for a number the backend owns, which is how the two could drift
+without anyone noticing.
+
+**`scripts/spec-drift.ts`** — new gate `checkNotesTruncation`.
+**`scripts/conformance-dashboard.ts`** — new live section **N1**, 8 boundaries.
+
+**No** schema, table, query, mutation, dependency, attention signal, agent,
+page/block type, `rankTasks` change or task-ordering change. One read, one extra
+probed row, no `collect()`, no pagination. No ADR: this is conformance, not a
+decision.
+
+### The boundary, proved against the deployment
+
+N1 writes **real notes to a fresh identity per case** — a shared identity would
+make "exactly 50" unreachable the moment the first case wrote anything, which is
+a harness bug that would look like a product bug. The cap is parsed out of
+`src/convex/assistant.ts`, not typed in, so the harness cannot drift from it.
+
+| Stored | `notesTruncated` | Rows given to the UI |
+|---|---|---|
+| 0 | `false` | 0 |
+| 49 | `false` | 49 |
+| **50** | **`false`** | 50 |
+| **51** | **`true`** | 50 |
+| 100 | `true` | 50 |
+
+The 50 row is the one the old predicate got backwards, and the 51 row is the one
+it could not detect. Both are asserted explicitly.
+
+### Three mutations, each caught twice
+
+| Mutation | Live harness | Structural gate |
+|---|---|---|
+| `notesTruncated = false` always | **red** — N1.4, N1.6 | **red** — not a strict `>` |
+| UI reverted to `notes.length === 50` | n/a (client-side) | **red** — flag not read |
+| `.take(MAX + 1)` → `.take(MAX)` | **red** — N1.4, N1.6 | **red** — no lookahead |
+
+The third is the load-bearing one: without the extra row, `notes.length` can
+never exceed the cap, so `notesTruncated` is **structurally always false** — the
+original defect, reproduced exactly and caught.
+
+### Why a second gate, when the receipt gate already covers notes
+
+`checkTruncationReceipts` extended itself here without being asked: `notes` now
+returns a third receipt and it tracks it, so simply reverting the UI to a length
+predicate would fail it as an orphan. That is real coverage and it is recorded.
+
+But a subtler regression defeats it: UI that **keeps** `notesTruncated` on screen
+while *also* gating on a client-side length comparison. That variant was
+mutation-tested — **`checkTruncationReceipts` stayed green** while the section
+was wrong, and only `checkNotesTruncation` failed. That is the whole argument
+for the second gate, and it was found by mutating rather than by reasoning.
+
+The gate strips comments before testing the UI, because this entry and the
+component's own comment quote the forbidden expression verbatim — a gate that
+matched its own documentation could never pass, and one satisfiable by writing a
+comment proves nothing.
+
+### IMPLEMENTED vs VERIFIED
+
+**IMPLEMENTED**: the notes section tells the truth about truncation.
+
+**VERIFIED**: the boundary at 0/49/50/51/100 against the live deployment; the
+lookahead, the slice, the strict comparison, the cap's value and its single home;
+and that all three mutations turn both layers red.
+
+**NOT VERIFIED**: what it looks like. No browser automation exists in this
+environment. The gate proves the component reads the backend flag; it cannot
+prove the receipt is legible, correctly contrasted, or that it does not wrap badly
+at narrow widths.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**

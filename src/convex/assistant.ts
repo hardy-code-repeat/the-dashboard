@@ -274,11 +274,19 @@ export const getDashboard = query({
       // note the user had ever written**, sorted them in memory, and returned the
       // whole set to the browser on every single dashboard load — an unbounded
       // read, an unbounded payload, and an unbounded number of DOM nodes.
+      //
+      // `take(n + 1)` rather than `take(n)`, for the same reason the task reads
+      // above use it and for the same reason they were changed (D67). This read
+      // was simply never given the treatment: without the extra row there is no
+      // way to tell **exactly** 50 notes from 60, so the client had been
+      // inferring truncation from `notes.length === MAX` — which reports
+      // truncation when nothing was dropped and cannot report it when something
+      // was. The extra row is the receipt.
       ctx.db
         .query("notes")
         .withIndex("by_owner_createdAt", (q) => q.eq("ownerUserId", userId))
         .order("desc")
-        .take(MAX_DASHBOARD_NOTES),
+        .take(MAX_DASHBOARD_NOTES + 1),
       loadState(ctx, userId),
       ctx.db
         .query("spaces")
@@ -292,6 +300,12 @@ export const getDashboard = query({
     const openTruncated = openRows.length > MAX_DASHBOARD_TASKS;
     const completedTruncated = completedRows.length > MAX_DASHBOARD_TASKS;
     const tasks = [...openRows.slice(0, MAX_DASHBOARD_TASKS), ...completedRows.slice(0, MAX_DASHBOARD_TASKS)];
+    // The same receipt for notes. Strictly greater-than, so holding *exactly*
+    // the cap is not reported as truncation — nothing was dropped, and telling
+    // the user older notes exist when they do not teaches them to distrust a
+    // true statement.
+    const notesTruncated = notes.length > MAX_DASHBOARD_NOTES;
+    const visibleNotes = notes.slice(0, MAX_DASHBOARD_NOTES);
 
     const now = new Date();
     const behaviour = toBehaviour(state);
@@ -386,8 +400,17 @@ export const getDashboard = query({
     return {
       tasks: ranked.map((r) => ({ ...r.task, score: r.score, reasons: r.reasons })),
       // Already newest-first: the index range and `order("desc")` above did the
-      // sorting the database should have been doing.
-      notes,
+      // sorting the database should have been doing. Sliced to the cap, so the
+      // UI can never receive more than `MAX_DASHBOARD_NOTES` however many the
+      // user has written.
+      notes: visibleNotes,
+      /**
+       * True when notes exist beyond the cap. The client shows this as the
+       * "older notes are still stored, just not listed here" receipt and must
+       * not try to derive it from `notes.length` — that is the exact inference
+       * that made this section lie in both directions.
+       */
+      notesTruncated,
       brief,
       /**
        * True when the board holds more work than the cap allows. The client
