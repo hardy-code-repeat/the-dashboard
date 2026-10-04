@@ -72,10 +72,20 @@ describe("the template catalogue is valid against the real validators", () => {
   });
 
   it("declares every catalogue block against the real vocabulary", () => {
-    // The complement of the scan above, and the part that would catch a new
-    // template *omitting* the check: every kind Panel can render is still
-    // reachable, and the catalogue is the only place blocks are enumerated.
-    assert.ok(PAGE_BLOCK_KINDS.length >= 8);
+    // The "leans on the existing union rather than restating it" claim, checked
+    // against `PAGE_BLOCK_KINDS` itself rather than by grepping this module's
+    // source for a name. A first version asserted `SELF.includes(
+    // "isPageBlockKind")`, which was really only asserting that a dead import
+    // was still there — a check that would have failed if the import were
+    // cleaned up, and proved nothing about the catalogue.
+    const used = new Set(PAGE_TEMPLATES.flatMap((t) => [...t.blocks]));
+    assert.ok(used.size > 0, "no template names a block at all");
+    for (const kind of used) {
+      assert.ok(
+        isPageBlockKind(kind),
+        `"${kind}" is not one of the ${PAGE_BLOCK_KINDS.length} blocks Panel renders`,
+      );
+    }
   });
 
   it("uses only existing areas, so a template is not a seventh area", () => {
@@ -184,9 +194,9 @@ describe("templates add no read and no second persistence", () => {
     // for the vocabulary to live, and the two would drift.
     assert.equal(/v\.union\(/.test(SELF), false, "the catalogue redeclares a validator");
     assert.equal(
-      SELF.includes("PAGE_BLOCK_KINDS") || SELF.includes("isPageBlockKind"),
+      /from "\.\/customPages"/.test(SELF),
       true,
-      "the catalogue should lean on the existing vocabulary, not a copy of it",
+      "the catalogue should lean on the existing validators, not reimplement them",
     );
   });
 });

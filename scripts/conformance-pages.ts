@@ -114,7 +114,9 @@ function productTemplates(): Array<{ id: string; name: string; area: string; blo
   if (start < 0 || end < start) return [];
   const body = SRC.templates.slice(start, end);
   const out: Array<{ id: string; name: string; area: string; blocks: string[] }> = [];
-  for (const entry of body.split(/\n  \{\n/).slice(1)) {
+  // `[ ]{2}` rather than two literal spaces: eslint's `no-regex-spaces` counts
+  // spaces by eye, which is exactly the thing it exists to stop a reader doing.
+  for (const entry of body.split(/\n[ ]{2}\{\n/).slice(1)) {
     const id = /id:\s*"([^"]+)"/.exec(entry)?.[1];
     const name = /name:\s*"([^"]+)"/.exec(entry)?.[1];
     const area = /area:\s*"([^"]+)"/.exec(entry)?.[1];

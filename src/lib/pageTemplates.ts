@@ -43,8 +43,6 @@
  */
 
 import {
-  isPageAreaSlug,
-  isPageBlockKind,
   requirePageArea,
   requirePageBlocks,
   requirePageName,
@@ -161,12 +159,3 @@ export function applyPageTemplate(id: PageTemplateId): {
     blocks: blocks.map((b) => b.kind),
   };
 }
-
-/**
- * Re-exported so a consumer can check a kind without reaching into two modules.
- *
- * Present for the *test* and for the client renderer; the enforcement itself is
- * `requirePageBlocks` above, and neither is a way to widen the vocabulary —
- * `isPageBlockKind` only ever answers "is this already one of ours".
- */
-export { isPageBlockKind, isPageAreaSlug };
