@@ -28,6 +28,7 @@ import { ConfirmAction } from "@/components/ConfirmAction";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AreaPicker, Commitments, HealthArea, IntegrationsArea, MoneyAtAGlance, PeopleArea, TasksArea, areaIcon } from "@/components/Areas";
+import { CustomPages } from "@/components/CustomPages";
 import { FinanceArea } from "@/components/FinanceArea";
 import { DataExportPanel } from "@/components/DataExportPanel";
 import { LifeAdminArea } from "@/components/LifeAdminArea";
@@ -863,7 +864,19 @@ export default function Dashboard() {
             component from data already fetched, so the number here and the
             number in Finance are the same arithmetic and cannot disagree. */}
         {activeArea === "general" ? (
-          <MoneyAtAGlance onOpenFinance={() => setActiveArea("finance")} />
+          <>
+            <MoneyAtAGlance onOpenFinance={() => setActiveArea("finance")} />
+            {/* ---------- CUSTOM PAGES ----------
+                A saved arrangement of what the General view already reads, so
+                it belongs here rather than inside an area: a page composes
+                across domains, which is exactly what the Main Panel is for.
+                Adding it costs one new read — `customPages:listPages` — and no
+                new data read, because every block resolves to a query this
+                page has already mounted (ADR-033). */}
+            <div className="mb-8">
+              <CustomPages />
+            </div>
+          </>
         ) : null}
 
         {/* ---------- COMMITMENTS + WAITING ON ----------

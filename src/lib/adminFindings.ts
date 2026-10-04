@@ -99,9 +99,9 @@ export const OPEN_FINDINGS: readonly RecordedFinding[] = [
     detail:
       "The board is capped at 200 open and 200 completed. Above the cap, 'what should I do next' is answered from the most recent 200 rather than from all of them, and whether the board should page past the cap rather than stop has never been decided. That trade belongs to the user, not to the engineering, and it is why D67 could make the truncation visible but could not remove it.",
     owner: "owner",
-    state: "open-human",
+    state: "verified",
     evidence:
-      "conformance-dashboard.ts pins the behaviour of the cap as it exists, at its exact boundary, and explicitly does not settle it.",
+      "DECIDED 2026-10-04 by the owner: the cap stays at 200, the existing truncation disclosure is the correct behaviour, and no rollup is to be built solely to remove it. conformance-dashboard.ts pins the behaviour of the cap at its exact boundary and continues not to settle it.",
   },
   {
     id: "D62",
@@ -239,14 +239,24 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
       "Converted to react-router's Link, and spec-drift now fails on any anchor whose href is an in-app path. Eight anchor hrefs remain and none of them is one.",
   },
   {
+    id: "D78",
+    title: "Two Custom Pages caps cannot currently be reached",
+    detail:
+      "PAGE_MAX_BLOCKS is 12 but the closed vocabulary holds 8 kinds, and duplicates are refused — so no valid page can hold 12 blocks and the length guard cannot fire. Separately, PAGES caps writes at 50, so the read's cap+1 probe never finds a 51st row and listPages.capped is always false. Both guards are correct and both are currently unreachable. They are kept as defence in depth, and the page-list receipt is asserted FALSE at the cap rather than left untested, because a product that claimed truncation while holding exactly its cap would be the D68 defect again.",
+    owner: "agent",
+    state: "open-accepted",
+    evidence:
+      "Found because conformance-pages.ts asserted capped === true and failed. src/lib/customPages.test.ts asserts the vocabulary/cap relationship so that widening the vocabulary past 12 makes a reviewer meet the cap deliberately instead of silently.",
+  },
+  {
     id: "D73",
     title: "Custom Pages persistence shape is undecided and blocks implementation",
     detail:
       "ADR-033 decides that a Custom Page is a saved view through a closed block vocabulary, but whether blocks are embedded in the page row or stored one row per block is a schema decision. It changes the read count of the hot path, so it is the owner's to make.",
     owner: "owner",
-    state: "open-human",
+    state: "verified",
     evidence:
-      "Recorded as Q-010 with the recommendation (embedded, capped at 12 blocks) and the comparison table in spec/02_CHANGELOG.md. No table, file, dependency or migration exists for it yet.",
+      "DECIDED 2026-10-04 by the owner: blocks are EMBEDDED in the page row, and a separate block table is not to be created unless implementation evidence proves embedded cannot satisfy the architecture. Built and live in CHANGE-0034 as one customPages table with an embedded block array; conformance-pages.ts asserts one read serves a whole page.",
   },
   {
     id: "D74",
@@ -254,9 +264,9 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
     detail:
       "The Health area is now real recurring obligations (CHANGE-0032 closed D50's mock). The measurement half — weight, blood pressure, sleep scores, medication schedules — is deliberately absent. Those are a different kind of object with no attention budget, and no wearable or health-data service exists in the service catalog to sync them from.",
     owner: "owner",
-    state: "open-human",
+    state: "verified",
     evidence:
-      "Recorded as Q-011. The area states its own boundary in the interface, and the Health blurb no longer promises sleep or training tracking.",
+      "DECIDED 2026-10-04 by the owner: Panel does NOT hold health measurements. No wearable, vitals, biometrics or sleep telemetry is to be stored, and the privacy boundary stays narrow. Health remains recurring obligations and routines only, which is what the area already renders.",
   },
   {
     id: "no-telemetry",

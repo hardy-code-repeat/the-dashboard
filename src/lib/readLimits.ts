@@ -179,6 +179,37 @@ export const ACCOUNTS = 20;
 export const IMPORTS = 20;
 
 /**
+ * How many Custom Pages one user may keep (ADR-033, Q-010).
+ *
+ * Bounded on the **write** path as well as the read, because an uncapped
+ * collection here is the one place a Custom Page could grow without limit: the
+ * page stores no data of its own, so nothing else in the product would ever
+ * notice a user accumulating thousands of them. The cap is enforced on
+ * `createPage` and reported by `listPages` as `capped`, so the limit is a
+ * receipt rather than a silent truncation (D67).
+ *
+ * 50 is well above the number of arrangements a person actually composes. A
+ * page is a saved arrangement of existing capability, not a document, so the
+ * useful set is small; the cap is here to bound the read, not to ration a
+ * feature.
+ */
+export const PAGES = 50;
+
+/**
+ * How many blocks one Custom Page may hold (ADR-033).
+ *
+ * This is the number that decided Q-010. Because it is small and fixed, an
+ * embedded array is the cheaper shape: rewriting twelve blocks on every edit
+ * costs nothing measurable, while one-row-per-block would turn rendering a page
+ * into 1 + N reads on the hot path.
+ *
+ * Enforced at the single write path, because Convex cannot express a
+ * length-bounded array in a validator. That is a real gap in the type system
+ * and it is closed here, in one place, rather than trusted to each caller.
+ */
+export const PAGE_MAX_BLOCKS = 12;
+
+/**
  * Cap on the transaction rows behind a **derived balance**.
  *
  * This one carries a warning the other caps do not. See "The two kinds of
@@ -400,6 +431,8 @@ export const READ_LIMITS = {
   SUBSCRIPTIONS,
   ACCOUNTS,
   IMPORTS,
+  PAGES,
+  PAGE_MAX_BLOCKS,
   TRANSACTION_AGGREGATE,
   AUDIT_SCAN_LIMIT,
   OWNERSHIP_AUDIT_ROWS,

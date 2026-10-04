@@ -66,6 +66,8 @@ export const objectKindValidator = v.union(
   v.literal("subscription"),
   v.literal("account"),
   v.literal("agentProposal"),
+  /** A Custom Page: a saved view, which owns nothing and is about nothing else. */
+  v.literal("page"),
 );
 export type ObjectKind = Infer<typeof objectKindValidator>;
 
@@ -236,6 +238,13 @@ export const activityKindValidator = v.union(
   v.literal("subscription.cancelled"),
   v.literal("subscription.deleted"),
   v.literal("account.created"),
+  // Custom Pages (ADR-033). A page is a saved arrangement of things that
+  // already have activity kinds of their own, so these two rows record the
+  // arrangement being made and broken — never a "page viewed" event, because a
+  // view is not a change and an append-only log of views is how a log stops
+  // being readable.
+  v.literal("page.created"),
+  v.literal("page.deleted"),
   v.literal("attention.acted"),
   v.literal("attention.dismissed"),
   v.literal("attention.snoozed"),
@@ -321,6 +330,43 @@ export const areaSlugValidator = v.union(
   // comment in here may contain a quoted phrase.
   v.literal("life"),
 );
+
+/**
+ * The Custom Page block vocabulary (ADR-033).
+ *
+ * **Closed, and closed on purpose.** Each kind names something Panel can already
+ * read and already renders. There is no `custom`-kind escape hatch here, and
+ * adding one would be RJD-001 — a generic object table reached through the front
+ * door — so the union is the whole mechanism by which the feature stays honest.
+ *
+ * Every kind resolves to a query that already existed before this table: the
+ * headline, task list and note blocks read the dashboard's own payload; people,
+ * money, commitments, documents and expenses read their own list queries. So
+ * opening a page issues **no** read the dashboard would not have issued anyway.
+ */
+export const pageBlockKindValidator = v.union(
+  v.literal("headline"),
+  v.literal("taskList"),
+  v.literal("people"),
+  v.literal("money"),
+  v.literal("commitments"),
+  v.literal("documents"),
+  v.literal("expenses"),
+  v.literal("note"),
+);
+
+/**
+ * One block. A kind and nothing else.
+ *
+ * There is deliberately no `props`, `fields`, `filter`, `sort` or `limit` on a
+ * block in this version. Each is a knob that would eventually need its own
+ * validation, its own closed vocabulary and its own bounded-read argument, and
+ * none of them is needed to deliver what ADR-033 decided a Custom Page *is*.
+ * The caps that do exist are the existing query caps in `readLimits.ts`; a
+ * block cannot raise one, which is the property that keeps a page from becoming
+ * a second, uncapped read surface.
+ */
+export const pageBlockValidator = v.object({ kind: pageBlockKindValidator });
 
 /** The provider catalogue in src/lib/areas.ts. */
 export const providerSlugValidator = v.union(
@@ -1648,6 +1694,49 @@ const schema = defineSchema(
       .index("by_owner_createdAt", ["ownerUserId", "createdAt"])
       .index("by_space_status", ["spaceId", "status"])
       .index("by_owner_sha256", ["ownerUserId", "sha256"]),
+
+    /**
+     * A Custom Page: a named, ordered composition of **existing** typed data
+     * (ADR-033). One table, one row per page, blocks embedded in the row — the
+     * persistence shape the owner chose for Q-010.
+     *
+     * **A page owns no data.** Every block is a kind in a closed vocabulary and
+     * renders from a query that already exists, so a page adds no new entity
+     * kind, no user-defined field, no new attention kind and no new read
+     * surface. That is the whole reason the feature is one table rather than a
+     * schema: see ADR-033 and RJD-001 (a generic object table is rejected).
+     *
+     * Blocks are **embedded, not rows** (Q-010). Rendering a page is then one
+     * read rather than 1 + N, which is why this is the hot path it is; the cost
+     * is that an edit rewrites the array, which `PAGE_MAX_BLOCKS = 12` makes
+     * irrelevant. It also means a page cannot half-exist — the same atomicity
+     * argument ADR-029 used for a subscription and its renewal.
+     */
+    customPages: defineTable({
+      ...ownedBy,
+      /** User-chosen label. Not indexed and not searched; it is a heading. */
+      name: v.string(),
+      /**
+       * The area this page sits in. This is the **existing** closed union —
+       * `areaSlugValidator` is deliberately not widened, and a custom page is
+       * therefore not a seventh area and not a new tab kind (D66 stays).
+       */
+      area: areaSlugValidator,
+      /**
+       * The ordered composition. Closed vocabulary, no free-form payload: a
+       * block cannot carry user-defined attributes, because that is ADR-007 /
+       * RJD-001 (EAV) wearing a different hat. The array length is bounded at
+       * the single write path in `customPages.ts`, because Convex cannot
+       * express a length-bounded array.
+       */
+      blocks: v.array(pageBlockValidator),
+      createdAt: v.number(),
+    })
+      .index("by_space", ["spaceId"])
+      .index("by_owner", ["ownerUserId"])
+      // So `listPages` can ask for *the most recent* pages with a range and a
+      // cap rather than reading every page the user has ever saved.
+      .index("by_owner_createdAt", ["ownerUserId", "createdAt"]),
 
     agentRuns: defineTable({
       /** Which space the run was for. The tenant boundary (ADR-009). */

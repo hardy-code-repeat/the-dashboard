@@ -3285,6 +3285,196 @@ arrays and by the gate, not a visual confirmation. It is recorded as such.
 
 ---
 
+## CHANGE-0034
+
+**Four owner decisions closed, and Custom Pages built on the one that unblocked it — with one table, no new read, and no second page system**
+
+Severity: MAJOR
+Status: **IMPLEMENTED AND VERIFIED. Q-010, Q-011/D74 AND D61 RESOLVED BY THE
+OWNER. D64 REMAINS THE OWNER'S OPERATIONAL STEP AND IS STILL UNVERIFIED.**
+
+**Trigger.** The owner resolved all four open decisions at once: Q-010 (embedded
+blocks), Q-011/D74 (no health measurements), D61 (cap stays at 200) and D64
+(admin role provisioned out of band). Three were closable in the repository. D64
+is not — it needs an operation only the owner can perform.
+
+### D78 — two Custom Pages caps cannot currently be reached
+
+Found by this increment's own harness, and recorded rather than quietly fixed,
+because it is a property of the design rather than a bug in it.
+
+- **`PAGE_MAX_BLOCKS = 12` cannot be reached.** The closed vocabulary holds 8
+  kinds and duplicates are refused, so no valid page can hold 12 blocks and the
+  length guard never fires.
+- **`listPages.capped` is always false.** `PAGES` caps *writes* at 50, so a user
+  can never hold a 51st page, so the read's `cap + 1` probe never finds the
+  extra row.
+
+The first version of `conformance-pages.ts` asserted `capped === true` at the
+cap, on the reasonable-looking reasoning that a full list should say it is
+full. **It failed.** The assertion was wrong, not the code: it asserted a state
+the product cannot reach, which is the D60 shape — a green check for behaviour
+nobody can observe.It now asserts the stronger claim in the other direction:
+at exactly the cap, Panel must **not** claim truncation, because nothing has been
+truncated. Both guards are kept as defence in depth, and
+`customPages.test.ts` asserts the vocabulary/cap relationship so that widening
+the vocabulary past 12 makes a reviewer meet the cap deliberately.
+
+**The same shape was then found in the harness itself, one level up.** Its first
+draft declared a `notes` array and printed a `NOT VERIFIED` block copied from
+`conformance-admin.ts` — but **never pushed to it**, so the block was
+structurally incapable of firing. A disclosure that looks like a disclosure and
+can never say anything is worse than no disclosure, because a reader sees the
+apparatus and concludes the gap was handled. It now emits two real gaps (the
+interface has not been rendered in a browser; deletion is exercised as a
+mutation rather than through `ConfirmAction`), so the block reports because it
+has something to report.
+
+**Q-010 — RESOLVED: blocks are embedded in the page row.**
+
+The owner chose **embedded**, with an explicit instruction not to create a
+separate block table unless implementation evidence proves embedded cannot
+satisfy the architecture. The evidence says embedded works: `conformance-pages.ts`
+P2 drives a three-block page and reads it back in **one** query, and P3 proves
+the ownership boundary holds.
+
+`PAGE_MAX_BLOCKS = 12` and the atomicity argument stand as recorded in Q-010's
+own comparison table: an embedded array means a page cannot half-exist, which
+is the reasoning ADR-029 used for a subscription and its renewal.
+
+**Q-011 / D74 — RESOLVED: Panel does not hold health measurements.**
+
+The owner closed the privacy boundary narrowly: **no** wearable measurements,
+vitals, biometrics or sleep telemetry. Health stays recurring obligations and
+routines, which is what `HealthArea` already renders after CHANGE-0032 — three
+seeded routines read from the ordinary `tasks` table with `area` and
+`recurrence`. **Nothing was added to close this**, because there was nothing
+built to remove. No table, field, dependency or query exists for measurement
+data, and the Health blurb already stopped promising sleep or training
+(CHANGE-0032). The catalogue search recorded in CHANGE-0032 stands: no wearable
+or health-data service exists to sync from anyway.
+
+### D61 — RESOLVED: the dashboard cap stays at 200
+
+The owner kept the cap, confirmed the existing truncation disclosure is the
+correct behaviour, and directed that **no rollup is to be built solely to remove
+this cap**. So the D62 balance-rollup architecture stays a separate open
+decision and nothing was built for it. `conformance-dashboard.ts` continues to
+pin the cap's behaviour at its exact boundary without settling the product
+question, which is now settled anyway.
+
+### D64 — NOT RESOLVED HERE, and deliberately so
+
+The owner will set `users.role = "admin"` out of band through Convex's own data
+tooling, and **no `grantAdmin` mutation was created** — a client-reachable grant
+is the privilege-escalation path ADR-032 exists to refuse, and the instruction
+was explicit.
+
+The authorised verification therefore cannot run from here yet:
+`conformance-admin.ts` reads `PANEL_ADMIN_TOKEN` from its environment, and it is
+unset. Re-run it once the role is provisioned and the token supplied:
+
+```
+PANEL_ADMIN_TOKEN=<token> bun scripts/conformance-admin.ts https://little-pelican-326.convex.cloud
+```
+
+K1 flips from `NOT VERIFIED` to a counted pass only if all five queries answer
+for an authorised admin. Until then the Control Centre's allowed path remains a
+reported gap, and `adminFindings.ts` keeps D64 as `open-human`.
+
+**Then the same increment was extended, because what shipped could not be
+corrected.** Create and delete with no edit is a feature that is right exactly
+once: pick the wrong blocks and the only recovery was to delete the page and
+rebuild it. `updatePage` closes that, as a `patch` that keeps the page's
+identity and `createdAt` — so its position in the list does not change, which is
+what "editing" has to mean for a saved *arrangement*. It reuses the three
+validators that already existed, so it adds no rule.
+
+Its order is editable in the interface, with Up/Down rather than drag-and-drop:
+drag needs a pointer path, a keyboard equivalent and a focus story, and for a
+list of at most twelve closed-vocabulary items two buttons are cheaper and more
+accessible than any of that. Edits are held locally and applied on Save, because
+a mutation per toggle would make one reordering pass write twelve rows — the
+exact write amplification the embedded shape exists to avoid.
+
+### A claim this increment had to withdraw: `updatePage` is not atomic because of this code
+
+The first version of `updatePage` validated each argument as it went and carried
+a comment saying a partly-invalid update could half-apply, leaving a page in a
+state the user never asked for.
+
+**That was wrong, and running the mutation proved it.** A planted change —
+patching the name before validating the area — did **not** make `P8.7` fail: a
+Convex mutation is transactional, so the throw rolls back the patch along with
+everything else. The guarantee came from the platform, not from the ordering.
+
+So the comment now says what is actually true (validate first, because the
+error then names the offending value before any work is done), and `P8.7` is
+recorded as asserting a **user-visible property the platform provides** rather
+than a property this function earned. A check that cannot fail under any
+in-product mutation is still worth keeping — it pins the behaviour — but it must
+be labelled for what it is, or it reads as evidence for a design decision
+nobody made. This is the second time in this increment that the honest answer
+turned out to be smaller than the flattering one (the other being `capped`, in
+D78).
+
+### What Custom Pages is, and the one property that matters
+
+A Custom Page is a **saved view**: a name, an area, and an ordered array of
+block kinds drawn from a closed eight-value union (`headline`, `taskList`,
+`people`, `money`, `commitments`, `documents`, `expenses`, `note`).
+
+**It adds no read.** Every block resolves to a query Panel already ran —
+`headline`, `taskList` and `note` read the dashboard payload; the rest read
+their own list queries — and Convex deduplicates identical subscriptions on a
+client. So opening a page issues no read the Main Panel would not have issued
+anyway. The most load-bearing line in `customPages.ts` is the **absence** of a
+`getPageData` query, and the practical consequence is that adding a block that
+needs new data cannot be a one-line change: it has to become a new query and a
+new table, which is a budget conversation rather than a quiet edit.
+
+**It adds no attention kind.** `conformance-pages.ts` P5 asserts against the
+live feed that no attention item names a page, so ADR-006's guarantee holds on a
+surface the user fully controls.
+
+**It is not a second page system.** A page carries the **existing**
+`areaSlugValidator` — never widened — so it is not a seventh area, and D66's
+unreachable `"custom"` kind stays unreachable. Blocks are a kind and nothing
+else: no `props`, no `filter`, no per-block `limit`. That omission is the point.
+A block that could carry a payload is RJD-001 — the generic object table ADR-007
+rejected — arriving through the front door.
+
+### Costs
+
+**5 files changed, 2 added. 1 table (`customPages`), 0 dependencies, 1
+abstraction (the closed block vocabulary). 4 mutations/queries on the table
+(`createPage`, `updatePage`, `deletePage`, `listPages`).** Against ADR-016 this is **outside
+every declared phase budget**, which ADR-033 already declared when it recorded
+the feature as `NOT STARTED pending approval`; the owner has now approved
+implementation, so the overrun is authorised rather than accidental. Standing
+debt against ADR-016, alongside CHANGE-0027, CHANGE-0031 and CHANGE-0032.
+
+### Verification
+
+`bunx convex dev --once` ready · `bunx tsc -b --noEmit` clean · `bun test`
+**649 pass / 0 fail** (15 new Custom Pages fixtures) · `bun run lint` back to
+the 3 errors / 19 warnings stock baseline (the harness's first draft shipped one
+new unused-function error; it was **deleted**, not suppressed) ·
+`bun scripts/spec-drift.ts` 25 pass / 1 warn / 0 fail, which **failed first** on
+`table(s) in schema.ts absent from the specs: customPages` and was fixed by
+documenting the table rather than by relaxing the check ·
+`bun scripts/audit-bounded-reads.ts` 0 unbounded, 150 bounded ·
+**`scripts/conformance-pages.ts` 33 boundaries, all held**, exit 0 — including
+the 12 `updatePage` checks and the atomicity check described above, which was
+**mutation-tested and did not fail**, which is why its claim was withdrawn rather
+than kept.
+
+The Custom Pages UI has **not been rendered in a browser**, so the claim that a
+page reads as a saved arrangement is a source-level claim plus the live harness,
+not a visual confirmation.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
@@ -4799,7 +4989,7 @@ to the feature layout, not a redesign.
 
 ---
 
-### Q-010 — How are a Custom Page's blocks persisted? — **OPEN, owner decision**
+### Q-010 — How are a Custom Page's blocks persisted? — **RESOLVED 2026-10-04: EMBEDDED**
 
 - **Asked by:** the Custom Pages architecture work, CHANGE-0030 / ADR-033.
 - **The problem.** ADR-033 decides what a Custom Page *is* — a named, ordered
@@ -4830,7 +5020,7 @@ to the feature layout, not a redesign.
 
 ---
 
-### Q-011 — Should Panel hold health measurements at all? — **OPEN, owner decision**
+### Q-011 — Should Panel hold health measurements at all? — **RESOLVED 2026-10-04: NO**
 
 - **Asked by:** the Health domain expansion, CHANGE-0032 / D74.
 - **The problem.** The recurring-obligation half of Health needed no new
