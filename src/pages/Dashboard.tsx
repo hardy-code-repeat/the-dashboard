@@ -698,6 +698,29 @@ export default function Dashboard() {
                         {task.title}
                       </p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        {/* WHEN, not just WHETHER.
+                            The Main Panel is the surface the product is named
+                            for, and it was the only place in the product where
+                            a saved task's due date was not shown. `TasksArea`
+                            has rendered `describeDue(t.dueAt)` since it
+                            existed (`src/components/Areas.tsx`), so the same
+                            task said "TOMORROW 9:00" in the Finance tab and
+                            nothing at all here — which is how a task due in
+                            twenty minutes came to look exactly like one due in
+                            March.
+
+                            Guarded exactly as Areas.tsx guards it: a due date
+                            on a completed task is history, not information.
+                            Placed first because `describeDue` already encodes
+                            urgency ("2D LATE", "TODAY", "TOMORROW"), so WHEN is
+                            the headline fact and priority is context. The
+                            muted tone keeps it quieter than the Overdue badge,
+                            which stays the louder signal it already was. */}
+                        {task.dueAt && !task.completed && (
+                          <span className="text-[10px] uppercase text-muted-foreground">
+                            {describeDue(task.dueAt)}
+                          </span>
+                        )}
                         {!task.completed && (
                           <span
                             className={cn(

@@ -1167,6 +1167,156 @@ function checkAdminIndexAllowlist() {
  * asking people to remember — is the failure mode the whole project keeps
  * measuring against.
  */
+/**
+ * The Main Panel board must tell the user WHEN an open task is due.
+ *
+ * ## Why this is a source gate at all
+ *
+ * The rendering itself is not observable here: there is no DOM harness and no
+ * browser, so "the board row shows the due date" cannot be asserted by running
+ * anything. That is a real limit and it is recorded as one in the changelog.
+ * What *can* be pinned is the structural property that produces it, and this
+ * is the repository's established idiom for exactly that problem —
+ * `checkDestructiveActions`, `checkAccessibility` and `checkTruncationReceipts`
+ * all assert properties of component source for the same reason.
+ *
+ * ## What it deliberately does NOT do
+ *
+ * It does not grep for the string `describeDue`. **That check would already be
+ * green before this increment existed**, because the capture preview calls
+ * `describeDue(segment.parsed.dueAt)` — so a bare string search is a false
+ * confidence that certifies the wrong thing: that the word is somewhere in the
+ * file, rather than that the board row renders it. That trap is the reason this
+ * gate exists in its structural form, and the mutation test below proves the
+ * difference: deleting the board row's disclosure fails this gate while leaving
+ * the string in the file.
+ *
+ * ## The structural claim
+ *
+ * Inside the board's `visibleTasks.map(` region, a call to `describeDue` must
+ * exist that is (a) passed the task's own `dueAt`, and (b) enclosed by the
+ * `task.dueAt && !task.completed` conditional — so it is rendered *for open
+ * tasks that have a due date* and for nothing else. The Overdue badge must
+ * still be there too, because this increment sits next to it and a silent
+ * removal of it would be the same regression in the other direction.
+ */
+function checkBoardDueDisclosure() {
+  const file = join(ROOT, "src", "pages", "Dashboard.tsx");
+  if (!existsSync(file)) {
+    record("board due disclosure", "fail", "src/pages/Dashboard.tsx is missing");
+    return;
+  }
+  const code = readFileSync(file, "utf8");
+
+  // The board task list, located structurally. Not a line number: the row moves
+  // whenever anything above it does, and a gate that breaks on a refactor gets
+  // deleted instead of obeyed.
+  const regionStart = code.indexOf("visibleTasks.map(");
+  if (regionStart < 0) {
+    record(
+      "board due disclosure",
+      "fail",
+      "no visibleTasks.map( in Dashboard.tsx — the board task list was renamed or removed",
+    );
+    return;
+  }
+  const board = code.slice(regionStart);
+
+  const call = "describeDue(task.dueAt)";
+  const callIdx = board.indexOf(call);
+  if (callIdx < 0) {
+    // Distinguish "never had it" from "has it somewhere that is not the board
+    // row", because those are different regressions and the detail is what tells
+    // a reader which one this is.
+    const elsewhere = board.includes("describeDue(")
+      ? "describeDue( exists in Dashboard.tsx but not inside the board task row — the capture preview is not the board row"
+      : "the board task row renders no due description at all";
+    record(
+      "board due disclosure",
+      "fail",
+      `${elsewhere}; the Main Panel must say WHEN an open task is due, not only WHETHER it is overdue`,
+    );
+    return;
+  }
+
+  // (b) Enclosed by the guard. Find the guard before the call, then paren-match
+  // forward from the conditional's `&& (` to prove the call sits inside it
+  // rather than merely nearby.
+  const guardIdx = board.lastIndexOf("task.dueAt && !task.completed", callIdx);
+  if (guardIdx < 0 || guardIdx > callIdx) {
+    record(
+      "board due disclosure",
+      "fail",
+      `${call} is not guarded by "task.dueAt && !task.completed" — a completed task must not be given the open-task due treatment`,
+    );
+    return;
+  }
+  const openIdx = board.indexOf("&& (", guardIdx);
+  if (openIdx < 0 || openIdx > callIdx) {
+    record(
+      "board due disclosure",
+      "fail",
+      `could not find the conditional body that should contain ${call}`,
+    );
+    return;
+  }
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openIdx + 3; i < board.length; i += 1) {
+    if (board[i] === "(") depth += 1;
+    else if (board[i] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  if (closeIdx < 0 || callIdx > closeIdx) {
+    record(
+      "board due disclosure",
+      "fail",
+      `${call} is not inside the "task.dueAt && !task.completed" conditional body`,
+    );
+    return;
+  }
+
+  // The neighbouring signal this increment must not have displaced.
+  //
+  // This was wrong twice before it was right, and both mistakes are worth
+  // recording because they are the same mistake.
+  //
+  // First attempt: assert `/task\.isOverdue\s*&&/` appears in the board region.
+  // That passes for the **wrong reason** — the row also computes a conditional
+  // className with `task.isOverdue && "bg-secondary …"` (Dashboard.tsx:672),
+  // which is a different statement entirely. Deleting the Overdue badge left
+  // that line untouched, so the gate stayed green over a deleted badge. A gate
+  // that survives the thing it exists to catch is decoration.
+  //
+  // Second attempt: assert the word `Overdue` appears somewhere. Also wrong,
+  // because this increment's own explanatory comment contains the phrase "the
+  // Overdue badge" — so the fix for one false positive would have introduced
+  // another.
+  //
+  // What is actually claimed is that `Overdue` is the **text content of a
+  // rendered element** inside the board list: `>Overdue<`. That cannot be
+  // satisfied by a comment, by a className expression, or by an identifier.
+  if (!/>\s*Overdue\s*</.test(board)) {
+    record(
+      "board due disclosure",
+      "fail",
+      "the Overdue badge is no longer rendered in the board task list — this increment adds a due date, it does not replace the overdue flag",
+    );
+    return;
+  }
+
+  record(
+    "board due disclosure",
+    "pass",
+    "the board task row renders describeDue(task.dueAt) inside the open-task guard, and the Overdue badge is intact",
+  );
+}
+
 function checkAccessibility() {
   const srcDir = join(ROOT, "src");
   if (!existsSync(srcDir)) {
@@ -1670,6 +1820,7 @@ function main() {
   checkDestructiveActions();
   checkTruncationReceipts();
   checkInternalNavigation();
+  checkBoardDueDisclosure();
 
   report();
 

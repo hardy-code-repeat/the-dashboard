@@ -3718,7 +3718,7 @@ still presses Save.
 
 Planting one block kind Panel cannot render (`"horoscope"`) in the `morning`
 template turns **four** unit checks red and, live, turns **P10.2.1** red naming
-the offending kind: `"horoscope" is not a block Panel cannot show`.
+the offending kind: `"horoscope" is not a block Panel can show`.
 
 The other direction was also taken: with the write cap removed, D78's
 truncation receipt was shown to fire correctly rather than being dead code. Both
@@ -3755,6 +3755,142 @@ governance for its own sake.
 — P10 proves each template's blocks are accepted by the live deployment and
 round-trip in order, which is not the same claim as "pressing the button fills
 the form correctly". The harness says so in its own `NOT VERIFIED` output.
+
+---
+
+## CHANGE-0037
+
+**The Main Panel now says WHEN a task is due, not only whether it is overdue — a consistency repair, and the gate that proves it had to be wrong twice first**
+
+Severity: PATCH
+Status: **IMPLEMENTED AND VERIFIED (structural source gate, mutation-tested three
+ways). NOT BROWSER-VERIFIED.**
+
+**Trigger.** Opportunity #1 of the post-Custom-Pages research pass, approved by
+the owner. The finding was read out of the repository, not assumed.
+
+### Why the mismatch existed
+
+`getDashboard` has always returned `dueAt` on every task
+(`src/convex/assistant.ts:303`, inside the query that starts at `:245`, with
+`isOverdue` computed alongside at `:305`), and `describeDue()` has existed in
+`src/lib/nlp.ts` with **7** passing tests (`nlp.test.ts:317–344`).
+`TasksArea` has rendered `describeDue(t.dueAt)` since it existed
+(`src/components/Areas.tsx:208–212`).
+
+The Main Panel board did not. Before this change `Dashboard.tsx` contained
+exactly **one** `dueAt` reference — line 1018, inside the *pre-capture preview* —
+and nothing in the saved task row. So the same task read "TOMORROW 9:00" in the
+Finance tab and nothing at all on the surface the product is named for. A task
+due in twenty minutes was indistinguishable from one due in March unless it was
+already overdue.
+
+The cause was not a missing capability. Every piece was present and tested; the
+board was simply the one surface that never called it. That is what makes this a
+**consistency repair** rather than a feature: there was no new concept, no new
+data, and no decision to make about it.
+
+### What changed
+
+**`src/pages/Dashboard.tsx`** — the board task row's metadata now renders
+`describeDue(task.dueAt)`, guarded exactly as `Areas.tsx` guards it
+(`task.dueAt && !task.completed`) and carrying the same
+`text-[10px] uppercase text-muted-foreground` treatment, adapted from that
+file's stacked paragraph to this row's flex badge line. It sits first in the row
+because `describeDue` already encodes urgency — "2D LATE", "TODAY",
+"TOMORROW" — so WHEN is the headline fact and priority is context. The muted tone
+keeps it quieter than the Overdue badge, which is unchanged and remains the
+louder signal it already was.
+
+**`scripts/spec-drift.ts`** — new gate `checkBoardDueDisclosure`, registered
+with the other 25.
+
+**No** schema, table, query, mutation, read, cap, dependency, attention kind or
+persistence change. Nothing under `src/convex/` was touched — verified by
+timestamp, not by assertion. No ADR, because this introduces no architectural
+decision.
+
+### The gate, and why it is not the obvious one
+
+The rendering cannot be observed here — no DOM harness, no browser — so the gate
+asserts the **structural property that produces it**, which is this repository's
+established idiom for that exact limit (`checkDestructiveActions`,
+`checkAccessibility` and `checkTruncationReceipts` all do this).
+
+The obvious gate — grep `Dashboard.tsx` for `describeDue` — is a false
+confidence that would have been **green before this increment existed**, because
+the capture preview already calls `describeDue(segment.parsed.dueAt)`. It would
+have certified that the word is somewhere in the file rather than that the board
+row renders it. So the gate instead asserts, structurally and with no
+hard-coded line number, that inside the board's `visibleTasks.map(` region a call
+to `describeDue(task.dueAt)` exists **and is enclosed by the
+`task.dueAt && !task.completed` conditional**, proven by paren-matching the
+conditional body rather than by proximity.
+
+### Three mutations, and one of them caught my own gate being decorative
+
+| Mutation | Gate | Note |
+|---|---|---|
+| Board-row disclosure removed | **FAIL** | while `describeDue` remained present twice in the file — the false-confidence control |
+| `!task.completed` dropped from the guard | **FAIL** | a completed task must not get the open-task treatment |
+| Overdue badge removed | **FAIL** *(after a fix — see below)* | |
+
+**The third one is the interesting entry, because the first version of that
+check passed while the badge was deleted.** It asserted
+`/task\.isOverdue\s*&&/` appears in the board region — and the row *also*
+computes a conditional className with `task.isOverdue && "bg-secondary …"`
+(`Dashboard.tsx:672`), a different statement entirely. Deleting the badge left
+that line untouched and the gate green. **A gate that survives the thing it
+exists to catch is decoration.**
+
+The obvious repair was worse: asserting the word `Overdue` appears, which this
+increment's own explanatory comment contains ("the Overdue badge"). Fixing one
+false positive would have introduced another. The claim that is actually true and
+actually falsifiable is that `Overdue` is the **text content of a rendered
+element** — `>Overdue<` — which no comment, className expression or identifier
+can satisfy. That version fails on the deleted badge.
+
+Three gates in this repository, and one of mine was wrong until it was tested
+rather than reasoned about. The second version was found by mutating, not by
+reading.
+
+### Behavioural verification
+
+- **Overdue unchanged** — the badge and its `task.isOverdue` guard are
+  untouched, and the gate now fails if it is removed.
+- **`null` dueAt handled** — the `task.dueAt &&` guard short-circuits, so
+  `describeDue(null)` is never reached from the board; and `describeDue` returns
+  `null` for `null` input in any case (`nlp.ts`, asserted at
+  `nlp.test.ts:342–344`).
+- **Recurring tasks unchanged** — the recurrence badge and its guard are
+  untouched.
+- **Completed tasks** — excluded by `!task.completed`, mutation-tested above.
+- **Order unchanged** — the `visibleTasks` memo and `rankTasks` are untouched;
+  no sort was introduced. "Existing rank/order is unchanged" is a
+  diff-and-source claim, not a browser observation.
+- **No new backend read** — no file under `src/convex/` was modified.
+- **No new attention signal** — no attention kind added, no attention rule
+  touched, `getAttention` and `src/lib/attention/*` unmodified.
+  `scripts/conformance-attention.ts` is the check that the attention model is
+  unchanged, and it still exits 0.
+
+### Files changed
+
+`src/pages/Dashboard.tsx`, `scripts/spec-drift.ts`, `spec/02_CHANGELOG.md`,
+`spec/05_PANEL_CONTROL_CENTER.html`. Nothing else.
+
+### IMPLEMENTED vs VERIFIED
+
+**IMPLEMENTED**: the due disclosure renders in the board row.
+
+**VERIFIED**: the structural gate that proves it, mutation-tested three ways.
+
+**NOT VERIFIED**: what it looks like. No browser automation exists in this
+environment, so "the board row now reads better" is not a claim this change can
+make. The gate proves the row *calls* `describeDue` inside the open-task guard;
+it cannot prove the result is legible, correctly contrasted, or that the badge
+row does not wrap badly at narrow widths. That remains outstanding and is the
+reason this entry is PATCH and not a UX claim.
 
 ---
 
