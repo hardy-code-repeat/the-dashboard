@@ -3169,6 +3169,122 @@ as IMPLEMENTED and source-verified, not browser-verified.
 
 ---
 
+## CHANGE-0033
+
+**One finding was registered twice, and the product was branded with the wrong name in two places the user can actually see**
+
+Severity: PATCH
+Status: **VERIFIED. BOTH DEFECTS FIXED, AND THE FIRST ONE IS NOW GATED SO IT
+CANNOT COME BACK.**
+
+**Trigger.** An instruction to audit the repository for platform-brand
+contamination and classify every existing reference rather than blanket-replace
+it. Both halves of that audit turned up something.
+
+### D76 — the same finding was registered under one id, twice, in two sections
+
+`src/lib/adminFindings.ts` holds two arrays that the Control Centre renders as
+separate sections: `OPEN_FINDINGS` ("Open findings") and `VERIFICATION_GAPS`
+("Verification gaps — not defects, and not passes"). The second array's own doc
+comment states the reason they are kept apart: *a verification gap is not a
+security finding, and putting "cron firing is unverified" next to "a live
+credential in source" invites a reader to treat them as the same kind of bad.*
+
+**D61 was in both.** CHANGE-0027 registered it in `OPEN_FINDINGS`
+("The dashboard task cap is a product decision", no evidence line).
+CHANGE-0031 registered it *again* in `VERIFICATION_GAPS` ("What the dashboard
+cap should be is an open product decision", with an evidence line) — the same
+cap, the same owner, the same `open-human` state, two different titles.
+
+So the Control Centre has been rendering D61 twice: once under Open findings,
+once under Verification gaps, in a file whose stated purpose is that these are
+different kinds of thing. The reader cites an id and cannot tell which copy is
+current.
+
+**Fixed by keeping one.** The changelog places D61 in the D54–D64 security band
+(alongside D62, D63 and D64, which are the other `OPEN_FINDINGS` entries), so
+that is where it stays. The two detail texts were merged into the surviving
+entry and the `evidence` line was carried over, so the fix loses no information
+and actually gains the sentence explaining *why* D67 could make the truncation
+visible but could not remove it. The registry now reports 17 findings, was 18,
+and the difference is exactly the duplicate.
+
+**Gated, because deleting a duplicate is cleanup and not a fix.** The
+security-registry check cross-checked ids in both directions and still never
+asked whether an id appeared **twice** — the one question that matters most in a
+list keyed by id. `checkSecurityRegistry` now fails on any id registered more
+than once, across both arrays, using every id rather than only the `D<number>`
+ones so a duplicate `cron-firing` would also be caught.
+
+**Mutation-tested.** A second `id: "D61"` was planted in `VERIFICATION_GAPS` and
+the gate was re-run: `[FAIL] security registry — finding id(s) registered more
+than once: D61`, and `spec-drift.ts` exits 1 (verified by reading the failure
+path, not by trusting the piped output, which masks the status). Reverted,
+re-run: `25 passed, 1 warning(s), 0 failure(s)`, exit 0.
+
+### D77 — the installed app and the sign-in email were branded with the platform
+
+Not a defect Panel introduced. Two files I did not author carried the hosting
+platform's name into text a user sees, and both were worth correcting because
+the product is Panel:
+
+- `public/manifest.webmanifest` named the **installed** app and its home-screen
+  shortcut after the platform. Corrected to `name: "Panel — Your Day, On One
+  Page"`, `short_name: "Panel"`, with a description matching the product.
+  `index.html`'s `<title>` was already correct, which is what made this one
+  easy to miss.
+- `src/convex/auth/emailOtp.ts` fell back to the platform name in `appName`
+  when `VLY_APP_NAME` is unset — a string that **reaches the user's inbox** in
+  the one-time-code email, greeting them by the wrong product. Corrected to
+  `"Panel"` with a comment recording that this is user-visible product text, not
+  configuration.
+
+### What was deliberately left alone, and why
+
+The instruction was to classify rather than blanket-replace, and blanket
+replacement would have broken authentication. Every remaining reference is a
+**legitimate technical dependency**, and is listed here so the next reader does
+not "fix" it:
+
+| File | Reference | Why it stays |
+|---|---|---|
+| `src/convex/auth.config.ts` (9) | `https://freebuff.com` issuer default, JWKS URL, federated-token comments | The deployment federates against this issuer. Changing the string changes who can sign in. |
+| `src/convex/auth/emailOtp.ts` | `https://auth.freebuff.app/send_otp`, the literal `x-api-key` header | A real endpoint the deployment calls, under **D54**. Not touched. |
+| `src/convex/admin.ts:265` | Reports the issuer as deployment configuration | It reports a live config value; editing it would make the Control Centre lie. |
+| `src/instrumentation.tsx` (2) | Toolbar link, `[Freebuff runtime error]` log label | Developer tooling from the platform. Both are developer-facing, neither is product UI. |
+| `vly-toolbar-readonly.tsx` | Publish link | Same. |
+| `integrations.md` (5) | Platform gateway base URL and SDK call examples | Documents a gateway Panel's deployment reaches. |
+| `.env.local` | One Convex-generated comment | Platform-generated, and `.env` files are not edited by the agent. |
+
+19 references remain in 7 files; **zero** remain in any file authored for this
+project. No Git command was run in this environment, so no commit was created and
+no history was rewritten — historical Git metadata is left exactly as it is.
+
+### Costs
+
+4 files changed (`src/lib/adminFindings.ts`, `scripts/spec-drift.ts`,
+`public/manifest.webmanifest`, `src/convex/auth/emailOtp.ts`), 0 files added,
+**0 tables, 0 dependencies, 0 abstractions, 0 new queries**. No capability was
+added and none was removed.
+
+### Verification
+
+`bunx convex dev --once` ready · `bunx tsc -b --noEmit` clean · `bun test` 634
+pass / 0 fail · `bun run lint` unchanged from the 3 errors / 19 warnings stock
+baseline · `bun scripts/spec-drift.ts` **25 pass / 1 warn / 0 fail, exit 0**,
+with the security-registry line now reading "17 findings, ids unique" ·
+`bun scripts/audit-bounded-reads.ts` 0 unbounded, 148 bounded ·
+`scripts/conformance-auth.ts` PASS, 18 boundaries held.
+
+The new uniqueness check is **mutation-proven**: planting a duplicate D61 turns
+the gate red, and reverting turns it green.
+
+The Control Centre has still **never been rendered in a browser**, so "D61 no
+longer renders twice" is a source-level claim established by reading the two
+arrays and by the gate, not a visual confirmation. It is recorded as such.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**

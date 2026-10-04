@@ -95,11 +95,13 @@ export const OPEN_FINDINGS: readonly RecordedFinding[] = [
   },
   {
     id: "D61",
-    title: "The dashboard task cap is a product decision",
+    title: "The dashboard cap is a product decision, not an engineering one",
     detail:
-      "Above 200 open tasks, 'what should I do next' is answered from the most recent 200 rather than from all of them. That trade belongs to the user, not to the engineering.",
+      "The board is capped at 200 open and 200 completed. Above the cap, 'what should I do next' is answered from the most recent 200 rather than from all of them, and whether the board should page past the cap rather than stop has never been decided. That trade belongs to the user, not to the engineering, and it is why D67 could make the truncation visible but could not remove it.",
     owner: "owner",
     state: "open-human",
+    evidence:
+      "conformance-dashboard.ts pins the behaviour of the cap as it exists, at its exact boundary, and explicitly does not settle it.",
   },
   {
     id: "D62",
@@ -235,16 +237,6 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
     state: "open-accepted",
     evidence:
       "Converted to react-router's Link, and spec-drift now fails on any anchor whose href is an in-app path. Eight anchor hrefs remain and none of them is one.",
-  },
-  {
-    id: "D61",
-    title: "What the dashboard cap should be is an open product decision",
-    detail:
-      "The board is capped at 200 open and 200 completed. Whether that is the right number, and whether the board should page past it rather than stop, has never been decided — so D67 could only make the truncation visible, not remove it.",
-    owner: "owner",
-    state: "open-human",
-    evidence:
-      "conformance-dashboard.ts pins the behaviour of the cap as it exists, at its exact boundary, and explicitly does not settle it.",
   },
   {
     id: "D73",

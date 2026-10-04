@@ -22,7 +22,10 @@ export const emailOtp = Email({
         {
           to: email,
           otp: token,
-          appName: process.env.VLY_APP_NAME || "a freebuff.com application",
+          // The app name is what the recipient reads in the subject and body of
+          // the one-time-code email, so the fallback is user-visible product
+          // text, not configuration. It names the product that exists.
+          appName: process.env.VLY_APP_NAME || "Panel",
         },
         {
           headers: {

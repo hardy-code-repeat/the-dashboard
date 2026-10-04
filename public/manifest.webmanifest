@@ -1,7 +1,7 @@
 {
-  "name": "freebuff.com application",
-  "short_name": "freebuff.com",
-  "description": "freebuff.com application",
+  "name": "Panel — Your Day, On One Page",
+  "short_name": "Panel",
+  "description": "A personal dashboard for the things you actually have to do.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

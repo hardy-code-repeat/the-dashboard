@@ -1363,6 +1363,21 @@ function checkSecurityRegistry(changelog: string) {
 
   const problems: string[] = [];
 
+  // One id, one finding. The Control Centre renders `f.id` as the handle a
+  // reader cites back to the changelog, so two rows sharing an id are the same
+  // finding rendered twice in two sections with different wording — which is
+  // worse than either copy alone, because a reader cannot tell which one is
+  // current. This is not hypothetical: D61 was registered in both arrays for
+  // the whole of CHANGE-0031 (D76).
+  const tally = new Map<string, number>();
+  for (const id of [...code.matchAll(/id:\s*"([^"]+)"/g)].map((m) => m[1])) {
+    tally.set(id, (tally.get(id) ?? 0) + 1);
+  }
+  const repeated = [...tally].filter(([, n]) => n > 1).map(([id]) => id);
+  if (repeated.length > 0) {
+    problems.push(`finding id(s) registered more than once: ${repeated.join(", ")}`);
+  }
+
   const invented = registered.filter((id) => !recorded.has(id));
   if (invented.length > 0) {
     problems.push(`registry names finding(s) absent from the changelog: ${invented.join(", ")}`);
@@ -1391,7 +1406,7 @@ function checkSecurityRegistry(changelog: string) {
   record(
     "security registry",
     "pass",
-    `${registered.length} findings cross-checked both ways against the changelog ` +
+    `${registered.length} findings, ids unique, cross-checked both ways against the changelog ` +
       `(${openBand.length} in the open D6x band, none missing)`,
   );
 }
