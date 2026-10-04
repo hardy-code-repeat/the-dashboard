@@ -240,13 +240,13 @@ export const VERIFICATION_GAPS: readonly RecordedFinding[] = [
   },
   {
     id: "D78",
-    title: "Two Custom Pages caps cannot currently be reached",
+    title: "Two Custom Pages guards cannot fire in the reachable state",
     detail:
-      "PAGE_MAX_BLOCKS is 12 but the closed vocabulary holds 8 kinds, and duplicates are refused — so no valid page can hold 12 blocks and the length guard cannot fire. Separately, PAGES caps writes at 50, so the read's cap+1 probe never finds a 51st row and listPages.capped is always false. Both guards are correct and both are currently unreachable. They are kept as defence in depth, and the page-list receipt is asserted FALSE at the cap rather than left untested, because a product that claimed truncation while holding exactly its cap would be the D68 defect again.",
+      "PAGE_MAX_BLOCKS is 12 but the closed vocabulary holds 8 kinds, and duplicates are refused — so no valid page can hold 12 blocks and the length guard cannot fire today. Separately, PAGES caps writes at 50, so while that write cap holds the read's cap+1 probe never finds a 51st row and listPages.capped cannot become true. The second claim was CORRECTED by mutation in CHANGE-0035: it was originally recorded as 'capped is always false', which was too strong — with the write cap removed the account reached 52 pages and capped correctly reported true, so the receipt is live and fires exactly when rows were really dropped. Both guards are correct and both are unreachable in the reachable state. They are kept as defence in depth, and the page-list receipt is asserted FALSE at the cap rather than left untested, because a product that claimed truncation while holding exactly its cap would be the D68 defect again.",
     owner: "agent",
     state: "open-accepted",
     evidence:
-      "Found because conformance-pages.ts asserted capped === true and failed. src/lib/customPages.test.ts asserts the vocabulary/cap relationship so that widening the vocabulary past 12 makes a reviewer meet the cap deliberately instead of silently.",
+      "Found because conformance-pages.ts asserted capped === true and failed. src/lib/customPages.test.ts asserts the vocabulary/cap relationship so that widening the vocabulary past 12 makes a reviewer meet the cap deliberately instead of silently. CHANGE-0035 mutation-tested both guards live: disabling the length guard turned P1.7 red naming the duplicate guard as the one that spoke, and disabling the write cap turned P4.1 and P4.3 red with capped=true at exactly 50 pages.",
   },
   {
     id: "D73",

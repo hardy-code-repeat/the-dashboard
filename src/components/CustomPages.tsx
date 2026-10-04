@@ -30,6 +30,11 @@ import {
   type PageBlockKind,
 } from "@/lib/customPages";
 import { PAGE_MAX_BLOCKS } from "@/lib/readLimits";
+import {
+  PAGE_TEMPLATES,
+  applyPageTemplate,
+  type PageTemplateId,
+} from "@/lib/pageTemplates";
 import { AREAS } from "@/lib/areas";
 
 /** How many rows each block lists. A page is a summary of a domain, not a browser of it. */
@@ -76,6 +81,39 @@ export function CustomPages() {
   const [error, setError] = useState<string | null>(null);
 
   const atBlockCap = blocks.length >= PAGE_MAX_BLOCKS;
+
+  /**
+   * Pre-fill the form from a template.
+   *
+   * Named `fillFromTemplate`, not `useTemplate`: it is an event handler, and
+   * React reserves the `use` prefix for hooks. A first draft called it
+   * `useTemplate` and `react-hooks/rules-of-hooks` turned the build red — which
+   * is the rule working exactly as intended, because a `use*` name invites the
+   * reader to believe it participates in render ordering when it does not.
+   *
+   * This **overwrites** rather than merges. A merge would have to decide what
+   * "already partly chosen" means — whether the template's blocks or the user's
+   * win on overlap — and either answer silently discards something the user
+   * could see on screen. Overwriting is the one behaviour the interface can
+   * explain: the form visibly becomes the template, and every field below stays
+   * editable.
+   *
+   * The template is a convenience, not a permission: `applyPageTemplate` runs
+   * the same validators the mutation runs, and the user still presses Save.
+   */
+  const fillFromTemplate = (id: PageTemplateId) => {
+    setError(null);
+    try {
+      const next = applyPageTemplate(id);
+      setName(next.name);
+      setArea(next.area);
+      setBlocks(next.blocks);
+    } catch (e) {
+      // Reachable only if the catalogue drifts from the vocabulary, which the
+      // unit tests catch. Surfacing it beats a form that quietly did nothing.
+      setError(e instanceof Error ? e.message : "That template is not available.");
+    }
+  };
 
   const toggleBlock = (kind: PageBlockKind) => {
     setError(null);
@@ -216,6 +254,25 @@ export function CustomPages() {
 
       <div className="border-t-2 border-foreground p-4">
         <h3 className="mb-2 text-[13px] font-bold">New page</h3>
+
+        <fieldset className="mb-3">
+          <legend className="text-[12px]">Start from</legend>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {PAGE_TEMPLATES.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => fillFromTemplate(t.id)}
+                className="border-2 border-border px-2 py-0.5 text-[12px] hover:border-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-foreground"
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Fills the form below. Everything stays editable.
+          </p>
+        </fieldset>
 
         <label className="mb-2 block text-[12px]" htmlFor="page-name">
           Name

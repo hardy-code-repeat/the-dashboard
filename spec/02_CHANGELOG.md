@@ -3475,6 +3475,289 @@ not a visual confirmation.
 
 ---
 
+## CHANGE-0035
+
+**The final gate re-run in full, and two of my own Custom Pages checks found passing for the wrong reason — one of them the very control that proves the block cap**
+
+Severity: PATCH
+Status: **IMPLEMENTED AND VERIFIED (live harness + mutation tests). NOTHING HERE
+CHANGES PRODUCT BEHAVIOUR. D64 REMAINS NOT VERIFIED.**
+
+**Trigger.** A final verification pass over the state Custom Pages was left in,
+including the `PageEditor` / `updatePage` work and the two comment corrections
+that landed after the previous gate.
+
+### The full gate, re-run from the current state, exit codes captured directly
+
+`bunx convex dev --once` **0** · `bunx tsc -b --noEmit` **0** · `bun test`
+**649 pass / 0 fail / 25 files** · `bun scripts/spec-drift.ts` **25 pass /
+1 warn / 0 fail**, exit 0 · `bun scripts/audit-bounded-reads.ts` exit 0,
+0 unbounded, 150 bounded · `bun run lint` **3 errors / 19 warnings**, the exact
+stock shadcn + carousel/sidebar/use-mobile baseline (the gate here is "no NEW
+problems", and lint always exits 1 on the stock 3).
+
+All **22** registered conformance harnesses exit 0: `0b`, `0c`, `1.1`, `1.5`,
+`2`, `3`, `3f`, `4`, `4a`, `4b`, `4b2`, `4f`, `5f`, `6f`, `admin`,
+`attention`, `auth`, `dashboard`, `export`, `occ`, `pages`, `sec`.
+
+### Two checks of my own were green for the wrong reason
+
+Both were found by asking what each check would do if the control it names were
+**deleted**, rather than by adding more assertions. That is the only question
+that distinguishes a control from a decoration.
+
+**1. The block-cap check could not fail with the block cap deleted.** `P1.7`
+asked only "was this over-cap payload refused?". An over-cap payload has to be
+built by cycling the vocabulary, and a cycle repeats kinds — so the payload is
+*also* full of duplicates. Delete the length guard in `requirePageBlocks` and
+the call is still refused, by the duplicate guard, and the check stays green.
+The check that exists to prove the cap is the one the cap's absence would not
+turn red. It is now asserted on which guard spoke, by the server's own words:
+the length guard is the only one that says "at most", the duplicate guard says
+"already on this page".
+
+**Mutation-proven.** With `raw.length > PAGE_MAX_BLOCKS` replaced by
+`> Number.MAX_SAFE_INTEGER`, P1.7 turns red and reports
+`"headline" is already on this page.` — the wrong guard, correctly caught.
+Reverted, it passes reporting `A page can hold at most 12 blocks (got 13).`
+
+**2. The harness's own caps were hard-coded behind a comment claiming they were
+checked.** `conformance-pages.ts` carried the comment *"Mirrored from
+src/lib/readLimits.ts — asserted, not assumed, below"* above the literals
+`PAGES = 50` and `PAGE_MAX_BLOCKS = 12`, and then **asserted nothing**. Had the
+owner raised `PAGES` to 200, the harness would have gone on proving the
+deployment refuses a 51st page — a green run against a cap that no longer
+existed. A claim in a comment is not a check, and this is the same defect as the
+dead `notes` block CHANGE-0034 recorded, one level down: apparatus that looks
+like a guarantee and performs none. The constants are now read out of
+`src/lib/readLimits.ts` and the block vocabulary out of `src/lib/customPages.ts`,
+and **P0.1–P0.3 fail the harness** when the mirror drifts.
+
+### Cross-space isolation and the signed-out caller, which nothing had tested
+
+Everything before this tested one signed-in identity against another. The caller
+with **no** identity, and the caller who wants to *place* a page in somebody
+else's space, were both untested. Now **P9.1–P9.8**:
+
+- a signed-out read returns an empty list, and signed-out create / update /
+  delete are all refused (`Not authenticated`);
+- **`spaceId` and `ownerUserId` are not arguments**, so `ArgumentValidationError:
+  Object contains extra field 'spaceId' that is not in the validator` — a
+  caller cannot choose where a page lands, because the space is *derived* by
+  `ensurePersonalSpace` and never supplied;
+- both identities can each hold a non-personal space, and neither can see the
+  other's page.
+
+**Stated honestly, because it is narrower than "spaces isolate pages":** Panel
+exposes no invite, so `createSpace` seats only its creator and **no check here
+puts two members in one shared space**. The guarantee rests on pages being
+written only to the caller's personal space, not on a space-membership check
+that was exercised. The harness says so in its own `NOT VERIFIED` output.
+
+### Five architectural claims, read out of the source instead of asserted in a comment
+
+ADR-033 rests on five *absences*, and an absence has nothing to call in a unit
+test — which is exactly why they rot unnoticed. Someone eventually adds a
+`getPageData` query "just to make the page load in one round trip", it is
+faster than the composition it replaces, and nothing goes red. So
+`customPages.test.ts` now reads the source (15 → **20** fixtures):
+
+- no aggregate page query — the module exposes exactly one query;
+- every page read is an index range **and** a cap, and no `.collect()`;
+- `pageBlockValidator` carries no `props` / `fields` / `filter` / `limit` — the
+  EAV check at the schema level;
+- `PageBody` issues a fixed set of reads, **none inside the render loop** (no N+1);
+- exactly one page-shaped table in the schema, no `fetch`, no second backend.
+
+All five **mutation-proven**: adding `props: v.optional(v.any())` to the block
+validator turns the EAV check red; adding a `.collect()`-based `getPageData`
+turns red both the aggregate-query check *and* the bounded-read check; moving a
+`useQuery` inside a `.map()` turns the N+1 check red. All reverted.
+
+### D78 corrected — and the mutation that corrected it
+
+D78 recorded that `listPages.capped` is **always false**. The mutation run
+disproved the strong form of that. With the write cap in `createPage` removed,
+the account reached 52 pages, the read's `cap + 1` probe found the extra row,
+and **P4.3 turned red reporting `capped=true` at exactly 50 pages**.
+
+So the receipt is **live and correct**: it fires precisely when rows really were
+dropped, and stays silent when none were. D78's claim is narrowed from "always
+false" to "cannot fire while the write cap holds", which is the same fact with
+the part that was wrong removed. `PAGE_MAX_BLOCKS = 12` remains unreachable
+today, and that half of D78 is unchanged.
+
+### Controls proven live against their own mutation
+
+| Control | Mutation | Result |
+|---|---|---|
+| block cap (`P1.7`) | length guard made unreachable | **red** — wrong guard named |
+| block cap (`P1.7`) | reverted | green — "at most 12 blocks (got 13)" |
+| duplicate protection (`P1.4`, `P8.4`) | duplicate guard disabled | **red ×2** — live create *and* live update |
+| page cap (`P4.1`) | `>= PAGES` made unreachable | **red** — "never refused" |
+| truncation receipt (`P4.3`) | same | **red** — `capped=true at exactly 50` |
+| `createdAt` preserved (`P8.11`) | patch `createdAt: Date.now()` | **red** — position 0 → 49 |
+| identity preserved (`P8.8`–`P8.11`) | replace-and-reinsert | **red ×4** — position 0 → -1 |
+
+Zero mutation residue: `MAX_SAFE_INTEGER`, `false &&`, `replaceInsteadOfPatch`
+and the temporary error probe are all gone; the only remaining
+`createdAt: Date.now()` is the legitimate one in `createPage`.
+`conformance-pages.ts` is now **44 boundaries**, exit 0.
+
+### One harness defect found while reading a mutation's output
+
+Convex's HTTP client puts the real server text on the lines *after*
+`[Request ID: …] Server Error`, newline-separated, with a stack trace under it.
+Printed raw, that reads like a crash in the middle of a passing run — and it
+nearly was misread as one, which would have turned a true positive into a
+discarded one. `reject()` now collapses the text to one line. The message was
+always available; only its presentation was misleading.
+
+### What did NOT change
+
+No product behaviour, no schema, no table, no read, no copy. Three files edited
+(`scripts/conformance-pages.ts`, `src/lib/customPages.test.ts`, the D78 evidence
+in `src/lib/adminFindings.ts`) and this entry. IMPLEMENTED and VERIFIED stay
+distinct: every claim above is a live-harness or mutation result, and the two
+things that remain unverified are named as unverified.
+
+**Still not verified.** The Custom Pages UI, the `PageEditor`, the Health
+surface and the Admin Control Centre have **never been rendered in a browser** —
+no browser automation exists in this environment. Every statement about them is
+source-level plus live-harness. D64 stays open: `PANEL_ADMIN_TOKEN` is unset,
+K1 is reported `NOT VERIFIED`, and Panel contains no code that could mint one.
+
+---
+
+## CHANGE-0036
+
+**Page templates: the next increment after Custom Pages, scoped to the word "starting point" — four closed starting arrangements, zero tables, zero reads, zero new write paths**
+
+Severity: MINOR
+Status: **IMPLEMENTED AND VERIFIED (live harness + mutation tests). THE TEMPLATE
+BUTTONS HAVE NEVER BEEN PRESSED IN A BROWSER.**
+
+**Trigger.** The roadmap puts "useful templates/modules" immediately after Custom
+Pages. Custom Pages was finished and verified in CHANGE-0035, so this is the next
+bounded increment that is already authorised. The full research chain ran before
+any code was written, and it is recorded here because the chain — not the code —
+is what kept this small.
+
+### The research chain
+
+**Problem (read out of the repository, not assumed).** Before this change the
+create form in `src/components/CustomPages.tsx` was a blank name field, an area
+select, and **eight raw checkboxes** with no indication of which combination is
+worth having. A user who guesses wrong saves a page that is not useful, and has
+no way to tell that it is not, because there is nothing on screen showing what a
+good page looks like.
+
+**Need.** A *starting point*. Explicitly not a template system.
+
+**Domain objects — none.** Every field of a template is a compile-time constant:
+nothing to administer, nothing to migrate, nothing to author at runtime, nothing
+to delete. A `pageTemplates` table would be a second persistence system whose
+entire contents are known at build time — ADR-007's rejected generic object
+table, reached from the other direction.
+
+**Relationships — none.** A template holds no id that points anywhere.
+
+**Permissions — unchanged.** A template is not a permission and holds no data. It
+pre-fills the *existing* form; `createPage` still validates, still authorises,
+and still owns the write.
+
+**Lifecycle — none.** Templates are not persisted, editable or deletable. What
+gets stored is an ordinary page with an ordinary lifecycle.
+
+**Attention impact — none.** No new attention kind, no ranking, no training, so
+ADR-006's guarantee holds on this surface too.
+
+**Complexity budget — 1 file, 0 tables, 0 queries, 0 mutations, 0 reads.**
+Deliberately the smallest thing that answers the problem. It is the fifth
+increment to overrun ADR-016's phase budget and that is recorded as standing
+debt below rather than being hidden by making the change smaller and useless.
+
+### What was built
+
+`src/lib/pageTemplates.ts` — four starting arrangements, `morning`, `money`,
+`owed`, `paperwork`. Each names block kinds Panel already renders and an area
+from the **existing** union, so a template is not a seventh area and no new read
+exists. `applyPageTemplate` routes name, area and blocks through
+`requirePageName` / `requirePageArea` / `requirePageBlocks` — the same three
+validators the mutation uses — so a template is a convenience and never a
+shortcut around validation.
+
+`src/components/CustomPages.tsx` — a "Start from" fieldset above the form. A
+template **overwrites** the form rather than merging, because a merge would have
+to silently discard either the template's blocks or the user's, and either answer
+hides something the user can see. Every field below stays editable and the user
+still presses Save.
+
+`scripts/conformance-pages.ts` — **P10.1–P10.4**, ten new live boundaries (44 → 54).
+
+### Three decisions that are the whole design
+
+- **`getPageTemplate` returns `undefined` for an unknown id, never a default.**
+  A fallback would create a real page under a name nobody chose — the failure
+  where a system looks like it worked. **Mutation-proven:** returning
+  `PAGE_TEMPLATES[0]` instead turns
+  *"returns nothing for an unknown id rather than a default template"* red.
+- **`PageTemplateId` is a closed union.** `as const` on the catalogue is what
+  makes it a union rather than `string`. A template id that was a free string
+  would eventually be used to look something up, and "look up" is where a table
+  arrives.
+- **The server has never heard of a template.** P10.4 asserts that passing
+  `templateId` to `createPage` is refused —
+  `ArgumentValidationError: Object contains extra field 'templateId'`. If
+  `createPage` grew that argument there would be a second write path deciding a
+  page's contents server-side, reachable by anyone who found it.
+
+### Attacked, and found wanting once
+
+`src/lib/pageTemplates.test.ts` — **15 fixtures**. All mutation-proven.
+
+Planting one block kind Panel cannot render (`"horoscope"`) in the `morning`
+template turns **four** unit checks red and, live, turns **P10.2.1** red naming
+the offending kind: `"horoscope" is not a block Panel cannot show`.
+
+The other direction was also taken: with the write cap removed, D78's
+truncation receipt was shown to fire correctly rather than being dead code. Both
+guards are therefore pinned by their own failure, not by their passing.
+
+**One test of mine was wrong and was fixed rather than adjusted.** The
+vocabulary scan initially read every quoted word in a catalogue entry and failed
+on `"Money"` and `"Paperwork"` — the *display names*. That was the test being
+over-broad, not the catalogue, so the scan was narrowed to the `blocks: [...]`
+arrays. The alternative — renaming the templates until the regex liked them —
+would have been the wrong fix.
+
+### Lint caught a real mistake, and it was fixed at the cause
+
+Naming the form handler `useTemplate` put `react-hooks/rules-of-hooks` in the
+build: **3 errors → 4**. It is an event handler, and React reserves the `use`
+prefix for hooks. Renamed to `fillFromTemplate`; lint returns to the exact stock
+baseline, **3 errors / 19 warnings**. No disable comment was added — suppressing
+the rule would have kept a `use*` name that invites a reader to believe the
+function participates in render ordering when it does not.
+
+### Governance
+
+**Added:** `src/lib/pageTemplates.ts`, `src/lib/pageTemplates.test.ts`.
+**Changed:** `src/components/CustomPages.tsx`, `scripts/conformance-pages.ts`,
+this entry, and the Control Centre count. **No ADR** — this is an increment
+inside ADR-033's decision, not a new decision, and writing one would be
+governance for its own sake.
+
+**Standing debt, ADR-016:** this is the fifth increment (CHANGE-0027, 0031,
+0032, 0034, 0036) to overrun the phase budgets. Recorded rather than hidden.
+
+**Still not verified.** The template buttons have never been pressed in a browser
+— P10 proves each template's blocks are accepted by the live deployment and
+round-trip in order, which is not the same claim as "pressing the button fills
+the form correctly". The harness says so in its own `NOT VERIFIED` output.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
