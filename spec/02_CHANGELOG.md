@@ -6332,6 +6332,127 @@ again and worth reconsidering on its own merits; `loadState` stops reading
 
 ---
 
+### ADR-034 — Panel holds metadata about infrastructure secrets, never the secrets, and never the power to change them
+
+**Status:** Active. Recorded 2026-10-05. Extends ADR-014, ADR-032, ADR-002.
+Does not amend them: this ADR **strengthens** both. Reads CHANGE-0039.
+
+**Decision.** Panel separates infrastructure bindings into two tiers and never
+mixes them:
+
+1. **Platform-held secrets.** The secret *value* lives in Convex deployment
+   configuration, set by a human in the dashboard or by `npx convex env set`.
+   Panel reads it server-side when a feature genuinely needs it.
+2. **Panel-held metadata only.** A **typed descriptor** — provider, purpose,
+   state, last check, coarse failure category — and nothing else. No value, no
+   length, no prefix, no fingerprint, no hash, and **not the environment
+   variable's name**.
+
+**The hard invariant, stated once so it can be quoted verbatim:**
+
+> **Panel must never possess a credential capable of modifying the secret
+> configuration of the infrastructure on which Panel itself runs.**
+
+This is the load-bearing sentence of the ADR. Everything below exists to keep
+it true.
+
+**Verified premise (official Convex documentation, 2026-10-05).** Before writing
+this ADR the central question was checked rather than assumed: *can a running
+Convex function modify its own deployment's environment variables?*
+[Environment Variables](https://docs.convex.dev/production/environment-variables)
+documents exactly three ways to change them — the Deployment Settings UI, and
+`npx convex env list|get|set|remove`. Functions are documented as **readers**
+only, via `process.env.KEY` or the typed `env` object. The docs further note
+that the callable set of functions "is determined during deployment and is not
+reevaluated when you change an environment variable", which is only coherent if
+change is an out-of-band operation. **There is no runtime API through which a
+function mutates its own deployment's configuration.** Premise confirmed.
+
+**Why this rules out the obvious design.** The request that prompted the ADR was
+to let an admin set provider credentials from the Control Centre instead of
+editing environment variables by hand. That is not implementable without Panel
+holding a deployment credential with environment-write permission — which is
+precisely the invariant above, violated in the most direct way available: Panel
+would hold the ability to rewrite its own secret configuration, so a compromise
+of Panel would be a compromise of every secret it uses. The loop closes on
+itself: the credential needed to manage the secrets must itself be a secret that
+the same surface can no longer protect. **Rejected on that ground, not on
+difficulty.**
+
+**Two tiers, and why they stay apart.**
+
+| Tier | Holds | Where the value lives | Who sets it |
+|---|---|---|---|
+| Infrastructure bindings (Tier 1) | Provider credentials the *deployment* needs | Platform secret storage | A human, out of band |
+| Tenant OAuth tokens (Tier 2) | Per-user, per-space provider tokens | `connectionTokens`, unchanged | The user, via OAuth |
+
+Tier 2 is **untouched by this ADR**. ADR-014's containment property — one module
+that publishes no client-reachable endpoint, enforced by a gate that greps every
+other module for the credential table names — is left exactly as it is. Tier 1
+is not modelled after Tier 2 on purpose: a tenant token is scoped to one user
+and Panel must hold it to use it, whereas an infrastructure secret is held by the
+platform and Panel only needs to *reference* it.
+
+**Phase 1 is read-only, structurally.** The Admin Control Centre may **inspect**
+binding state and **run** health checks. It may not create, rotate, revoke, or
+modify any infrastructure secret, and no code path may be added to do so without
+a further ADR. This keeps ADR-032's guarantee intact: `admin.ts` still exports no
+mutation, action, internalMutation, internalAction or httpAction, and
+`checkAdminReadOnly` still fails if that changes.
+
+**No environment variable names are displayed for a binding.** An environment
+variable name is not itself a secret, and Panel already shows names for its four
+platform variables — but a name discloses which secret exists, which
+infrastructure is in use, and therefore what an attacker would target next. Phase
+1 therefore reports provider, purpose, state, last check and failure category,
+and the payload **structurally does not carry the name**, so the rule is not a
+matter of the UI choosing to hide something it was given. This is the same
+discipline as ADR-014's: make the leak inexpressible rather than forbidden.
+
+**Neon: `DATABASE_URL` yes, management API key no.** A Neon **database**
+connection string is scoped to one database and is the credential Panel actually
+needs to run the one statement it runs (`SELECT 1`, CHANGE-0039). A Neon
+**management API key** is scoped to the entire Neon project: it can create and
+drop databases and branches, rotate credentials, and read every connection
+string. Panel performs no Neon project administration, so storing a
+project-wide root credential to execute a single statement is privilege
+over-provisioning, and it would place a credential in Panel that compromises
+Panel's database estate. **Rejected.** If Panel ever administers Neon — branches,
+migrations — that is a separate decision with its own blast-radius argument, and
+it is explicitly out of scope here.
+
+**Environment separation.** Every environment variable is per-deployment, so a
+value set on `dev` has no effect on `prod` — Convex documents this directly.
+Because Phase 1 stores no descriptor rows, **there is no cross-environment
+write to prevent**, and the Control Centre reports only on the deployment it is
+running in, which is the strongest form of the guarantee available. An open item
+is carried forward rather than decided here: Convex exposes no documented system
+variable identifying dev versus prod to a running function (only
+`CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`), so any *future* descriptor table must
+derive environment identity from a value fixed at deploy time, never from a
+client-supplied argument. That decision is out of scope for Phase 1 and is
+recorded here so it is not silently invented later.
+
+**What would have to be true before any write capability could even be
+considered.** Not a plan — preconditions, none of which is currently satisfied:
+
+1. The operator need is demonstrated, not predicted: a real incident or a
+   recurring manual step that read-only metadata does not remove.
+2. A threat model exists for an actor who can reach the write path, including
+   what the write path does with values it must therefore accept.
+3. Rotation without Panel storing the secret becomes possible — otherwise the
+   invariant above is violated by construction, and no amount of authorisation
+   fixes that.
+4. ADR-032 is amended explicitly and deliberately, with the loss of "the Control
+   Centre cannot write because no code path can express writing" stated as a cost.
+5. Every provider involved is confirmed not to grant privilege over Panel's own
+   infrastructure.
+
+**Why not simply keep doing it by hand.** Because the failure mode being fixed is
+not the typing; it is that no single place answers "which providers does this
+deployment expect, and is each one actually working?" Read-only metadata answers
+that without Panel ever touching a value.
+
 ### ADR-032 — Internal admin is a server-side role check on a field nothing writes, and no code path can grant it
 
 **Status:** Active. Recorded 2026-10-02, with CHANGE-0027 (the Admin Control

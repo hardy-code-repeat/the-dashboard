@@ -529,6 +529,182 @@ function checkProtectedAreas(fundamentals: string) {
  * documentation would push someone to delete the explanation rather than fix
  * the code.
  */
+/**
+ * ADR-034: the infrastructure-binding surface must be incapable of leaking a
+ * secret, and incapable of changing one.
+ *
+ * Phase 1 is read-only and metadata-only, and the point of this gate is that
+ * those are **structural** claims rather than intentions:
+ *
+ *  1. The payload type has no field a secret could occupy — not the variable
+ *     name, not a value, a length, a prefix or a fingerprint. A rule enforced by
+ *     a UI choosing not to render something is a rule one edit away from gone.
+ *  2. Values are reduced by the existing presence-only `configState`, so no code
+ *     path carries an environment value into a response.
+ *  3. Nothing logs.
+ *  4. Agents and cron cannot reach the surface. ADR-011 agents are pure and
+ *     ADR-030 cron "carries no user and no capability"; a control plane an agent
+ *     could call would put one back in its hands.
+ *  5. No client-side admin flag, and no client-supplied `environment`, which is
+ *     the argument that would let a development deployment appear to address
+ *     production.
+ *  6. No Neon management credential — ADR-034 rejects it as a project-wide root.
+ *  7. No descriptor or secret table: phase 1 persists nothing, so a table
+ *     appearing is the first step towards the second secret store this ADR
+ *     exists to prevent.
+ *
+ * Admin read-only and credential containment are enforced by `checkAdminReadOnly`
+ * and `checkCredentialContainment`; control 8 re-asserts the first of those here
+ * so this gate is not silently free-riding on another file's verdict.
+ *
+ * Every detector is planted-proven below. A detector that cannot detect is
+ * indistinguishable from a detector that found nothing.
+ */
+function checkInfrastructureBindings() {
+  const bindingPath = join(ROOT, "src", "lib", "infrastructureBindings.ts");
+  const adminPath = join(ROOT, "src", "convex", "admin.ts");
+  const pagePath = join(ROOT, "src", "pages", "AdminControlCenter.tsx");
+  const agentsPath = join(ROOT, "src", "convex", "agents.ts");
+  const cronPath = join(ROOT, "convex.config.ts");
+  const schemaPath = join(ROOT, "src", "convex", "schema.ts");
+
+  const missing = [bindingPath, adminPath, pagePath, agentsPath, cronPath, schemaPath].filter(
+    (p) => !existsSync(p),
+  );
+  if (missing.length > 0) {
+    record("infrastructure bindings", "fail", `missing file(s): ${missing.map((p) => p.split("/").pop()).join(", ")}`);
+    return;
+  }
+
+  const bindings = stripComments(readFileSync(bindingPath, "utf8"));
+  const admin = stripComments(readFileSync(adminPath, "utf8"));
+  const page = stripComments(readFileSync(pagePath, "utf8"));
+  const agents = stripComments(readFileSync(agentsPath, "utf8"));
+  const cron = stripComments(readFileSync(cronPath, "utf8"));
+  const schema = stripComments(readFileSync(schemaPath, "utf8"));
+
+  const problems: string[] = [];
+
+  // --- 1. the disclosure type carries no secret-shaped field ----------------
+  const disclosed = /interface BindingDisclosure \{([\s\S]*?)\n\}/.exec(bindings);
+  if (!disclosed) {
+    problems.push("BindingDisclosure not found in infrastructureBindings.ts");
+  } else {
+    const FORBIDDEN_FIELDS = /^\s*(envVar|env_var|name|value|secret|token|password|apiKey|api_key|length|prefix|fingerprint|hash|ciphertext)\??:/gm;
+    const found = [...disclosed[1].matchAll(FORBIDDEN_FIELDS)].map((m) => m[1]!);
+    if (found.length > 0) {
+      problems.push(`BindingDisclosure carries field(s) a secret could occupy: ${[...new Set(found)].join(", ")}`);
+    }
+    const CONTROL_FIELD = "export interface BindingDisclosure {\n  provider: string;\n  envVar: string;\n}\n";
+    const controlDetects = [...CONTROL_FIELD.matchAll(FORBIDDEN_FIELDS)].length > 0;
+    if (!controlDetects) problems.push("CONTROL FAILED: the disclosure-field detector is blind, its verdict is void");
+  }
+
+  // --- 2. admin reduces through bindingDisclosure + configState ------------
+  if (!/bindingDisclosure\(/.test(admin)) {
+    problems.push("admin.ts does not build binding rows through bindingDisclosure()");
+  }
+  if (!/configState\(\s*binding\./.test(admin)) {
+    problems.push("admin.ts does not reduce a binding's environment variable through configState()");
+  }
+
+  // --- 3. no logging anywhere on this surface ------------------------------
+  for (const [name, code] of [["infrastructureBindings.ts", bindings], ["admin.ts", admin], ["AdminControlCenter.tsx", page]] as const) {
+    if (/console\.(log|info|warn|error|debug)\s*\(/.test(code)) {
+      problems.push(`${name} logs; a credential surface must not`);
+    }
+  }
+  const CONTROL_LOG = 'const x = 1; console.log("value", process.env.SECRET);';
+  if (!/console\.(log|info|warn|error|debug)\s*\(/.test(CONTROL_LOG)) {
+    problems.push("CONTROL FAILED: the logging detector is blind, its verdict is void");
+  }
+
+  // --- 4. agents and cron cannot reach the surface -------------------------
+  for (const [name, code] of [["agents.ts", agents], ["convex.config.ts", cron]] as const) {
+    if (/infrastructureBindings|api\.admin|neonHealth/.test(code)) {
+      problems.push(`${name} references the infrastructure control plane; ADR-011/ADR-030 give neither the capability`);
+    }
+  }
+  const CONTROL_AGENT = 'import { api } from "./_generated/api"; const x = api.admin.systemStatus;';
+  if (!/infrastructureBindings|api\.admin|neonHealth/.test(CONTROL_AGENT)) {
+    problems.push("CONTROL FAILED: the agent/cron detector is blind, its verdict is void");
+  }
+
+  // --- 5. no client-side admin flag ----------------------------------------
+  if (/\bisAdmin\b/.test(page) && !/decideAdminAccess|ADMIN_ROLE/.test(page)) {
+    problems.push("AdminControlCenter.tsx carries an isAdmin flag; authorisation is backend-authoritative");
+  }
+  const CONTROL_FLAG = "const allowed = isAdmin;";
+  if (!/\bisAdmin\b/.test(CONTROL_FLAG)) {
+    problems.push("CONTROL FAILED: the client-flag detector is blind, its verdict is void");
+  }
+
+  // --- 6. no client-supplied environment -----------------------------------
+  for (const m of admin.matchAll(/= (?:query|mutation|action|internalQuery|internalMutation|internalAction)\(\{[\s\S]{0,200}?args:\s*\{([^}]*)\}/g)) {
+    if (/\benvironment\b/.test(m[1]!)) {
+      problems.push("an admin endpoint accepts an `environment` argument; environment identity must never come from a caller");
+    }
+  }
+  const CONTROL_ENV = 'export const x = query({ args: { environment: v.string() }, handler: async () => null });';
+  if (!/args:\s*\{([^}]*)\}/.test(CONTROL_ENV)) {
+    problems.push("CONTROL FAILED: the environment-argument detector is blind, its verdict is void");
+  }
+
+  // --- 7. no Neon management credential ------------------------------------
+  const MANAGEMENT = /NEON_API_KEY|NEON_MANAGEMENT|neonApiKey|neonManagementKey|management_api_key/i;
+  for (const [name, code] of [["infrastructureBindings.ts", bindings], ["admin.ts", admin], ["schema.ts", schema]] as const) {
+    if (MANAGEMENT.test(code)) problems.push(`${name} introduces a Neon management credential, which ADR-034 rejects`);
+  }
+  if (!MANAGEMENT.test('const k = "NEON_API_KEY";')) {
+    problems.push("CONTROL FAILED: the management-credential detector is blind, its verdict is void");
+  }
+
+  // --- 8. no descriptor or secret table ------------------------------------
+  //
+  // Both key styles must be matched. `schema.ts` declares its tables as
+  // identifier keys (`infrastructureBindings: defineTable({...})`), and the
+  // first version of this detector only matched the string-keyed form — so a
+  // planted table of exactly the shape this project actually uses slipped
+  // through it. The mutation test that planted one is the only reason that was
+  // found; the planted control below now covers both forms for that reason.
+  const DESCRIPTOR_NAMES = "(infrastructureBindings|integrationBindings|providerSecrets|envBindings)";
+  const DESCRIPTOR_TABLE = new RegExp(
+    `(?:\\b${DESCRIPTOR_NAMES}\\s*:\\s*defineTable\\(|defineTable\\(\\s*"${DESCRIPTOR_NAMES}")`,
+  );
+  if (DESCRIPTOR_TABLE.test(schema)) {
+    problems.push("schema.ts defines a binding/secret table; phase 1 persists no descriptor rows");
+  }
+  if (!DESCRIPTOR_TABLE.test('defineTable("envBindings", {})')) {
+    problems.push("CONTROL FAILED: the descriptor-table detector is blind to string keys, its verdict is void");
+  }
+  if (!DESCRIPTOR_TABLE.test("infrastructureBindings: defineTable({ provider: v.string() })")) {
+    problems.push("CONTROL FAILED: the descriptor-table detector is blind to identifier keys, its verdict is void");
+  }
+
+  // --- 9. admin.ts still exports no write endpoint -------------------------
+  for (const m of admin.matchAll(/export const (\w+)\s*(?::[^=\n]+)?=\s*(mutation|action|internalMutation|internalAction|httpAction)\(/g)) {
+    problems.push(`admin.ts exports a write endpoint (${m[1]}); ADR-032 forbids it`);
+  }
+  const CONTROL_WRITE = 'export const y = mutation({ args: {}, handler: async () => null });';
+  if (!/=\s*(mutation|action|internalMutation|internalAction|httpAction)\(/.test(CONTROL_WRITE)) {
+    problems.push("CONTROL FAILED: the write-endpoint detector is blind, its verdict is void");
+  }
+
+  if (problems.length > 0) {
+    record("infrastructure bindings", "fail", problems.join("; "));
+    return;
+  }
+
+  record(
+    "infrastructure bindings",
+    "pass",
+    "disclosure carries no secret-shaped field, values reduced by configState, nothing logged, " +
+      "agents and cron cannot reach it, no client admin flag, no client-supplied environment, " +
+      "no Neon management credential, no descriptor table, admin.ts still has no write endpoint " +
+      "(nine detectors proven live) (ADR-034)",
+  );
+}
+
 function checkCredentialContainment() {
   const dir = join(ROOT, "src", "convex");
   if (!existsSync(dir)) {
@@ -1972,6 +2148,7 @@ function main() {
   checkInternalNavigation();
   checkBoardDueDisclosure();
   checkNotesTruncation();
+  checkInfrastructureBindings();
 
   report();
 

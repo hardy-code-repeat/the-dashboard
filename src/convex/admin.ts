@@ -86,6 +86,11 @@ import { READ_LIMITS } from "../lib/readLimits";
 
 import { query } from "./_generated/server";
 import { hasCredentials } from "./credentials";
+import {
+  INFRASTRUCTURE_BINDINGS,
+  bindingDisclosure,
+  type BindingDisclosure,
+} from "../lib/infrastructureBindings";
 import type { DataModel, Id } from "./_generated/dataModel";
 import type { GenericQueryCtx } from "convex/server";
 
@@ -235,6 +240,53 @@ function configState(name: string, isReadable: boolean): ConfigState {
 }
 
 /**
+ * Whether deployment environment variables can be read in this runtime at all.
+ *
+ * Split out of `configurationStates` because two surfaces now need the answer
+ * and they must agree: if the platform variables reported `not-observable` while
+ * the bindings reported `missing`, the page would be telling an operator two
+ * different things about the same deployment.
+ *
+ * An unreadable environment is `not-observable`, never `missing`: an
+ * environment Panel cannot read is not the same claim as one that is absent.
+ */
+function envIsReadable(): boolean {
+  try {
+    void process.env.CONVEX_SITE_URL;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Infrastructure bindings, as disclosures (ADR-034).
+ *
+ * The Control Centre's answer to "which providers does this deployment expect,
+ * and is each one actually working?" — built from the typed registry in
+ * `src/lib/infrastructureBindings.ts`.
+ *
+ * Three properties are structural rather than promised:
+ *
+ *  1. **No environment variable name crosses the boundary.** The name is read
+ *     here to establish presence and then dropped; {@link bindingDisclosure}
+ *     returns a shape with no field to put it in (ADR-034).
+ *  2. **No value, length, prefix or fingerprint** — `configState` reduces the
+ *     variable to one of four words before it is handed on, exactly as it does
+ *     for the four platform variables above.
+ *  3. **No write path.** This is a query, it reads no product table, and it
+ *     calls nothing that could modify a deployment. Panel holds no credential
+ *     capable of changing its own secret configuration, so there is nothing
+ *     here that *could* be pressed.
+ */
+function infrastructureBindingStates(): BindingDisclosure[] {
+  const readable = envIsReadable();
+  return INFRASTRUCTURE_BINDINGS.map((binding) =>
+    bindingDisclosure(binding, configState(binding.envVar, readable)),
+  );
+}
+
+/**
  * The four sensitive configuration values this deployment needs, as states.
  *
  * Named explicitly rather than iterated from a list so that adding a variable
@@ -246,12 +298,7 @@ function configurationStates(): Array<{ name: string; state: ConfigState; note: 
   // `process.env` access can throw in some Convex runtimes rather than return
   // undefined; treating a throw as "not observable" is correct, because an
   // unreadable configuration is not the same claim as an absent one.
-  let readable = true;
-  try {
-    void process.env.CONVEX_SITE_URL;
-  } catch {
-    readable = false;
-  }
+  const readable = envIsReadable();
 
   return [
     {
@@ -315,6 +362,9 @@ export const systemStatus = query({
         state: "declared-not-verified" as const,
       },
       configuration: configurationStates(),
+      // Provider credentials this deployment expects, as metadata only. Phase 1
+      // of ADR-034: reported, never written, and carrying no variable name.
+      infrastructureBindings: infrastructureBindingStates(),
       // The two things this surface genuinely cannot know, said out loud rather
       // than omitted. A gap that is visible is a gap; a gap that is absent
       // reads as a pass.

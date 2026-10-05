@@ -52,6 +52,8 @@
 import { useQuery_experimental, useAction, type UseQueryResult } from "convex/react";
 import { useEffect, useState } from "react";
 
+import type { BindingDisclosure } from "../lib/infrastructureBindings";
+
 /** One query's state, whatever its payload type. */
 type AnyQuery = UseQueryResult<unknown>;
 import { Link } from "react-router";
@@ -150,62 +152,89 @@ function Table({ head, children }: { head: string[]; children: React.ReactNode }
 /* ------------------------------------------------------------- data views */
 
 /**
- * Neon connectivity, observed once when this page loads (CHANGE-0039).
+ * Infrastructure bindings (ADR-034, CHANGE-0040).
  *
- * `unconfigured` is deliberately a **neutral** tone rather than a bad one. An
- * absent credential is not an outage, and rendering it as one would train an
- * operator to ignore red on this page — which is the single failure mode this
- * console is built to avoid.
- */
-function neonTone(state: NeonHealth["state"]): Tone {
-  if (state === "ok") return "ok";
-  if (state === "unconfigured") return "unknown";
-  return "bad";
-}
-
-/**
- * The external-database section.
+ * Shows provider, purpose, state, last check and failure category — and
+ * deliberately **not** the environment variable's name. The name is not in the
+ * payload the server sends, so this component cannot display it even by
+ * accident; that is the rule from ADR-034 made structural rather than a matter
+ * of what this file chooses to render.
  *
- * Three states, all rendered rather than thrown away: a refusal (the caller is
- * not an admin), a failure (the action itself failed), and a report. The
- * failure state deliberately does **not** name a cause — the action already
- * reduced any driver error to a closed vocabulary, and a client that invented a
- * friendlier message here would be the place a credential leaked.
+ * `last check` is per binding and honest about its own absence. Only Neon has a
+ * probe that exists today, and for every other provider the cell says so in
+ * words rather than showing a dash that could be mistaken for a passing check.
  */
-function NeonSection({ view }: { view: NeonView }) {
-  // The caller only renders this section once a verdict exists. Returning
-  // `null` rather than a placeholder keeps the one state that has no honest
-  // sentence — "we have not asked yet" — from being rendered as one.
-  if (view.status === "pending") return null;
-
-  if (view.status === "refused" || view.status === "failed") {
-    return (
-      <Section id="neon" title="External databases" source="src/convex/neon.ts">
-        <p className="text-[12px]">
-          {view.status === "refused"
-            ? "Refused: the Neon health check is admin-only, decided server-side on every call."
-            : "The Neon health check could not complete. The action failed before it could report a state."}
-        </p>
-        <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-          This is not counted in the refusal tally above: the five queries either authorised or did not, and this
-          section can fail for a reason that has nothing to do with access.
-        </p>
-      </Section>
-    );
+function InfrastructureBindingsSection({
+  bindings,
+  neon,
+}: {
+  bindings: readonly BindingDisclosure[];
+  neon: NeonView;
+}) {
+  /** The last-check cell for one binding, given whatever the probe reported. */
+  function lastCheck(binding: BindingDisclosure): string {
+    if (binding.provider !== "neon") return "no health check exists";
+    if (neon.status === "pending") return "probing…";
+    if (neon.status === "success" && neon.data.state === "ok") {
+      return neon.data.latencyMs === null ? "just now" : `just now (${neon.data.latencyMs}ms)`;
+    }
+    if (neon.status === "success") return "just now";
+    // Refused or the action failed: the probe produced no measurement, and
+    // saying "not observed" is more honest than carrying the configured state
+    // forward as though the credential had just been checked.
+    return "not observed";
   }
 
-  const data = view.data;
+  /** The failure cell: a coarse category, or an explicit absence. */
+  function failure(binding: BindingDisclosure): string {
+    if (binding.provider !== "neon" || neon.status !== "success") return "—";
+    if (neon.data.state === "ok" || neon.data.state === "unconfigured") return "—";
+    return neon.data.classification;
+  }
+
   return (
-    <Section id="neon" title="External databases" source="src/convex/neon.ts">
-      <Row k="Service" v="Neon (serverless Postgres)" />
-      <Row k="State" v={<Chip tone={neonTone(data.state)}>{data.state}</Chip>} />
-      <Row k="Latency" v={data.latencyMs === null ? "not measured" : `${data.latencyMs}ms`} />
-      <Row k="Project" v={data.project ?? "unknown"} />
-      <Row k="Statement" v={<code className="font-mono">{data.probeQuery}</code>} />
-      <p className="mt-2 text-[12px]">{data.summary}</p>
+    <Section id="bindings" title="Infrastructure bindings" source="src/lib/infrastructureBindings.ts">
+      <Table head={["Provider", "Purpose", "State", "Last check", "Failure"]}>
+        {bindings.map((b) => (
+          <tr key={`${b.provider}:${b.purpose}:${b.state}`} className="border-b border-border/60">
+            <td className="py-1 pr-3 font-mono text-[11px]">{b.provider}</td>
+            <td className="py-1 pr-3 text-[11px]">{b.purpose}</td>
+            <td className="py-1 pr-3">
+              <Chip tone={configTone(b.state)}>{b.state}</Chip>
+            </td>
+            <td className="py-1 pr-3 text-[11px] text-muted-foreground">{lastCheck(b)}</td>
+            <td className="py-1 font-mono text-[11px] text-muted-foreground">{failure(b)}</td>
+          </tr>
+        ))}
+      </Table>
+
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        Configuration state is read from deployment environment variables, so it describes{" "}
+        <strong>this deployment</strong> only — a variable set on one deployment has no effect on another. No secret
+        value, length, prefix or variable name is returned to this page or displayed by it.
+      </p>
+
+      {neon.status === "success" && neon.data.state !== "unconfigured" ? (
+        <details className="mt-2">
+          <summary className="cursor-pointer font-mono text-[11px] uppercase tracking-wider">
+            Neon check detail
+          </summary>
+          <p className="mt-1 text-[12px]">{neon.data.summary}</p>
+          <Row k="Statement" v={<code className="font-mono">{neon.data.probeQuery}</code>} />
+          <Row k="Project" v={neon.data.project ?? "unknown"} />
+        </details>
+      ) : null}
+
+      {neon.status === "refused" || neon.status === "failed" ? (
+        <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+          The Neon check did not run, so its row shows no observation. That is not counted in the refusal tally
+          above: the five queries either authorised or did not.
+        </p>
+      ) : null}
+
       <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-        Connection and health check only. Panel stores no schema, table or data in Neon, and nothing on this page
-        writes to it.
+        Phase 1 is read-only (ADR-034). There is no create, rotate or revoke control here, and Panel holds no
+        credential that could modify its own secret configuration.
       </p>
     </Section>
   );
@@ -640,7 +669,9 @@ export default function AdminControlCenter() {
           {integrations.status === "success" && <IntegrationHealthSection data={integrations.data} />}
           {dataModel.status === "success" && <DataModelSection data={dataModel.data} />}
           {security.status === "success" && <SecuritySection data={security.data} />}
-          {neon.status !== "pending" && <NeonSection view={neon} />}
+          {status.status === "success" && (
+            <InfrastructureBindingsSection bindings={status.data.infrastructureBindings} neon={neon} />
+          )}
 
           <Section id="limits" title="Read limits in force here" source="src/lib/readLimits.ts">
             <Table head={["Cap", "Value", "Bounds"]}>
