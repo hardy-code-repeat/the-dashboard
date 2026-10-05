@@ -7,10 +7,17 @@
  *  - It is dense. Status tables, not cards with generous padding. An operator
  *    scanning for what is broken should see everything at once.
  *  - It has **no action buttons**. Not "destructive ones are hidden" — there are
- *    none, because the module behind it exports no mutation (ADR-032 §4). Every
- *    control on this page is a disclosure (`<details>`) or a link to
+ *    none. Every control on this page is a disclosure (`<details>`) or a link to
  *    documentation. A control centre that could change something would be an
  *    admin tool, and this is a status report.
+ *
+ *    The distinction from ADR-032 §4 is precise and worth keeping: the module
+ *    behind the five sections (`admin.ts`) still exports no mutation **and no
+ *    action**. The Neon row added by CHANGE-0039 is the one exception on the
+ *    page, and it is an observation rather than a control — `neonHealth` runs
+ *    `SELECT 1` against an external database, writes nothing anywhere, and is
+ *    invoked automatically rather than by a button. It is called out separately
+ *    below because "no write endpoint exists" must never mean "no code runs".
  *  - It renders three visibly different kinds of statement, and never blends
  *    them. **Observed** is a measurement. **Declared** is configuration that
  *    exists in source and says nothing about execution. **Not observable** is
@@ -31,9 +38,19 @@
  * Until an operator sets `users.role` (D64), this page is expected to render
  * the refusal panel for everyone. That is the correct behaviour, and it is
  * labelled as such rather than being an empty console.
+ *
+ * ## The Neon section is not counted in the refusal tally
+ *
+ * `neonHealth` is an action, not one of the five queries, so its failure is
+ * rendered in its own section rather than folded into the "N of 5 sections
+ * refused independently" count. Counting it would misreport what happened: the
+ * five queries either authorised or did not, whereas the Neon action can fail
+ * for an unrelated reason — an unreachable database, an unset credential — and
+ * conflating the two would turn a database outage into a claim about access.
  */
 
-import { useQuery_experimental, type UseQueryResult } from "convex/react";
+import { useQuery_experimental, useAction, type UseQueryResult } from "convex/react";
+import { useEffect, useState } from "react";
 
 /** One query's state, whatever its payload type. */
 type AnyQuery = UseQueryResult<unknown>;
@@ -133,6 +150,68 @@ function Table({ head, children }: { head: string[]; children: React.ReactNode }
 /* ------------------------------------------------------------- data views */
 
 /**
+ * Neon connectivity, observed once when this page loads (CHANGE-0039).
+ *
+ * `unconfigured` is deliberately a **neutral** tone rather than a bad one. An
+ * absent credential is not an outage, and rendering it as one would train an
+ * operator to ignore red on this page — which is the single failure mode this
+ * console is built to avoid.
+ */
+function neonTone(state: NeonHealth["state"]): Tone {
+  if (state === "ok") return "ok";
+  if (state === "unconfigured") return "unknown";
+  return "bad";
+}
+
+/**
+ * The external-database section.
+ *
+ * Three states, all rendered rather than thrown away: a refusal (the caller is
+ * not an admin), a failure (the action itself failed), and a report. The
+ * failure state deliberately does **not** name a cause — the action already
+ * reduced any driver error to a closed vocabulary, and a client that invented a
+ * friendlier message here would be the place a credential leaked.
+ */
+function NeonSection({ view }: { view: NeonView }) {
+  // The caller only renders this section once a verdict exists. Returning
+  // `null` rather than a placeholder keeps the one state that has no honest
+  // sentence — "we have not asked yet" — from being rendered as one.
+  if (view.status === "pending") return null;
+
+  if (view.status === "refused" || view.status === "failed") {
+    return (
+      <Section id="neon" title="External databases" source="src/convex/neon.ts">
+        <p className="text-[12px]">
+          {view.status === "refused"
+            ? "Refused: the Neon health check is admin-only, decided server-side on every call."
+            : "The Neon health check could not complete. The action failed before it could report a state."}
+        </p>
+        <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+          This is not counted in the refusal tally above: the five queries either authorised or did not, and this
+          section can fail for a reason that has nothing to do with access.
+        </p>
+      </Section>
+    );
+  }
+
+  const data = view.data;
+  return (
+    <Section id="neon" title="External databases" source="src/convex/neon.ts">
+      <Row k="Service" v="Neon (serverless Postgres)" />
+      <Row k="State" v={<Chip tone={neonTone(data.state)}>{data.state}</Chip>} />
+      <Row k="Latency" v={data.latencyMs === null ? "not measured" : `${data.latencyMs}ms`} />
+      <Row k="Project" v={data.project ?? "unknown"} />
+      <Row k="Statement" v={<code className="font-mono">{data.probeQuery}</code>} />
+      <p className="mt-2 text-[12px]">{data.summary}</p>
+      <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+        Connection and health check only. Panel stores no schema, table or data in Neon, and nothing on this page
+        writes to it.
+      </p>
+    </Section>
+  );
+}
+
+/**
  * The payload types, taken from the generated reference's own return type.
  *
  * `api.admin.systemStatus` is a `FunctionReference`, not a function, so
@@ -146,6 +225,21 @@ type AgentHealth = (typeof api.admin.agentHealth)["_returnType"];
 type IntegrationHealth = (typeof api.admin.integrationHealth)["_returnType"];
 type DataModel = (typeof api.admin.dataModel)["_returnType"];
 type SecurityPosture = (typeof api.admin.securityPosture)["_returnType"];
+type NeonHealth = (typeof api.neon.neonHealth)["_returnType"];
+
+/**
+ * The Neon section's own local state.
+ *
+ * `useQuery_experimental` is deliberately **not** used here: an action has no
+ * reactive query to subscribe to, and this probe is a one-shot observation, not
+ * a live subscription. Modelling it as one would have meant a `useQuery` shape
+ * with no query in it.
+ */
+type NeonView =
+  | { status: "pending" }
+  | { status: "success"; data: NeonHealth }
+  | { status: "failed" }
+  | { status: "refused" };
 
 function ago(ts: number | null): string {
   if (ts === null) return "never";
@@ -473,6 +567,31 @@ export default function AdminControlCenter() {
   const dataModel = useQuery_experimental({ query: api.admin.dataModel, args: {} });
   const security = useQuery_experimental({ query: api.admin.securityPosture, args: {} });
 
+  // One probe, on mount, never on an interval: this is a status report, and a
+  // control centre that re-polls an external database on a timer would be a
+  // monitoring agent wearing a page's clothes. `cancelled` guards the setState
+  // after unmount, which React 19 tolerates but which would still be a state
+  // update to a component that no longer exists.
+  const runNeonHealth = useAction(api.neon.neonHealth);
+  const [neon, setNeon] = useState<NeonView>({ status: "pending" });
+  useEffect(() => {
+    let cancelled = false;
+    runNeonHealth({})
+      .then((data) => {
+        if (!cancelled) setNeon({ status: "success", data });
+      })
+      .catch(() => {
+        // The action throws for exactly one reason: the caller is not an admin.
+        // Everything else is a reported state, so a throw is a refusal — and
+        // the two are distinguished here only because both are equally safe to
+        // show, not because the message could tell them apart.
+        if (!cancelled) setNeon({ status: "refused" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runNeonHealth]);
+
   // The backend refuses by throwing. A thrown query error here means "not
   // authorised", and it is the *only* thing that produces the refusal panel —
   // there is no client-side branch that could decide it, which is the point.
@@ -521,6 +640,7 @@ export default function AdminControlCenter() {
           {integrations.status === "success" && <IntegrationHealthSection data={integrations.data} />}
           {dataModel.status === "success" && <DataModelSection data={dataModel.data} />}
           {security.status === "success" && <SecuritySection data={security.data} />}
+          {neon.status !== "pending" && <NeonSection view={neon} />}
 
           <Section id="limits" title="Read limits in force here" source="src/lib/readLimits.ts">
             <Table head={["Cap", "Value", "Bounds"]}>
@@ -548,8 +668,11 @@ export default function AdminControlCenter() {
 
           <footer className="border-2 border-foreground bg-card px-3 py-2">
             <p className="text-[11px] text-muted-foreground">
-              No control on this page changes anything — the backend exports no mutation, action or internal write.
-              Verification lives in <code className="font-mono">bun test</code>,{" "}
+              No control on this page changes anything — the five Convex queries behind it export no mutation,
+              no action and no internal write. The Neon row is the one action on this page: it runs{" "}
+              <code className="font-mono">SELECT 1</code> against an external database, writes nothing, and is
+              invoked automatically rather than by a control. Verification lives in{" "}
+              <code className="font-mono">bun test</code>,{" "}
               <code className="font-mono">bun scripts/spec-drift.ts</code>,{" "}
               <code className="font-mono">bun scripts/audit-bounded-reads.ts</code> and the{" "}
               <code className="font-mono">conformance-*.ts</code> harnesses.

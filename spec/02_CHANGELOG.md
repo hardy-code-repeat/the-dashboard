@@ -4010,6 +4010,70 @@ at narrow widths.
 
 ---
 
+## CHANGE-0039
+
+**Neon is connected and health-checked. Its purpose is undecided, so it has no schema, no table and no data — and the page that reports it says so out loud.**
+
+Severity: MINOR
+Status: **IMPLEMENTED (unit tests, typecheck, both drift gates). NOT VERIFIED
+live** — the Convex deployment is disabled by a usage limit, so no action can
+execute and no probe has ever run. NOT BROWSER-VERIFIED.
+
+**Trigger.** A request to integrate Neon. The scope was set by the requester:
+*connection + health check only, purpose undecided*. That scope is the point of
+this entry rather than a compromise — an integration with no purpose is exactly
+the thing that becomes an unreviewed second datastore six months later.
+
+**What was built.**
+
+- `@neondatabase/serverless@1.2.0` (one new dependency, ADR-016).
+- `src/lib/neonHealth.ts` — pure classification: a probe result becomes one of
+  four states, and a failure becomes one of four words.
+- `src/convex/neon.ts` — `"use node"`, one action, `SELECT 1`, 5s deadline.
+- `src/convex/authorization.ts` — `callerIsAdmin`, shared by out-of-module
+  authorizers.
+- `src/lib/neonHealth.test.ts` — 11 tests.
+- One new section on the Admin Control Centre.
+
+**Why the classification is not in the action.** A failed Postgres connection
+says `password authentication failed for user "u_…" host="ep-…neon.tech"`, and a
+Neon connection string carries host, account, database and password in one
+value. The action therefore reduces the driver message to a fixed word *before*
+anything is returned, and the report is structurally incapable of echoing its
+input. The test that matters most is the one asserting that the input text does
+not appear in the output.
+
+**Why `authorization.ts` exists, and the duplication it buys.** Two constraints
+forced it out of `neon.ts`: a `"use node"` file may declare only actions, and an
+`action` context has no `db` to read a role with. `admin.ts` could not be
+imported — `checkAdminReadOnly` requires its `requireAdmin` to stay private so
+nothing outside the Control Centre can depend on it. So the Control Centre keeps
+its guard and this module re-establishes the same decision, sharing the *rule*
+(`decideAdminAccess`) and duplicating only the plumbing. Named here because two
+implementations of one authorisation rule is a thing a reader must find in a
+diff, not in a footnote.
+
+**NOT VERIFIED — the gap that is a real coupling.** The action reaches
+`callerIsAdmin` through `makeFunctionReference("authorization:callerIsAdmin")`,
+which is **not type-checked**. The generated `api.authorization.…` type does not
+exist yet, and codegen cannot run while this file references a type it lacks —
+a deadlock that only `makeFunctionReference` breaks. A wrong string resolves to
+nothing at runtime rather than failing the build. The first live call is what
+proves it. Renaming the query is a breaking change to that line.
+
+**NOT VERIFIED — no probe has ever run.** The deployment is disabled by a usage
+limit, so `neonHealth` has never executed, no connection string has been
+supplied, and the `ok` and `unreachable` paths are tested at the classification
+layer only, never against a real Neon.
+
+**Budget (ADR-016).** One new dependency, zero new tables, zero new files of
+architecture, zero Panel data in Neon. Convex remains the system of record; this
+adds no read or write path for application data and no second backend for any
+purpose beyond a connectivity probe. Exceeding this would be a stop condition —
+it has not been approached.
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
