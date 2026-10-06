@@ -4,6 +4,7 @@ import {
   AlarmClock,
   ArrowUpRight,
   Brain,
+  CalendarDays,
   Check,
   Circle,
   Download,
@@ -22,7 +23,7 @@ import { Link } from "react-router";
 import { toast } from "sonner";
 
 import { api } from "@/convex/_generated/api";
-import { AttentionFeed } from "@/components/AttentionFeed";
+import { AttentionFeed, AttentionSummary } from "@/components/AttentionFeed";
 import { CalendarStrip } from "@/components/CalendarStrip";
 import { ConfirmAction } from "@/components/ConfirmAction";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import { DataExportPanel } from "@/components/DataExportPanel";
 import { LifeAdminArea } from "@/components/LifeAdminArea";
 import { useAuth } from "@/hooks/use-auth";
 import { planCapture } from "@/lib/capture";
+import { selectComingUp } from "@/lib/comingUp";
 import { describeDue } from "@/lib/nlp";
 import { READ_LIMITS } from "@/lib/readLimits";
 import { FEATURE_NAMES } from "@/lib/scorer";
@@ -95,13 +97,13 @@ export default function Dashboard() {
   const preview = useMemo(() => {
     const trimmed = input.trim();
     if (trimmed.length < 2) return null;
-    const segments = capturePreview(trimmed);
+    const segments = capturePreview(trimmed, people ?? []);
     if (segments.length === 0) return null;
     return {
       single: segments.length === 1 ? segments[0] : null,
       segments,
     };
-  }, [input]);
+  }, [input, people]);
 
   const tasks = data?.tasks ?? [];
   const stats = data?.stats;
@@ -117,6 +119,15 @@ export default function Dashboard() {
   const openCount = tasks.filter((t) => !t.completed).length;
   const doneCount = tasks.length - openCount;
   const maxBar = Math.max(1, ...(stats?.week.map((d) => d.count) ?? [1]));
+
+  // Genuinely fresh board: no tasks, no notes, nothing to advise about. The
+  // distinction matters because "nothing here" to a person who has just
+  // arrived reads as a verdict on the product, while the same emptiness a week
+  // in reads as a clean slate — so the empty state says which one it is.
+  const freshBoard =
+    tasks.length === 0 &&
+    (data?.notes.length ?? 0) === 0 &&
+    (data?.brief.length ?? 0) === 0;
 
   const handleAddTask = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -278,7 +289,10 @@ export default function Dashboard() {
         <>
         {/* ---------- AREA TABS ---------- */}
         <nav aria-label="Life areas" className="mb-8">
-          <div className="-mx-1 flex flex-wrap items-stretch gap-2">
+          {/* On a phone the tabs would otherwise wrap into several rows of
+              navigation before the product starts, so they scroll sideways
+              instead — one row of mental models, on every width. */}
+          <div className="-mx-1 flex flex-nowrap items-stretch gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible sm:pb-0">
             {areas === undefined
               ? null
               : areas.map((area) => {
@@ -291,7 +305,7 @@ export default function Dashboard() {
                       onClick={() => setActiveArea(area.slug)}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "brutal flex items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase transition-colors",
+                        "brutal flex shrink-0 items-center gap-2 px-4 py-2.5 text-xs font-bold uppercase transition-colors",
                         active
                           ? "bg-foreground text-background"
                           : "bg-card hover:bg-muted",
@@ -306,7 +320,7 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => setShowAreaPicker(true)}
-              className="brutal-press flex items-center gap-2 border-2 border-dashed border-border px-4 py-2.5 text-xs font-bold uppercase text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="brutal-press flex shrink-0 items-center gap-2 border-2 border-dashed border-border px-4 py-2.5 text-xs font-bold uppercase text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <Plus className="size-3.5" />
               Area
@@ -315,35 +329,6 @@ export default function Dashboard() {
         </nav>
 
         {showAreaPicker && <AreaPicker onClose={() => setShowAreaPicker(false)} />}
-
-        {/* ---------- TOOLS (integration hub) ---------- */}
-        {activeArea === "general" && (
-          <section className="mb-8">
-            <details className="brutal-flat bg-card">
-              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
-                <PlugZap className="size-4" />
-                Connect a tool
-              </summary>
-              <div className="border-t-2 border-border p-4">
-                <IntegrationsArea />
-              </div>
-            </details>
-
-            {/* Data portability lives here rather than in a Finance or People
-                area: it spans every area, so burying it in one of them would
-                misrepresent where the data actually is. Collapsed by default so
-                it reads as a control, not as a feature competing for attention. */}
-            <details className="brutal-flat mt-3 bg-card">
-              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
-                <Download className="size-4" />
-                Your data
-              </summary>
-              <div className="border-t-2 border-border p-4">
-                <DataExportPanel />
-              </div>
-            </details>
-          </section>
-        )}
 
         {/* ---------- BRIEF (only on the general tab) ---------- */}
         {activeArea === "general" && (
@@ -424,6 +409,12 @@ export default function Dashboard() {
             </motion.section>
           )}
         </AnimatePresence>
+
+        {/* ---------- NEEDS YOU ----------
+            The product's promise on the product's first screen. The full
+            feed stays one toggle away; this is the same answer, in the same
+            voice, where the eye lands first. */}
+        <AttentionSummary onSeeAll={() => setView("attention")} />
 
         {/* ---------- STATS ---------- */}
         <section className="mb-8">
@@ -510,6 +501,7 @@ export default function Dashboard() {
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Textarea
+                  id="capture-input"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -591,6 +583,14 @@ export default function Dashboard() {
                               #{tag}
                             </span>
                           ))}
+                          {segment.leadingPerson && (
+                            <span
+                              className="border-2 border-border bg-accent px-1.5 py-0.5 text-[10px] font-bold uppercase text-accent-foreground"
+                              title="This will be linked to that person"
+                            >
+                              → {segment.leadingPerson.name}
+                            </span>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -643,12 +643,18 @@ export default function Dashboard() {
               <div className="brutal-flat flex flex-col items-center gap-3 bg-card px-6 py-14 text-center">
                 <Circle className="size-8 text-muted-foreground" />
                 <p className="font-display text-lg uppercase">
-                  {filter === "done" ? "Nothing finished yet" : "Nothing here"}
+                  {filter === "done"
+                    ? "Nothing finished yet"
+                    : freshBoard
+                      ? "Welcome to Panel"
+                      : "Nothing here"}
                 </p>
-                <p className="max-w-xs text-xs uppercase text-muted-foreground">
+                <p className="max-w-xs text-[11px] leading-relaxed uppercase text-muted-foreground">
                   {filter === "done"
                     ? "Tick something off and it will show up here."
-                    : "Try typing “pay rent tomorrow” in the box above."}
+                    : freshBoard
+                      ? "Panel shows what matters and what to do next. Start with whatever is on your mind — type it in plain words above. Dates like “tomorrow” and repeats like “every friday” are picked up for you."
+                      : "Try typing “pay rent tomorrow” in the box above."}
                 </p>
               </div>
             ) : (
@@ -774,6 +780,12 @@ export default function Dashboard() {
           {/* ---------- SIDE COLUMN ---------- */}
           <aside className="flex flex-col gap-6">
             <CalendarStrip />
+
+            {/* ---------- COMING UP ---------- */}
+            <ComingUpPanel
+              tasks={tasks}
+              truncated={data?.truncated ?? false}
+            />
 
             <section className="brutal-flat bg-card p-5">
               <h2 className="font-display mb-4 text-sm uppercase tracking-wide">Last 7 days</h2>
@@ -915,6 +927,61 @@ export default function Dashboard() {
           <Commitments people={people ?? []} />
         ) : null}
 
+        {/* ---------- QUICK CAPTURE (small screens) ----------
+            On a phone the composer sits below the opening summary, so the
+            front door needs a hand being found. The button does exactly what
+            it says — scroll to the capture box and focus it — and nothing
+            else. It is hidden at `sm` and up, where the box is already in
+            view. */}
+        {activeArea === "general" && (
+          <button
+            type="button"
+            onClick={() => {
+              const field = document.getElementById("capture-input");
+              field?.scrollIntoView({ behavior: "smooth", block: "center" });
+              field?.focus({ preventScroll: true });
+            }}
+            className="brutal fixed right-4 bottom-4 z-40 flex items-center gap-2 bg-primary px-4 py-3 text-xs font-bold uppercase sm:hidden"
+          >
+            <Plus className="size-4" aria-hidden />
+            Capture
+          </button>
+        )}
+
+        {/* ---------- TOOLS (integration hub) ----------
+            The utilities a person occasionally needs, deliberately at the
+            bottom. They answer none of the opening screen's questions, and
+            sitting above the brief they pushed the product itself below the
+            fold — especially on a phone. They span every area, which is why
+            they stay on the general view rather than moving into one. */}
+        {activeArea === "general" && (
+          <section className="mt-12 mb-8">
+            <details className="brutal-flat bg-card">
+              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
+                <PlugZap className="size-4" />
+                Connect a tool
+              </summary>
+              <div className="border-t-2 border-border p-4">
+                <IntegrationsArea />
+              </div>
+            </details>
+
+            {/* Data portability lives here rather than in a Finance or People
+                area: it spans every area, so burying it in one of them would
+                misrepresent where the data actually is. Collapsed by default so
+                it reads as a control, not as a feature competing for attention. */}
+            <details className="brutal-flat mt-3 bg-card">
+              <summary className="flex cursor-pointer items-center gap-2 p-4 text-xs font-bold uppercase">
+                <Download className="size-4" />
+                Your data
+              </summary>
+              <div className="border-t-2 border-border p-4">
+                <DataExportPanel />
+              </div>
+            </details>
+          </section>
+        )}
+
         <footer className="mt-12 border-t-2 border-border pt-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-[11px] uppercase text-muted-foreground">
@@ -993,6 +1060,105 @@ function StatTile({
 }
 
 /**
+ * "Coming up" — the deterministic seven-day slice of dated work.
+ *
+ * A forecast without prediction: every row is a due date the user or a rule
+ * already set, grouped by day and soonest first. No estimate, no model, no
+ * invented confidence — a date is a date, and the card claims nothing else.
+ *
+ * It reads the same bounded task rows the board above it already holds, so it
+ * adds no query and no read; when the board is truncated it says so, because a
+ * forecast over a partial list presented as complete is the same class of lie
+ * the stats tiles refuse to tell.
+ */
+function ComingUpPanel({
+  tasks,
+  truncated,
+}: {
+  tasks: { _id: string; title: string; dueAt?: number | null; completed: boolean }[];
+  truncated: boolean;
+}) {
+  const coming = useMemo(
+    () =>
+      selectComingUp(
+        tasks.map((t) => ({
+          id: t._id,
+          title: t.title,
+          dueAt: t.dueAt ?? null,
+          completed: t.completed,
+        })),
+        new Date(),
+      ),
+    [tasks],
+  );
+
+  if (coming.items.length === 0) {
+    return (
+      <section className="brutal-flat bg-card p-5">
+        <div className="mb-3 flex items-center gap-2">
+          <CalendarDays className="size-4" />
+          <h2 className="font-display text-sm uppercase tracking-wide">Coming up</h2>
+        </div>
+        <p className="border-2 border-dashed border-border px-3 py-4 text-center text-[11px] uppercase text-muted-foreground">
+          Nothing dated in the next 7 days
+        </p>
+      </section>
+    );
+  }
+
+  // Rows arrive sorted by time, so buckets are contiguous and a new group
+  // starts exactly where the label changes.
+  const groups: { label: string; items: typeof coming.items }[] = [];
+  for (const item of coming.items) {
+    const label =
+      item.bucket === "today" ? "Today" : item.bucket === "tomorrow" ? "Tomorrow" : "This week";
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.items.push(item);
+    else groups.push({ label, items: [item] });
+  }
+
+  return (
+    <section className="brutal-flat bg-card p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <CalendarDays className="size-4" />
+        <h2 className="font-display text-sm uppercase tracking-wide">Coming up</h2>
+      </div>
+      <div className="flex flex-col gap-3">
+        {groups.map((group) => (
+          <div key={group.label}>
+            <p className="mb-1.5 text-[10px] font-bold uppercase text-muted-foreground">
+              {group.label}
+            </p>
+            <ul className="flex flex-col gap-1.5">
+              {group.items.map((item) => (
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between gap-2 border-2 border-border bg-background px-3 py-2"
+                >
+                  <span className="min-w-0 flex-1 truncate text-xs">{item.title}</span>
+                  <span className="shrink-0 text-[10px] font-bold uppercase text-muted-foreground">
+                    {describeDue(item.dueAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 border-t-2 border-border pt-3 text-[10px] uppercase text-muted-foreground">
+        {coming.more > 0 ? `${coming.more} more dated — ` : ""}
+        through{" "}
+        {new Date(coming.horizonEnd - 1).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        })}
+        {truncated ? " · from your most recent tasks — more exist than are shown" : ""}
+      </p>
+    </section>
+  );
+}
+
+/**
  * The board's first paint.
  *
  * D70. The Main Panel used to render its whole confident empty state — "Nothing
@@ -1028,15 +1194,17 @@ function BoardLoading() {
 /**
  * The multi-segment preview.
  *
- * Uses the **same** `planCapture` the server runs, so the preview cannot
- * disagree with the commit — the Feature 2 acceptance criterion that "the
- * server is authoritative" is only meaningful if the client is showing the
- * server's answer rather than a second guess. The server still re-plans on
- * submit; this is for the user's eyes, not for the record.
+ * Uses the **same** `planCapture` the server runs — with the same known-people
+ * list — so the preview cannot disagree with the commit about what will be
+ * created *or about what it will be linked to*: the Feature 2 acceptance
+ * criterion that "the server is authoritative" is only meaningful if the
+ * client is showing the server's answer rather than a second guess. The
+ * server still re-plans on submit; this is for the user's eyes, not for the
+ * record.
  */
-function capturePreview(raw: string) {
+function capturePreview(raw: string, knownPeople: readonly { id: string; name: string }[]) {
   try {
-    const plan = planCapture(raw);
+    const plan = planCapture(raw, knownPeople, new Date());
     return plan.segments.map((segment) => ({
       title: segment.parsed.title,
       priority: segment.parsed.priority,
@@ -1044,6 +1212,7 @@ function capturePreview(raw: string) {
       tags: segment.parsed.tags,
       dueLabel: describeDue(segment.parsed.dueAt),
       confidence: segment.confidence,
+      leadingPerson: segment.leadingPerson,
     }));
   } catch {
     return [];

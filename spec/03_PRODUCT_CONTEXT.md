@@ -445,6 +445,10 @@ Status ladder:
 | Notes | `IMPLEMENTED` | Unscoped — no area, no tags, no sharing. |
 | Auth | `IMPLEMENTED` | Convex Auth, email OTP + guest. Guest path defective — N2. |
 | Brutalist minimal design system | `IMPLEMENTED` | `src/index.css`. |
+| Needs-you summary on the opening screen | `IMPLEMENTED` | `AttentionSummary` (`src/components/AttentionFeed.tsx`) — same query, same action wiring as the full feed, top 3 items. |
+| Deterministic seven-day "Coming up" view | `IMPLEMENTED` | `src/lib/comingUp.ts` (9 fixtures). Due dates only, derived from the board's own bounded task rows; no prediction. |
+| Capture preview person link | `IMPLEMENTED` | `capturePreview` plans with the same known-people list the server does; the `→ Name` chip is what the commit will attach. |
+| First-run welcome state | `IMPLEMENTED` | Fresh board (no tasks/notes/brief) greets instead of reporting "Nothing here". |
 
 ### 5.2 Specified, not started
 

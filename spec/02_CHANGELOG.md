@@ -4235,6 +4235,99 @@ Related ADR: ADR-032, ADR-034
 
 ---
 
+## CHANGE-0042
+
+**The real Panel experience — the opening screen now answers "what needs me?"
+before it shows anything else, with a deterministic seven-day horizon and a
+capture preview that no longer hides part of what it will do.**
+
+Severity: MINOR
+
+Status: **IMPLEMENTED.** Browser/visual verification is NOT VERIFIED in this
+environment (no rendered screenshot was taken); every gate that can run here
+was run and is green.
+
+**Trigger.** The product-build phase: Panel should feel like a place a person
+opens every day because it tells them what matters — not a collection of tabs
+that happen to exist. The journey audit found four real breaks: the attention
+feed (the product's core promise) was one toggle away from the first screen;
+the capture composer sat below two utility panels and four stat tiles;
+the preview silently disagreed with the commit about person links; and on a
+phone the area tabs wrapped into three rows of navigation before the product
+began.
+
+**What changed.**
+
+- **Needs you, on the first screen** — new `AttentionSummary` in
+  `src/components/AttentionFeed.tsx`: the top three items of the same
+  `attention.getAttention` query the full feed renders, flattened in the
+  pipeline's own priority order, with the section and area named, the due
+  horizon, and the same primary action and *Later* controls. It is a window
+  onto the feed, not a second feed: the action wiring was extracted into one
+  shared `useAttentionActions()` hook so a "Done" on the board and a "Done" in
+  the feed tick the same task, start the same renewal and settle the same
+  promise. Empty → absent (the brief already carries the all-clear).
+- **Board information order** — general view now reads: brief → needs you →
+  stats → capture + task list (with calendar, coming-up, week, notes sidebar)
+  → money → custom pages → commitments → utilities → footer. "Connect a tool"
+  and "Your data" moved from above the brief to above the footer: they answer
+  none of the opening screen's questions and were pushing the product below
+  the fold.
+- **Coming up (deterministic forecast)** — new `src/lib/comingUp.ts`:
+  `selectComingUp()` picks open tasks due within the next seven calendar days
+  (horizon = midnight closing day +6, exclusive, returned so the UI states the
+  exact cut), buckets them Today / Tomorrow / This week, excludes overdue
+  (which belongs to Needs you) and reports its cap as `more`. Rendered as the
+  sidebar's *Coming up* card from the **same bounded task rows the board
+  already holds** — no new query, no new read. When the board is truncated the
+  card says the list is partial. No prediction, no model, no invented signal.
+- **Capture preview honesty** — `capturePreview` now passes the caller's known
+  people into the same `planCapture` the server runs and shows the leading
+  person as a `→ Name` chip. Previously the server linked "Email Raj about the
+  invoice" to Raj while the preview showed no such link — a preview that
+  claims to show what will be saved must show the link too.
+- **First-run welcome** — a genuinely fresh board (no tasks, no notes, nothing
+  to advise) says *Welcome to Panel* and what to do first, instead of
+  "Nothing here" to someone who has just arrived.
+- **Mobile** — area tabs scroll sideways in one row instead of wrapping to
+  three (`shrink-0` chips, `sm:` restores wrapping); a fixed *Capture* button
+  (hidden at `sm` and up) scrolls to and focuses the composer, which is the
+  front door's only job and nothing else.
+- **Tests** — `src/lib/comingUp.test.ts`: 9 fixtures over window boundaries,
+  overdue exclusion, day buckets, sort order and the reported cap. One fixture
+  defect was found and fixed during writing: `NOW + HOUR` on a `Date` is string
+  concatenation in JavaScript, and the resulting lexicographic comparison put
+  every same-day row silently outside the window — the fixture now arithmetic
+  in milliseconds, which is also why the comment says so.
+
+**What did not change.** Zero Convex changes: no schema, no query, no
+mutation, no index. Attention ranking, rules, caps and feedback are untouched
+(`conformance-attention` re-verified live). No new backend read — the board
+mounts the same bounded `getAttention` subscription the toggle already used.
+Security invariants, ADR-032, ADR-034, Custom Pages, People, Commitments,
+Documents, Finance and Agents are untouched. No LLM, no new dependency, no
+second backend, no fake metric: every number on screen was already computed by
+something real.
+
+**Known gaps.** Rendered/visual verification and screenshot review NOT
+VERIFIED (environment). Opportunities (as a named surface), Today and
+Forecast do not exist as pages in this product and were **not invented** —
+their jobs are answered by the brief, Needs you and Coming up inside the one
+dashboard, which is the existing mental model. K1 and the operator-console
+gaps from CHANGE-0041 are unchanged.
+
+**Tests.** `bun test` → **717 pass, 0 fail** (31 files; baseline 708 → +9).
+`bunx tsc -b --noEmit` clean. `bun run lint` → 0 errors, 19 stock warnings.
+`bun scripts/spec-drift.ts` → 28 passed, 1 warning, 0 failures.
+`bun scripts/audit-bounded-reads.ts` → 0 unbounded, 0 table scans, 151
+bounded. Live against `jovial-possum-12`: `conformance-attention.ts` → all
+phase-1.0 invariants held; `conformance-sec.ts` → 64 boundaries held, 0
+failed.
+
+Related ADR: ADR-015, ADR-033
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**
