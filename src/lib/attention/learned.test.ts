@@ -624,3 +624,156 @@ test("the decaying learning rate is unchanged by 1.1", () => {
   for (let i = 0; i < 200; i += 1) w = trainOne(w, x, i % 2 === 0 ? 0 : 1, 0.5);
   for (const v of w) assert.ok(Math.abs(v) <= 3 + 1e-9, `clamp lost: ${v}`);
 });
+
+// ---------------------------------------------------------------------------
+// closure pass: malformed models, determinism, signal direction, write-paths
+// ---------------------------------------------------------------------------
+
+test("a malformed weight vector degrades to the prior — it never crashes or poisons the feed", () => {
+  const tasks = [
+    task({ _id: "near", dueAt: NOW + 30 * HOUR }),
+    task({ _id: "far", dueAt: NOW + 10 * DAY }),
+  ];
+  const priorOf = new Map(
+    tasks.map((t) => [t._id, priorSeverity(t.dueAt ?? null, t.priority, NOW)] as const),
+  );
+
+  const withNaN = new Array<number>(FEATURE_COUNT).fill(0);
+  withNaN[F.PRIORITY] = Number.NaN;
+  const withInfinity = new Array<number>(FEATURE_COUNT).fill(0);
+  withInfinity[F.PRIORITY] = Number.POSITIVE_INFINITY;
+  const overlong = [...initialWeights(), 1, 1, 1, 1, 1, 1, 1, 1];
+
+  // A NaN anywhere in the dot product makes the whole score NaN; tanh(NaN) is
+  // 0, so the learned term is exactly zero and the severity is the prior —
+  // "no opinion", not "dislike this". An overlong vector reads past the end
+  // of x and takes the same path. Infinity is the only one that produces a
+  // real adjustment, and tanh squashes it into the band.
+  for (const [name, weights, exactPrior] of [
+    ["NaN", withNaN, true],
+    ["overlong", overlong, true],
+    ["Infinity", withInfinity, false],
+  ] as const) {
+    const out = learnedCandidates(
+      { tasks, enabledAreas: ["general"], weights, behaviour: busyUser(), samples: 500 },
+      NOW,
+    );
+    assert.equal(out.length, 2, `${name}: both items must survive`);
+    for (const item of out) {
+      assert.ok(Number.isFinite(item.severity), `${name}: severity must stay finite`);
+      const delta = Math.abs(item.severity - priorOf.get(item.sourceId)!);
+      if (exactPrior) {
+        assert.equal(delta, 0, `${name}: expected an exact fallback to the prior`);
+      } else {
+        assert.ok(delta <= LEARNED_BAND + 1e-9, `${name}: adjustment escaped the band (${delta})`);
+      }
+    }
+  }
+});
+
+test("scoring is deterministic — identical inputs give byte-identical outputs", () => {
+  const tasks = [
+    task({ _id: "a", dueAt: NOW + 30 * HOUR }),
+    task({ _id: "b", dueAt: null }),
+    task({ _id: "c", dueAt: NOW + 10 * DAY, area: "finance", source: "panel", person: "sam" }),
+  ];
+  const input = {
+    tasks,
+    enabledAreas: ["general", "finance"],
+    weights: initialWeights(),
+    behaviour: busyUser(),
+    samples: 40,
+  };
+  assert.deepEqual(learnedCandidates(input, NOW), learnedCandidates(input, NOW));
+
+  // ...and with a trained vector, which is where non-determinism would hide.
+  let w = initialWeights();
+  const x = extractFeatures(
+    { priority: 1, dueAt: NOW + DAY, createdAt: NOW, tags: ["work"] },
+    busyUser(),
+    new Date(NOW),
+  );
+  for (let i = 0; i < 30; i += 1) w = trainOne(w, x, i % 2 === 0 ? 1 : 0);
+  const trained = { ...input, weights: w, samples: 200 };
+  assert.deepEqual(learnedCandidates(trained, NOW), learnedCandidates(trained, NOW));
+});
+
+test("positive and negative feedback move the model in opposite directions", () => {
+  const x = extractFeatures(
+    { priority: 1, dueAt: NOW + DAY, createdAt: NOW, tags: ["work"], area: "finance" },
+    busyUser(),
+    new Date(NOW),
+  );
+  const before = initialWeights();
+  const s0 = score(x, before);
+  const afterAct = trainOne(before, x, 1);
+  const afterReject = trainOne(before, x, 0);
+  assert.ok(score(x, afterAct) > s0, "label 1 must raise the score of the shape that was done");
+  assert.ok(score(x, afterReject) < s0, "label 0 must lower the score of the shape that was rejected");
+  // One step can never move a weight past the clamp — bounded at the
+  // single-event level, not only after hundreds of steps.
+  for (const v of [...afterAct, ...afterReject]) {
+    assert.ok(Math.abs(v) <= 3 + 1e-9, `single-step clamp lost: ${v}`);
+  }
+});
+
+test("learning is owner-scoped, queries never write, and the kill switch gates evidence (source-level)", () => {
+  const source = readFileSync("src/convex/attention.ts", "utf8");
+
+  // Every mutation that touches learning resolves the caller before anything
+  // else; there is no path from an argument to a weight.
+  for (const fn of ["attentionActed", "attentionDismissed", "attentionSnoozed", "attentionRejected"]) {
+    const start = source.indexOf(`export const ${fn}`);
+    assert.ok(start > 0, `${fn} exists`);
+    const end = source.indexOf("export const", start + 1);
+    const body = source.slice(start, end > 0 ? end : undefined);
+    assert.ok(body.includes("await requireUserId(ctx)"), `${fn} must resolve the caller first`);
+  }
+
+  // Snooze never trains — pinned on the write path, where a future edit would
+  // most plausibly break it.
+  const snoozeStart = source.indexOf("export const attentionSnoozed");
+  const snoozeEnd = source.indexOf("export const attentionRejected");
+  assert.ok(!source.slice(snoozeStart, snoozeEnd).includes("trainOn"));
+
+  // Queries are pure. `getAttention` runs to the first non-exported helper
+  // after it (recordFeedback), which is the only region that may write.
+  const gaStart = source.indexOf("export const getAttention");
+  const gaRel = source.indexOf("\nasync function", gaStart + 1);
+  const gaBody = source.slice(gaStart, gaRel > 0 ? gaRel : undefined);
+  assert.ok(!gaBody.includes("trainOne("), "getAttention must not move a weight");
+  assert.ok(!gaBody.includes("trainOn("), "getAttention must not call the trainer");
+  assert.ok(!/db\.(insert|patch|delete)\(/.test(gaBody), "getAttention must not write");
+
+  const statsStart = source.indexOf("export const getAttentionStats");
+  const statsBody = source.slice(statsStart);
+  assert.ok(!statsBody.includes("trainOne("), "getAttentionStats must not move a weight");
+  assert.ok(!/db\.(insert|patch|delete)\(/.test(statsBody), "getAttentionStats must not write");
+
+  // The kill switch is real: generalisedRanking=false feeds the ranker zero
+  // evidence, which is bit-for-bit the deterministic prior — not a label some
+  // other branch could ignore.
+  assert.ok(
+    gaBody.includes("samples: useLearned ? state.samples : 0"),
+    "the ranking flag must gate the evidence itself",
+  );
+
+  // Owner scoping: every assistantState read in this module is index-ranged to
+  // the caller, and feedback rows attach to the caller's personal space.
+  const ownerReads = source.match(/query\("assistantState"\)[\s\S]{0,160}?withIndex\("by_owner"/g) ?? [];
+  assert.ok(ownerReads.length >= 3, "every assistantState read is range-scoped to the owner");
+  const rfStart = source.indexOf("async function recordFeedback");
+  const rfEnd = source.indexOf("async function trainOn");
+  assert.ok(
+    source.slice(rfStart, rfEnd > 0 ? rfEnd : undefined).includes("ensurePersonalSpace"),
+    "feedback rows attach to the caller's personal space",
+  );
+
+  // Snapshot restore refuses a snapshot that is not the caller's — the one
+  // cross-user path that exists in the model module.
+  const modelSource = readFileSync("src/convex/model.ts", "utf8");
+  assert.ok(
+    modelSource.includes("target.ownerUserId !== userId"),
+    "restoring a snapshot must refuse one that is not the caller's",
+  );
+});

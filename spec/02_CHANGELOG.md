@@ -4074,6 +4074,72 @@ it has not been approached.
 
 ---
 
+## CHANGE-0040
+
+**Owner-facing access documentation for the Admin Control Centre, and the
+Attention 1.1 test-matrix closure — invariants that were implied are now pinned.**
+
+Severity: PATCH
+
+Status: **IMPLEMENTED (documentation + fixtures). K1 remains NOT VERIFIED** —
+no legitimate admin session exists in this environment and none was fabricated.
+Attention 1.1 itself was already shipped and verified under CHANGE-0010; this
+entry records its re-verification and the closing of its test-matrix gaps, not
+a re-implementation.
+
+**Trigger.** Two questions from the owner: *“Where is my admin dashboard?”* and
+*“implement Attention Phase 1.1.”* The first was a real gap — the Control Centre
+exists at `/control-centre`, is gated four ways, and was documented nowhere
+outside the page itself. The second turned out to be already done: phase 1.1 is
+`VERIFIED` in the phase table (CHANGE-0010), so the honest work was
+verification against the required matrix, not a second implementation that
+would have violated “if it already works, do not modify it”.
+
+**What changed.**
+
+- `README.md` — new *Admin Control Centre (operator access)* section: the exact
+  route (`/control-centre`), the deliberate absence of a navigation entry
+  (ADR-032), the D64 bootstrap (Convex dashboard → `users` table →
+  `role = "admin"` → reopen the route), what enforces access, and what the page
+  intentionally does not control.
+- `src/lib/attention/learned.test.ts` — four new fixtures closing the gaps the
+  1.1 matrix left implicit: malformed weight vectors (NaN, Infinity, overlong)
+  degrade to the deterministic prior instead of crashing or poisoning a feed;
+  repeated scoring is byte-identical for both cold and trained vectors;
+  positive and negative feedback move the model in opposite directions under
+  the clamp; and a source-level pin asserts that attention queries never write,
+  that every learning mutation resolves the caller first, that snooze still
+  never trains, that the `generalisedRanking` kill switch gates the evidence
+  itself, that every `assistantState` read is owner-index-ranged, and that
+  snapshot restore refuses a snapshot that is not the caller's.
+
+**What did not change.** No application behaviour, no schema, no dependency, no
+ADR. Feature indices 0–7 remain frozen; `WEIGHTS_VERSION` remains 1; the
+bit-identical 40-case regression gate is untouched and still green. ADR-015 and
+ADR-032 both stand as written. No client-side role check was introduced; the
+console stays unlinked from product navigation.
+
+**Known limitations.** K1 (authorised admin rendering) stays NOT VERIFIED until
+the owner completes the D64 bootstrap — by design, not by omission; the admin
+conformance harness reports it as `unverified-by-design` rather than as a pass.
+Cron `agents/daily` live firing and browser/UX verification remain NOT VERIFIED
+(environment-bound). The source-level pins are anchored on stable identifiers
+in `attention.ts`; a legitimate refactor of that file may require updating
+them, which is their purpose.
+
+**Tests.** `bun test` → **695 pass, 0 fail** (4 new fixtures; the 40-case
+bit-identical gate included). `bunx tsc -b --noEmit` clean. `bun run lint` →
+0 errors, 19 stock warnings. `bun scripts/spec-drift.ts` → 28 passed, 1
+warning, 0 failures. `bun scripts/audit-bounded-reads.ts` → 0 unbounded, 0
+table scans, 150 bounded. Live against `jovial-possum-12`:
+`conformance-1.1.ts` → **25/25 held**; `conformance-admin.ts` → 48 boundaries
+held, 0 failed, K1 reported unverified-by-design; `conformance-attention.ts`
+→ all phase-1.0 invariants held.
+
+Related ADR: ADR-015, ADR-032
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**

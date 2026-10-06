@@ -98,6 +98,56 @@ On the frontend, you can use the `useAuth` hook to get the current user's data a
 
 You should also be protecting queries, mutations, and actions at the base level, checking for authorization securely.
 
+# Admin Control Centre (operator access)
+
+The Admin Control Centre is an internal, **read-only** status console for the
+deployment: system status, agent health, integration health, data-model survey,
+security posture, infrastructure bindings, and a one-shot Neon health probe
+(`SELECT 1` against an external database). It has **no action buttons** — no
+mutation and no action is reachable from it (ADR-032, CHANGE-0027).
+
+## Where it is
+
+Route: **`/control-centre`** — registered in `src/main.tsx`, component
+`src/pages/AdminControlCenter.tsx`. It is deliberately **not linked from the
+product navigation**: no user Area advertises it (ADR-032). That is a
+discoverability decision, not a security one — every one of the five queries
+refuses independently on the server, so hiding or showing a link changes
+nothing an unauthorised caller can read.
+
+## How to access it
+
+1. Sign in to Panel as the account you intend to administer.
+2. Open **`/control-centre`** directly (the app URL plus that path).
+3. If you have not been granted the admin role you will see a refusal panel.
+   That is the correct, expected state until the bootstrap below is done.
+
+## Bootstrap: granting the admin role (D64)
+
+No code path in Panel can write `users.role`; that is deliberate (ADR-032) —
+a client-reachable grant would be a privilege-escalation path. The role is set
+out of band, through trusted Convex deployment tooling:
+
+1. Sign in to Panel once, so your user document exists.
+2. Open the Convex dashboard for the canonical deployment (`jovial-possum-12`).
+3. Open the **`users`** table, find your row, and set **`role`** to **`admin`**.
+   The schema rejects any other value at write time.
+4. Sign in to Panel as that user and open **`/control-centre`**.
+
+Do not paste credentials into the app, the repository, or this README; the
+Convex dashboard session is the only credential involved.
+
+## What enforces access
+
+`requireAdmin` in `src/convex/admin.ts` runs as the first statement of each of
+the five queries and delegates to `decideAdminAccess`
+(`src/lib/adminAccess.ts`) against the server-side user row. The Neon probe
+action carries its own `requireAdmin`. There is no client-side `isAdmin`
+security check, no URL secret, no query-parameter secret, no token bypass and
+no `grantAdmin` mutation — the page renders its refusal panel straight from
+the backend's thrown query error. Until an operator completes the bootstrap,
+the page shows that refusal for everyone, which is the intended behaviour.
+
 ## Adding a redirect after auth
 
 The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
