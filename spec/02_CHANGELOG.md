@@ -4140,6 +4140,101 @@ Related ADR: ADR-015, ADR-032
 
 ---
 
+## CHANGE-0041
+
+**Panel Operator Console — the Admin Control Centre expanded from five guarded
+reads into a composed operator overview, with product/diagnostics depth and an
+honest scope section. Still read-only, still no mutation.**
+
+Severity: MINOR
+
+Status: **IMPLEMENTED. K1 (authorised admin rendering) remains NOT VERIFIED** —
+no legitimate admin session exists in this environment and none was fabricated;
+the new `conformance-operator.ts` harness reports it as unverified-by-design.
+
+**Trigger.** The owner's request to turn `/control-centre` into a place from
+which they can understand and safely manage Panel — observe, diagnose, verify —
+without becoming a god-mode panel. The phase spec required every proposed
+action to be tiered (TIER 0 read-only / TIER 1 reversible / TIER 2 high-impact)
+and required the console to be honest about what it cannot control.
+
+**What changed.**
+
+- `src/convex/admin.ts` — `systemStatus` gained a **product** block (areas,
+  providers, adapters, registered agents, agent tier policy, hard-attention
+  kind count, feature flags, custom-pages cap, lifecycle note) and a
+  **diagnostics** block (schema validation, index-allowlist tables/pairs,
+  read-limit registry count, Node runtime version). `agentHealth` gained the
+  agent **registry**, **enrollment** (sampled, flagged) and **proposal counts
+  by status** — counts only, never proposal text, capped by
+  `ADMIN_AGENT_PROPOSALS_PER_SPACE`. The `void TABLE_INDEXES` marker was
+  replaced by runtime `INDEX_ALLOWLIST_TABLES`/`PAIRS` consts so diagnostics
+  can report the allowlist it actually enforces. Every read remains
+  `requireAdmin`-first and `.take()`-bounded on an existing index.
+- `src/lib/readLimits.ts` — new `ADMIN_AGENT_PROPOSALS_PER_SPACE = 10`.
+- `src/lib/adminFindings.ts` — D54 rewritten with fixed source evidence
+  (the relay now reads the key from deployment environment configuration);
+  the finding **id is retained** and now records the outstanding owner action
+  — provisioning/rotation — as the open item. No credential value, length,
+  prefix or env-var value appears anywhere.
+- **NEW** `src/lib/operatorOverview.ts` — pure `composeOverview()` turning the
+  five successful payloads into `{verdict, sections[]}` with a fixed
+  severity ranking (bad > warn > unknown > ok); missing input yields an
+  `unknown` section, never a pass; Neon `unconfigured`/`refused` are surfaced,
+  not hidden.
+- **NEW** `src/lib/operatorOverview.test.ts` — 13 fixtures pinning the honesty
+  rules (empty verdict set is unknown, not ok; sampled coverage carries its
+  qualifier; a failed section cannot be masked by healthy ones).
+- `src/pages/AdminControlCenter.tsx` — new **Overview** composed section
+  rendered first; "Product, as built" and "Diagnostics" tables under System;
+  registry/enrollment/proposal rows under Agents; a section-anchor nav; and a
+  new **Scope** section that states, in the page itself, what is implemented,
+  what is not collected (user directory, ADR-032), and what requires a future
+  ADR (pause agent, acknowledge finding, all TIER 2 operations).
+- **NEW** `scripts/conformance-operator.ts` — 24 checks live against
+  `jovial-possum-12`: every admin query refuses an anonymous caller with the
+  fixed sentinel; no write endpoint exists; `requireAdmin` precedes every
+  data access and stays module-private; no disclosing property is read;
+  `users` is never queried beyond the authorisation check; coverage flags
+  (`sampled`/`saturated`) are present; D54's source is closed while the
+  finding still names the outstanding owner action; the Neon probe is
+  `SELECT 1` with no DDL/DML; the composer's honesty rules hold.
+- `README.md` — new *Operator Console — what it shows* section and an
+  *Intentionally unavailable controls* table (read-only labels, no fake
+  toggles, no dead buttons).
+
+**What did not change.** Zero mutations were added — `admin.ts` still exports
+only queries, verified by both the drift gate and the new harness. No schema,
+no dependency, no ADR amendment: this stays inside ADR-032's approved admin
+observability scope (markdown/spec/changelog remain authoritative; the HTML
+control centre remains a view). No nav link was added (ADR-032). No
+impersonation, no client-side authorization, no role mutation, no D64 change.
+TIER 1 candidates (pause/resume agent, acknowledge finding) are **documented
+as requiring a future ADR**, not implemented, because no approved reversible
+state model exists for them today. Nothing new to log in `accessLog` — there
+are no administrative mutations to record.
+
+**Known limitations.** K1 NOT VERIFIED (D64 bootstrap is owner out-of-band).
+Neon live probe (DATABASE_URL unset), cron live firing, and browser/UX
+verification remain NOT VERIFIED (environment-bound). Space aggregates are
+sampled lower bounds and flagged as such; the data model section reports
+per-table saturation honestly rather than implying exact counts.
+
+**Tests.** `bun test` → **708 pass, 0 fail** (30 files; baseline was 695).
+`bunx tsc -b --noEmit` clean. `bun run lint` → 0 errors, 19 stock warnings.
+`bun scripts/spec-drift.ts` → 28 passed, 1 warning, 0 failures (including the
+`admin read-only`, `admin index allowlist`, `credential containment` and
+`security registry` gates). `bun scripts/audit-bounded-reads.ts` → 0
+unbounded, 0 table scans, **151 bounded** (one new proposal read). Live
+against `jovial-possum-12`: `conformance-operator.ts` → **24 checks held, 0
+failed, K1 unverified-by-design**; `conformance-admin.ts` → 48 boundaries
+held, 0 failed; `conformance-sec.ts` → 64 boundaries held, 0 failed.
+`bunx convex dev --once` → clean deploy of the extended queries.
+
+Related ADR: ADR-032, ADR-034
+
+---
+
 ## CHANGE-0026
 
 **The bounded-read audit: 63 unbounded reads found, 60 fixed, 2 justified, 1 accepted as debt — and the audit itself was wrong twice before it was right**

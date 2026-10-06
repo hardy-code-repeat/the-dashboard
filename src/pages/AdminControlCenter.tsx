@@ -61,6 +61,11 @@ import { Link } from "react-router";
 import { api } from "../convex/_generated/api";
 import { adminDenialMessage } from "../lib/adminFindings";
 import { READ_LIMITS } from "../lib/readLimits";
+import {
+  composeOverview,
+  type OverviewSection as OverviewSectionData,
+  type Verdict,
+} from "../lib/operatorOverview";
 
 /* ------------------------------------------------------------------ atoms */
 
@@ -286,6 +291,67 @@ function configTone(state: string): Tone {
   return "unknown";
 }
 
+/**
+ * The overview roll-up — the first thing on the page, and the answer to
+ * "is Panel healthy?" in one screen.
+ *
+ * Composed client-side from the five server-side payloads by the pure module
+ * in `src/lib/operatorOverview.ts`, so the honesty rules (a missing input is
+ * never a pass; sampled data says so; the verdict is worst-of, never an
+ * average) are unit-tested rather than a matter of JSX care. Nothing here is
+ * computed from client state, and no verdict can exist without a payload a
+ * server query produced for *this* authorised caller.
+ */
+function OverviewSectionView({
+  overview,
+}: {
+  overview: { verdict: Verdict; sections: OverviewSectionData[] };
+}) {
+  const banner =
+    overview.verdict === "ok"
+      ? { tone: "ok" as Tone, text: "Panel looks healthy across every observable section." }
+      : overview.verdict === "warn"
+        ? { tone: "warn" as Tone, text: "Something needs attention — the sections below say what." }
+        : overview.verdict === "bad"
+          ? { tone: "bad" as Tone, text: "A section is in a bad state. Open it below." }
+          : {
+              tone: "unknown" as Tone,
+              text: "Not enough was observed to call Panel healthy. Each section says what is missing.",
+            };
+
+  return (
+    <Section
+      id="overview"
+      title="Overview"
+      source="composed from the sections below — no client-side verdict"
+    >
+      <p className="mb-3 flex flex-wrap items-center gap-2 border-2 border-foreground bg-muted px-2 py-1.5 text-[12px]">
+        <Chip tone={banner.tone}>{overview.verdict}</Chip>
+        <span>{banner.text}</span>
+      </p>
+      <div className="grid gap-2 md:grid-cols-2">
+        {overview.sections.map((s) => (
+          <div key={s.id} className="border-2 border-border px-2 py-1.5">
+            <div className="flex items-center gap-2">
+              <Chip tone={s.verdict}>{s.verdict}</Chip>
+              <span className="font-mono text-[11px] uppercase tracking-wider">{s.label}</span>
+            </div>
+            <p className="mt-1 text-[12px]">{s.summary}</p>
+            {s.detail ? (
+              <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{s.detail}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        Every figure was produced by a server-side query that authorised this caller. The verdict is
+        worst-of, never an average: one bad section cannot be hidden by green ones, and a section
+        that could not be observed says so rather than passing silently.
+      </p>
+    </Section>
+  );
+}
+
 function SystemStatusSection({ data }: { data: SystemStatus }) {
   return (
     <Section id="system" title="System" source="compile-time constants + configuration state">
@@ -309,6 +375,45 @@ function SystemStatusSection({ data }: { data: SystemStatus }) {
               </span>
             }
           />
+        </tbody>
+      </table>
+
+      <h3 className="mt-4 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+        Product, as built
+      </h3>
+      <p className="mb-2 mt-1 text-[11px] text-muted-foreground">{data.product.lifecycleNote}</p>
+      <table className="w-full border-collapse text-[13px]">
+        <tbody>
+          <Row
+            k="Registered agents"
+            v={
+              data.product.registeredAgents.length === 0
+                ? "none"
+                : data.product.registeredAgents.map((a) => a.name).join(", ")
+            }
+          />
+          <Row k="Attention rule kinds" v={`${data.product.hardAttentionKinds} hard kinds (never personalised)`} />
+          <Row k="Custom pages cap" v={`${data.product.customPagesCap} per user`} />
+          <Row k="Feature flags" v={data.product.featureFlags.join(", ")} />
+        </tbody>
+      </table>
+      <p className="mt-1 text-[11px] text-muted-foreground">{data.product.agentTierPolicy}</p>
+
+      <h3 className="mt-4 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+        Diagnostics
+      </h3>
+      <p className="mb-2 mt-1 text-[11px] text-muted-foreground">
+        Structural metadata about this deployment's own read surface. No environment variables, no
+        stack traces, no request data.
+      </p>
+      <table className="w-full border-collapse text-[13px]">
+        <tbody>
+          <Row
+            k="Index allowlist"
+            v={`${data.diagnostics.indexAllowlist.tables} tables · ${data.diagnostics.indexAllowlist.pairs} index pairs`}
+          />
+          <Row k="Read-limit registry" v={`${data.diagnostics.readLimitRegistry} caps in force`} />
+          <Row k="Node runtime" v={data.diagnostics.nodeRuntime} />
         </tbody>
       </table>
 
@@ -366,6 +471,36 @@ function AgentHealthSection({ data }: { data: AgentHealth }) {
             }
           />
           <Row k="Executions observed" v={String(data.executionsObserved)} />
+          <Row
+            k="Registered agents"
+            v={
+              data.registry.length === 0
+                ? "none in source"
+                : data.registry.map((a) => a.name).join(", ")
+            }
+          />
+          <Row
+            k="Enrollment"
+            v={`${data.enrollment.optedIn}/${data.enrollment.of} spaces opted in${
+              data.enrollment.sampled ? " (sampled)" : ""
+            }`}
+          />
+          <Row
+            k="Proposals in window"
+            v={
+              data.proposals.byStatus.length === 0 ? (
+                <span className="text-muted-foreground">none observed</span>
+              ) : (
+                <span className="flex flex-wrap gap-2">
+                  {data.proposals.byStatus.map((s) => (
+                    <Chip key={s.status} tone="unknown">
+                      {s.count} {s.status}
+                    </Chip>
+                  ))}
+                </span>
+              )
+            }
+          />
           <Row
             k="Coverage"
             v={
@@ -544,6 +679,103 @@ function SecuritySection({ data }: { data: SecurityPosture }) {
   );
 }
 
+/**
+ * What this console is, and — more importantly — what it deliberately is not.
+ *
+ * Rendered on the page rather than left to the README, because the single most
+ * dangerous drift for an internal console is an operator assuming a control
+ * exists. Every row here is a capability someone reasonable has asked for, and
+ * every "not built" is a decision with an address (ADR-032, ADR-034, D56, D64).
+ */
+function ScopeSection() {
+  return (
+    <Section id="scope" title="Scope & unavailable controls" source="ADR-032 · ADR-034 · D56 · D64">
+      <p className="mb-3 border-2 border-foreground bg-muted px-2 py-1.5 text-[12px]">
+        <b>This console is read-only, structurally.</b> The backend module exports no mutation and no
+        action, and a drift gate fails the build if one appears. Nothing on this page changes
+        anything — not even for the admin.
+      </p>
+      <Table head={["Capability", "State", "Why"]}>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">Observability (this page)</td>
+          <td className="py-1 pr-3">
+            <Chip tone="ok">implemented</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            Five independently authorised queries plus the one-shot Neon probe.
+          </td>
+        </tr>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">User directory (names, emails)</td>
+          <td className="py-1 pr-3">
+            <Chip tone="unknown">not collected</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            ADR-032: the users table is not read beyond the authorisation check. A console that
+            enumerates accounts is the first step toward the user management this module must not
+            become. Adding it requires an ADR amendment, not a query.
+          </td>
+        </tr>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">Role management (grant / revoke admin)</td>
+          <td className="py-1 pr-3">
+            <Chip tone="unknown">not built</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            No code path in Panel can write <code className="font-mono">users.role</code> (ADR-032
+            §4, D64). The only bootstrap is the Convex dashboard, out of band.
+          </td>
+        </tr>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">Pause / resume an agent</td>
+          <td className="py-1 pr-3">
+            <Chip tone="unknown">requires future ADR</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            No agent pause state exists in the schema. Adding one means a new write path and a new
+            architectural decision (ADR-016), not a button.
+          </td>
+        </tr>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">Acknowledge a finding</td>
+          <td className="py-1 pr-3">
+            <Chip tone="unknown">not built</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            Findings are a checked-in registry cross-checked against spec/02_CHANGELOG.md by
+            spec-drift. A runtime acknowledgement would fork that record rather than update it.
+          </td>
+        </tr>
+        <tr className="border-b border-border/60 align-top">
+          <td className="py-1 pr-3 text-[12px]">Delete users or data · transfer ownership</td>
+          <td className="py-1 pr-3">
+            <Chip tone="unknown">out of scope</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            Tier 2 operations. Not implemented and not proposed without an explicit ADR — D56
+            records that deletion semantics are an undecided product question.
+          </td>
+        </tr>
+        <tr className="align-top">
+          <td className="py-1 pr-3 text-[12px]">Credential or infrastructure changes</td>
+          <td className="py-1 pr-3">
+            <Chip tone="bad">rejected by ADR-034</Chip>
+          </td>
+          <td className="py-1 text-[11px] text-muted-foreground">
+            Panel must never hold a credential that can modify its own secret configuration.
+            Metadata and health checks only — there is no create, rotate or revoke path anywhere
+            in the product.
+          </td>
+        </tr>
+      </Table>
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        The console stays inside the observability scope ADR-032 approved. Anything marked
+        "requires future ADR" is a documented candidate, not a promise.
+      </p>
+    </Section>
+  );
+}
+
 /* ------------------------------------------------------------------ shell */
 
 function Refused({ reason }: { reason: string }) {
@@ -629,6 +861,21 @@ export default function AdminControlCenter() {
   const refused = errors.length;
   const loading = !refused && results.some((q) => q.status === "pending");
 
+  // The overview is composed only from payloads that actually succeeded. A
+  // section whose query produced nothing hands `null` to the composer, which
+  // renders it as unknown rather than as a pass.
+  const overview =
+    status.status === "success"
+      ? composeOverview({
+          system: status.data,
+          agents: agents.status === "success" ? agents.data : null,
+          integrations: integrations.status === "success" ? integrations.data : null,
+          data: dataModel.status === "success" ? dataModel.data : null,
+          security: security.status === "success" ? security.data : null,
+          neon,
+        })
+      : null;
+
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-6">
       <nav className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -638,6 +885,32 @@ export default function AdminControlCenter() {
         <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
           read-only · no write endpoint exists
         </span>
+      </nav>
+      <nav
+        aria-label="Console sections"
+        className="mb-4 flex flex-wrap gap-x-3 gap-y-1 border-b border-border pb-2 font-mono text-[11px]"
+      >
+        {(
+          [
+            ["overview", "Overview"],
+            ["system", "System & product"],
+            ["agents", "Agents"],
+            ["integrations", "Integrations"],
+            ["data-model", "Data"],
+            ["security", "Security"],
+            ["bindings", "Infrastructure"],
+            ["limits", "Limits"],
+            ["scope", "Scope"],
+          ] as const
+        ).map(([id, label]) => (
+          <a
+            key={id}
+            href={`#${id}`}
+            className="text-muted-foreground underline underline-offset-4 hover:text-foreground"
+          >
+            {label}
+          </a>
+        ))}
       </nav>
 
       <header className="mb-5 border-2 border-foreground bg-foreground px-4 py-3 text-card">
@@ -664,6 +937,7 @@ export default function AdminControlCenter() {
         </p>
       ) : (
         <div className="space-y-4">
+          {overview && <OverviewSectionView overview={overview} />}
           {status.status === "success" && <SystemStatusSection data={status.data} />}
           {agents.status === "success" && <AgentHealthSection data={agents.data} />}
           {integrations.status === "success" && <IntegrationHealthSection data={integrations.data} />}
@@ -696,6 +970,8 @@ export default function AdminControlCenter() {
               sample was capped, the section says so.
             </p>
           </Section>
+
+          <ScopeSection />
 
           <footer className="border-2 border-foreground bg-card px-3 py-2">
             <p className="text-[11px] text-muted-foreground">

@@ -79,7 +79,12 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 import { adminDecisionFor, CONFIG_STATES } from "../lib/adminFindings";
-import { decideAdminAccess } from "../lib/adminAccess";import { MAX_EXECUTIONS_PER_RUN, MAX_EXECUTIONS_PER_SPACE_PER_DAY } from "../lib/agents";
+import { decideAdminAccess } from "../lib/adminAccess";import {
+  MAX_EXECUTIONS_PER_RUN,
+  MAX_EXECUTIONS_PER_SPACE_PER_DAY,
+  REGISTERED_AGENTS,
+} from "../lib/agents";
+import { HARD_KINDS } from "../lib/attention/rules";
 import { AREAS, PROVIDERS } from "../lib/areas";
 import { allIntegrations } from "../lib/integrations/registry";
 import { READ_LIMITS } from "../lib/readLimits";
@@ -149,10 +154,15 @@ const TABLE_INDEXES = {
   grants: ["by_space", "by_grantee"],
 } as const satisfies Record<string, readonly string[]>;
 
-// Referenced only through `typeof` below, which the compiler and the linter do
-// not treat as a use. The value is never read at runtime, and the comment above
-// explains why it exists.
-void TABLE_INDEXES;
+// Also read at runtime: `systemStatus` reports the allowlist's shape (tables
+// and index pairs) as a diagnostic, so an operator can see the Control Centre's
+// own read surface at a glance. The values are compile-time constants of this
+// module, and the drift gate checks every name against the schema.
+const INDEX_ALLOWLIST_TABLES = Object.keys(TABLE_INDEXES).length;
+const INDEX_ALLOWLIST_PAIRS = Object.values(TABLE_INDEXES).reduce(
+  (n, indexes) => n + indexes.length,
+  0,
+);
 
 type TableName = keyof typeof TABLE_INDEXES;
 type IndexNameOf<T extends TableName> = (typeof TABLE_INDEXES)[T][number];
@@ -365,6 +375,31 @@ export const systemStatus = query({
       // Provider credentials this deployment expects, as metadata only. Phase 1
       // of ADR-034: reported, never written, and carrying no variable name.
       infrastructureBindings: infrastructureBindingStates(),
+      // What is actually built, as compile-time facts of this codebase. The
+      // lifecycle and changelog are Markdown in spec/ and cannot be read from a
+      // deployment at runtime; the console points there rather than restating a
+      // number that would drift from the authoritative record (ADR-019).
+      product: {
+        areas: AREAS.length,
+        providers: PROVIDERS.length,
+        adapters: allIntegrations().length,
+        registeredAgents: REGISTERED_AGENTS.map((name) => ({ name })),
+        agentTierPolicy:
+          "ADR-011: the automatic tier can only flag or log; proposed never executes; confirm is blocking.",
+        hardAttentionKinds: HARD_KINDS.length,
+        featureFlags: ["generalisedRanking", "exploration", "attentionGrouping"],
+        customPagesCap: READ_LIMITS.PAGES,
+        lifecycleNote:
+          "Phase status, the changelog and every ADR are authoritative in spec/02_CHANGELOG.md. A deployment cannot read them at runtime, so they are not restated here.",
+      },
+      // Runtime and structural metadata — what a diagnostic needs, and nothing
+      // that describes a request, a user, or a secret.
+      diagnostics: {
+        schemaValidation: true,
+        indexAllowlist: { tables: INDEX_ALLOWLIST_TABLES, pairs: INDEX_ALLOWLIST_PAIRS },
+        readLimitRegistry: Object.keys(READ_LIMITS).length,
+        nodeRuntime: process.version,
+      },
       // The two things this surface genuinely cannot know, said out loud rather
       // than omitted. A gap that is visible is a gap; a gap that is absent
       // reads as a pass.
@@ -441,7 +476,46 @@ export const agentHealth = query({
       }
     }
 
+    // Agent proposals: a bounded, newest-first sample per enumerated space,
+    // counted **by status only**. A proposal's title and detail are text from
+    // inside someone's space and never cross the boundary (ADR-032 disclosure
+    // contract); what an operator needs is whether proposals are accumulating
+    // and how they were settled.
+    let proposalsObserved = 0;
+    const proposalsByStatus = new Map<string, number>();
+    for (const space of sampledSpaces) {
+      const recent = await ctx.db
+        .query("agentProposals")
+        .withIndex("by_space_at", (q) => q.eq("spaceId", space._id))
+        .order("desc")
+        .take(READ_LIMITS.ADMIN_AGENT_PROPOSALS_PER_SPACE);
+      for (const proposal of recent) {
+        proposalsObserved += 1;
+        // `status` is a product-written enum-ish string (schema-validated as a
+        // string); an absent status is reported as its own bucket rather than
+        // folded into a value the product never wrote.
+        const status = proposal.status ?? "unsettled";
+        proposalsByStatus.set(status, (proposalsByStatus.get(status) ?? 0) + 1);
+      }
+    }
+
+    const enrolled = sampledSpaces.filter((space) => space.nextAgentRunAt != null).length;
+
     return {
+      // The registry is a compile-time fact of the source, like the area and
+      // provider catalogues above — not a runtime discovery.
+      registry: REGISTERED_AGENTS.map((name) => ({ name })),
+      enrollment: {
+        optedIn: enrolled,
+        of: sampledSpaces.length,
+        sampled,
+      },
+      proposals: {
+        observed: proposalsObserved,
+        byStatus: [...proposalsByStatus.entries()].map(([status, count]) => ({ status, count })),
+        perSpaceCap: READ_LIMITS.ADMIN_AGENT_PROPOSALS_PER_SPACE,
+        sampled,
+      },
       // The cap only binds once there is more history than the read window, so
       // the figure is a count of what was in range rather than a total.
       runsObserved: runs,

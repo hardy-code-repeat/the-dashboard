@@ -289,6 +289,17 @@ export const ADMIN_AGENT_RUNS_PER_SPACE = 5;
 /** Integration connections read per enumerated space. */
 export const ADMIN_CONNECTIONS_PER_SPACE = 20;
 
+/**
+ * Agent proposals read per enumerated space, newest first (Operator Console).
+ *
+ * Proposals are counted **by status only** — never their title or detail, which
+ * are text from inside someone's space (ADR-032 disclosure contract). 10 per
+ * space across the 50-space deployment window is 500 rows worst-case, well
+ * inside one request, and enough to answer "are proposals accumulating
+ * unactioned" rather than to enumerate them.
+ */
+export const ADMIN_AGENT_PROPOSALS_PER_SPACE = 10;
+
 /** Sync cursors read per enumerated space. */
 export const ADMIN_SYNC_CURSORS_PER_SPACE = 20;
 
@@ -439,6 +450,7 @@ export const READ_LIMITS = {
   ADMIN_TABLE_SAMPLE,
   ADMIN_SPACES,
   ADMIN_AGENT_RUNS_PER_SPACE,
+  ADMIN_AGENT_PROPOSALS_PER_SPACE,
   ADMIN_CONNECTIONS_PER_SPACE,
   ADMIN_SYNC_CURSORS_PER_SPACE,
   ADMIN_STALE_SYNC_MS,

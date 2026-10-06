@@ -69,12 +69,13 @@ export interface RecordedFinding {
 export const OPEN_FINDINGS: readonly RecordedFinding[] = [
   {
     id: "D54",
-    title: "A live email-relay credential committed to source",
+    title: "Email-relay credential: source closed, provisioning and rotation still owed",
     detail:
-      "The relay key is a literal in the source tree. Panel cannot rotate it: the owner must invalidate it at the provider and supply a replacement through the project's keys UI. Until that happens the key is both valid and public.",
+      "The relay key was a literal in the source tree; that is fixed. The module now reads PANEL_EMAIL_RELAY_API_KEY from deployment environment configuration and fails closed without it. The owner must still provision the key through the project's keys UI and invalidate the old value at the relay — until the key is set, email OTP is unavailable by design, and the old value should be treated as compromised.",
     owner: "owner",
     state: "open-human",
-    evidence: "conformance-sec.ts S11 reports this red on purpose, as a canary",
+    evidence:
+      "conformance-sec.ts S11 reports 'credential-shaped literals in tracked source: none'; emailOtp.test.ts asserts the literal stays absent from the on-disk module",
   },
   {
     id: "D56",

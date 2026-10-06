@@ -148,6 +148,47 @@ no `grantAdmin` mutation — the page renders its refusal panel straight from
 the backend's thrown query error. Until an operator completes the bootstrap,
 the page shows that refusal for everyone, which is the intended behaviour.
 
+## Operator Console — what it shows
+
+`/control-centre` is the owner's internal Operator Console. It is an
+**observability** surface, organised as one page of sections:
+
+- **Overview** — a worst-of health roll-up composed from the sections below
+  (never an average; a section that could not be observed says so).
+- **System & product** — catalogue sizes, agent policy, declared cron
+  (firing itself is not observable from a request), product-as-built facts,
+  diagnostics (index allowlist, read-limit registry, runtime), and platform
+  configuration as *states only* (`configured | missing | requires-rotation |
+  not-observable`) — never values, lengths or prefixes.
+- **Agents** — registered agents, enrolment, run outcomes, proposal counts by
+  status (proposal text never leaves the backend).
+- **Integrations** — per-provider connection counts, credential presence
+  (boolean), staleness and failures.
+- **Data** — a bounded sample per table with honest lower-bound flags; never a
+  whole-table scan and never a count presented as exact.
+- **Security** — the recorded findings registry, verification gaps, and what
+  this surface deliberately does not collect.
+- **Infrastructure** — bindings metadata only (ADR-034) and the one-shot Neon
+  `SELECT 1` probe. No secret value, length, prefix or environment variable
+  name for a binding.
+- **Limits & scope** — the caps in force, and an explicit table of controls
+  that intentionally do not exist (below).
+
+## Intentionally unavailable controls
+
+The console is read-only **structurally**: `admin.ts` exports no mutation and
+no action, and a drift gate fails the build if one appears. The following are
+deliberately absent, each with an address:
+
+| Capability | State | Why |
+|---|---|---|
+| User directory (names, emails) | not collected | ADR-032: the `users` table is not read beyond the authorisation check; adding it requires an ADR amendment. |
+| Role management | not built | No code path can write `users.role` (ADR-032 §4, D64). Bootstrap is out of band, above. |
+| Pause / resume an agent | requires future ADR | No pause state exists in the schema; adding one is a new write path and a new decision (ADR-016). |
+| Acknowledge a finding | not built | Findings are a checked-in registry cross-checked against `spec/02_CHANGELOG.md`; a runtime ack would fork the record. |
+| Delete users/data, transfer ownership | out of scope | Tier 2 operations; D56 records deletion semantics as undecided. |
+| Credential / infrastructure changes | rejected | ADR-034: Panel must never hold a credential that can modify its own secret configuration. |
+
 ## Adding a redirect after auth
 
 The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
