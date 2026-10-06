@@ -2,6 +2,19 @@ import { Email } from "@convex-dev/auth/providers/Email";
 import axios from "axios";
 import { RandomReader, generateRandomString } from "@oslojs/crypto/random";
 
+/**
+ * Where the email relay API key is held.
+ *
+ * Named rather than inlined so the deployment Keys tab and this module cannot
+ * drift apart. In the intended architecture this value lives in the deployment's
+ * environment, so the source should not contain a literal credential.
+ *
+ * The literal that previously lived here was rotated out of source under D54.
+ * If this variable is not set in the deployment, email OTP fails closed — it
+ * never silently falls back to a built-in key.
+ */
+const EMAIL_RELAY_API_KEY_ENV = "PANEL_EMAIL_RELAY_API_KEY";
+
 export const emailOtp = Email({
   id: "email-otp",
   maxAge: 60 * 15, // 15 minutes
@@ -16,6 +29,14 @@ export const emailOtp = Email({
     return generateRandomString(random, alphabet, 6);
   },
   async sendVerificationRequest({ identifier: email, token }) {
+    const apiKey = globalThis.process?.env?.[EMAIL_RELAY_API_KEY_ENV] ?? null;
+
+    if (apiKey === null || apiKey === "") {
+      throw new Error(
+        `Email OTP is not configured: set ${EMAIL_RELAY_API_KEY_ENV} in the deployment.`,
+      );
+    }
+
     try {
       await axios.post(
         "https://auth.freebuff.app/send_otp",
@@ -29,7 +50,7 @@ export const emailOtp = Email({
         },
         {
           headers: {
-            "x-api-key": "fb_email_2crN1hqIArZP2bEfvjp5Qik4",
+            "x-api-key": apiKey,
           },
         },
       );
